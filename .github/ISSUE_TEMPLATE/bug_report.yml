@@ -1,0 +1,52 @@
+name: Bug Report
+description: Report a reproducible defect in the DebugBundle JavaScript SDK repository.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+        Please include a minimal reproduction, expected behavior, and actual behavior.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: A clear and concise description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: How can we reproduce the problem?
+      placeholder: |
+        1. Install ...
+        2. Configure ...
+        3. Trigger ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version, package version, framework version, and any other useful context.
+      placeholder: macOS 15, Node.js 24, @debugbundle/sdk-node 0.1.0-next.1, Fastify 5
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Paste logs, stack traces, or screenshots if available.
+      render: shell

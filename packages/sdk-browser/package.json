@@ -1,0 +1,30 @@
+{
+  "name": "@debugbundle/sdk-browser",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "description": "Browser SDK for DebugBundle",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/debugbundle/debugbundle-js.git",
+    "directory": "packages/sdk-browser"
+  },
+  "bugs": {
+    "url": "https://github.com/debugbundle/debugbundle-js/issues"
+  },
+  "homepage": "https://github.com/debugbundle/debugbundle-js/tree/main/packages/sdk-browser",
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@debugbundle/shared-types": "0.1.0-next.1",
+    "@debugbundle/redaction": "0.1.0-next.1"
+  }
+}
