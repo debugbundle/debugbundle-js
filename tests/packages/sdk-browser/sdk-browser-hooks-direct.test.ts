@@ -169,10 +169,14 @@ describe("sdk-browser hooks direct", () => {
     vi.stubGlobal("fetch", fetchSource as unknown);
 
     const breadcrumbs: BrowserBreadcrumb[] = [];
+    const requestFailures: BrowserBreadcrumb[] = [];
     const result = getNetworkHookResult(installNetworkHook(
       createConfig(),
       (breadcrumb) => {
         breadcrumbs.push(breadcrumb);
+      },
+      (breadcrumb) => {
+        requestFailures.push(breadcrumb);
       },
       (url, statusCode) => url.includes("checkout") && statusCode >= 500,
       () => "/checkout"
@@ -226,6 +230,9 @@ describe("sdk-browser hooks direct", () => {
       "content-type": "application/json",
       "x-request-id": "req-abc"
     });
+    expect(requestFailures).toHaveLength(1);
+    expect(requestFailures[0]?.data["url"]).toBe("https://example.com/checkout/api");
+    expect(requestFailures[0]?.data["status_code"]).toBe(503);
   });
 
   it("should inject trace headers into allowlisted cross-origin fetch requests", async (): Promise<void> => {
@@ -243,6 +250,7 @@ describe("sdk-browser hooks direct", () => {
         ...createConfig(),
         tracePropagationTargets: ["https://api.example.com"]
       } as ActiveConfig,
+      vi.fn(),
       vi.fn(),
       () => false,
       () => "/checkout"
@@ -281,6 +289,7 @@ describe("sdk-browser hooks direct", () => {
       (breadcrumb) => {
         breadcrumbs.push(breadcrumb);
       },
+      vi.fn(),
       () => true,
       () => "/login"
     );
@@ -340,10 +349,14 @@ describe("sdk-browser hooks direct", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXmlHttpRequest as unknown);
 
     const breadcrumbs: BrowserBreadcrumb[] = [];
+    const requestFailures: BrowserBreadcrumb[] = [];
     const result = getNetworkHookResult(installNetworkHook(
       createConfig(),
       (breadcrumb) => {
         breadcrumbs.push(breadcrumb);
+      },
+      (breadcrumb) => {
+        requestFailures.push(breadcrumb);
       },
       (_url, statusCode) => statusCode >= 500,
       () => "/orders"
@@ -368,6 +381,9 @@ describe("sdk-browser hooks direct", () => {
     expect(breadcrumbs[0]?.data["url"]).toBe("https://example.com/orders/123");
     expect(breadcrumbs[0]?.data["method"]).toBe("PATCH");
     expect(breadcrumbs[0]?.data["status_code"]).toBe(500);
+    expect(requestFailures).toHaveLength(1);
+    expect(requestFailures[0]?.data["url"]).toBe("https://example.com/orders/123");
+    expect(requestFailures[0]?.data["status_code"]).toBe(500);
   });
 
   it("should inject trace headers into allowlisted cross-origin XMLHttpRequest calls", (): void => {
@@ -400,6 +416,7 @@ describe("sdk-browser hooks direct", () => {
         ...createConfig(),
         tracePropagationTargets: [/^https:\/\/api\.example\.com/]
       } as ActiveConfig,
+      vi.fn(),
       vi.fn(),
       () => false,
       () => "/orders"

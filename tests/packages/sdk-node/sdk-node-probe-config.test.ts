@@ -336,7 +336,7 @@ describe("sdk-node capture policy enforcement", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("should discard request events when capture_request_events is off", async (): Promise<void> => {
+  it("should discard non-critical request events when capture_request_events is off", async (): Promise<void> => {
     vi.useFakeTimers();
 
     const fetchImpl = vi.fn().mockResolvedValue(
@@ -353,6 +353,27 @@ describe("sdk-node capture policy enforcement", () => {
     await sdk.flush();
 
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("should still capture 500+ request events when capture_request_events is off", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createConfigResponse({
+        ...BALANCED_POLICY,
+        capture_request_events: "off"
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureRequest({ method: "POST", path: "/api/test" }, { statusCode: 503 });
+    await sdk.flush();
+
+    const requestEvents = getTransportEvents(transport, 0).filter((event) => event.event_type === "request_event");
+    expect(requestEvents).toHaveLength(1);
+    expect(requestEvents[0]?.payload).toMatchObject({ path: "/api/test", response_status: 503 });
   });
 
   it("should only capture 500+ request events when capture_request_events is failures_only", async (): Promise<void> => {
@@ -441,8 +462,10 @@ describe("sdk-node capture policy enforcement", () => {
     await settleConfigPolling();
 
     sdk.captureRequest({ method: "GET", path: "/ok" }, { statusCode: 200 });
+    sdk.captureRequest({ method: "POST", path: "/boom" }, { statusCode: 503 });
     sdk.captureLog("info message", "info");
     sdk.captureLog("warning message", "warning");
+    sdk.captureLog("error message", "error");
     await sdk.flush();
 
     const events = getTransportEvents(transport, 0);
@@ -450,9 +473,10 @@ describe("sdk-node capture policy enforcement", () => {
       .filter((e) => e.event_type === "log_event")
       .map((e) => e.payload.message);
 
-    expect(logMessages).toEqual(["warning message"]);
+    expect(logMessages).toEqual(["error message"]);
 
     const requestEvents = events.filter((e) => e.event_type === "request_event");
-    expect(requestEvents).toHaveLength(0);
+    expect(requestEvents).toHaveLength(1);
+    expect(requestEvents[0]?.payload).toMatchObject({ path: "/boom", response_status: 503 });
   });
 });

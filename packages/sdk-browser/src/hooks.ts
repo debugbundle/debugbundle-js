@@ -198,6 +198,7 @@ export function installConsoleHook(
 export function installNetworkHook(
   config: ActiveConfig | null,
   addBreadcrumb: (breadcrumb: BrowserBreadcrumb) => void,
+  captureRequestFailure: (breadcrumb: BrowserBreadcrumb) => void,
   shouldCaptureNetworkRequest: (url: string, statusCode: number, durationMs: number) => boolean,
   getCurrentRoute: () => string | null
 ): NetworkHookInstallResult {
@@ -232,12 +233,13 @@ export function installNetworkHook(
       });
       const durationMs = Date.now() - startedAt;
 
-      if (
+      const shouldCaptureNetworkBreadcrumb =
         config.captureNetwork === true &&
         input !== config.endpoint &&
         input !== configEndpoint &&
-        shouldCaptureNetworkRequest(input, response.status, durationMs)
-      ) {
+        shouldCaptureNetworkRequest(input, response.status, durationMs);
+
+      if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 500)) {
         const responseBody = await captureResponseBody(response);
         const requestBody = captureRequestBody(inputInit);
         const responseHeaders = extractResponseHeaders(response);
@@ -246,7 +248,7 @@ export function installNetworkHook(
           ? parseInt(contentLengthHeader, 10)
           : undefined;
 
-        addBreadcrumb({
+        const breadcrumb = {
           ts: new Date().toISOString(),
           breadcrumb_type: "network_request",
           route: getCurrentRoute(),
@@ -264,7 +266,14 @@ export function installNetworkHook(
               responseContentLength: Number.isFinite(responseContentLength) ? responseContentLength : undefined
             }
           )
-        });
+        } satisfies BrowserBreadcrumb;
+
+        if (shouldCaptureNetworkBreadcrumb) {
+          addBreadcrumb(breadcrumb);
+        }
+        if (injectTraceHeader && response.status >= 500) {
+          captureRequestFailure(breadcrumb);
+        }
       }
 
       return response;
@@ -275,13 +284,15 @@ export function installNetworkHook(
     const activeConfig = config;
     const activeXmlHttpRequestConstructor = xmlHttpRequestConstructor;
     const captureXmlHttpRequest = (url: string, method: string, statusCode: number, durationMs: number): void => {
-      if (
+      const isFirstParty = shouldInjectTraceHeader(url, activeConfig.tracePropagationTargets);
+      const shouldCaptureNetworkBreadcrumb =
         activeConfig.captureNetwork === true &&
         url !== activeConfig.endpoint &&
         url !== configEndpoint &&
-        shouldCaptureNetworkRequest(url, statusCode, durationMs)
-      ) {
-        addBreadcrumb({
+        shouldCaptureNetworkRequest(url, statusCode, durationMs);
+
+      if (shouldCaptureNetworkBreadcrumb || (isFirstParty && statusCode >= 500)) {
+        const breadcrumb = {
           ts: new Date().toISOString(),
           breadcrumb_type: "network_request",
           route: getCurrentRoute(),
@@ -291,7 +302,14 @@ export function installNetworkHook(
             status_code: statusCode,
             duration_ms: durationMs
           }
-        });
+        } satisfies BrowserBreadcrumb;
+
+        if (shouldCaptureNetworkBreadcrumb) {
+          addBreadcrumb(breadcrumb);
+        }
+        if (isFirstParty && statusCode >= 500) {
+          captureRequestFailure(breadcrumb);
+        }
       }
     };
 

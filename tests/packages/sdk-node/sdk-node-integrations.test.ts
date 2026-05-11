@@ -118,7 +118,7 @@ describe("sdk-node framework and logger integrations", () => {
       }
     };
     const res = {
-      statusCode: 200,
+      statusCode: 503,
       end: vi.fn()
     };
     const next = vi.fn();

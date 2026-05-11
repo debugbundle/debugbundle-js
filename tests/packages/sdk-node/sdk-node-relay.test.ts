@@ -74,6 +74,38 @@ function createFrontendExceptionEvent(overrides: Partial<EventEnvelope> = {}): E
   });
 }
 
+function createBrowserRequestEvent(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
+  return createEventEnvelope({
+    event_id: "00000000-0000-4000-8000-000000000203",
+    occurred_at: "2026-03-22T10:02:00.000Z",
+    event_type: "request_event",
+    project_token: "dbundle_proj_browser",
+    sdk_name: "@debugbundle/sdk-browser",
+    sdk_version: "1.2.3",
+    service: {
+      name: "checkout-web",
+      runtime: "browser",
+      framework: null,
+      environment: "production"
+    },
+    correlation: {
+      request_id: null,
+      trace_id: "22222222-2222-4222-8222-222222222222",
+      session_id: null,
+      user_id_hash: null
+    },
+    payload: {
+      method: "POST",
+      path: "/v1/billing/checkout",
+      query: { plan: "team" },
+      headers: {},
+      response_status: 503,
+      duration_ms: 84
+    },
+    ...overrides
+  });
+}
+
 function createBrowserRelayRequest(input: {
   batch?: unknown[];
   headers?: Record<string, string>;
@@ -201,6 +233,36 @@ describe("createBrowserRelay", () => {
     expect(onAccept).toHaveBeenCalledTimes(1);
     expect(onAccept.mock.calls[0]?.[0].events).toHaveLength(1);
     expect(onAccept.mock.calls[0]?.[0].events[0]?.event_type).toBe("frontend_exception");
+  });
+
+  it("accepts browser request_event payloads for relay-mode request failure incidents", async () => {
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({ onAccept });
+
+    const response = await relay(
+      createBrowserRelayRequest({
+        batch: [createBrowserRequestEvent()]
+      })
+    );
+
+    expect(response).toEqual({
+      status: 202,
+      body: {
+        accepted: 1,
+        rejected: 0,
+        errors: []
+      }
+    });
+    expect(onAccept).toHaveBeenCalledTimes(1);
+    expect(onAccept.mock.calls[0]?.[0].events[0]).toMatchObject({
+      event_type: "request_event",
+      sdk_name: "@debugbundle/sdk-browser",
+      payload: {
+        path: "/v1/billing/checkout",
+        query: { plan: "team" },
+        response_status: 503
+      }
+    });
   });
 
   it("rejects requests from non-matching origins using the default same-origin policy", async () => {

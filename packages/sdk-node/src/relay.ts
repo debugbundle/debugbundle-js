@@ -18,6 +18,7 @@ const BROWSER_RELAY_EVENT_TYPES = [
   "frontend_exception",
   "error_suppressed",
   "frontend_breadcrumb",
+  "request_event",
   "probe_event"
 ] as const;
 
@@ -108,6 +109,19 @@ const ErrorSuppressedPayloadSchema = z.object({
   last_seen: z.string().datetime()
 });
 
+const RequestEventPayloadSchema = z.object({
+  method: z.string().min(1),
+  path: z.string().min(1),
+  query: z.record(z.string(), z.unknown()),
+  headers: z.record(z.string(), z.unknown()),
+  body: z.unknown().nullable().optional(),
+  response_status: z.number().int().nonnegative(),
+  duration_ms: z.number().nonnegative(),
+  route_template: z.string().min(1).nullable().optional(),
+  response_headers: z.record(z.string(), z.unknown()).optional(),
+  response_body: z.unknown().optional()
+});
+
 const ProbeEventPayloadSchema = z.object({
   label: z.string().min(1),
   data: z.record(z.string(), z.unknown()),
@@ -138,6 +152,10 @@ const BrowserRelayEventSchema = z.discriminatedUnion("event_type", [
   BrowserRelayEnvelopeBaseSchema.extend({
     event_type: z.literal("frontend_breadcrumb"),
     payload: FrontendBreadcrumbPayloadSchema
+  }),
+  BrowserRelayEnvelopeBaseSchema.extend({
+    event_type: z.literal("request_event"),
+    payload: RequestEventPayloadSchema
   }),
   BrowserRelayEnvelopeBaseSchema.extend({
     event_type: z.literal("probe_event"),

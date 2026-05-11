@@ -42,15 +42,15 @@ export interface CapturePolicy {
 export const BALANCED_CAPTURE_POLICY: CapturePolicy = {
   preset: "balanced",
   captureLogs: "warning",
-  captureRequestEvents: "all",
-  captureBreadcrumbs: "local_only",
-  captureProbeEvents: "standalone_when_activated"
+  captureRequestEvents: "failures_only",
+  captureBreadcrumbs: "exception_only",
+  captureProbeEvents: "buffer_only"
 };
 
 export const MINIMAL_CAPTURE_POLICY: CapturePolicy = {
   preset: "minimal",
-  captureLogs: "warning",
-  captureRequestEvents: "off",
+  captureLogs: "error",
+  captureRequestEvents: "failures_only",
   captureBreadcrumbs: "local_only",
   captureProbeEvents: "buffer_only"
 };

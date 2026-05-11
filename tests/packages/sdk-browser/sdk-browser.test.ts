@@ -14,6 +14,7 @@ type TransportMock = ReturnType<typeof vi.fn>;
 type ErrorSuppressedEvent = Extract<EventEnvelope, { event_type: "error_suppressed" }>;
 type FrontendExceptionEvent = Extract<EventEnvelope, { event_type: "frontend_exception" }>;
 type FrontendBreadcrumbEvent = Extract<EventEnvelope, { event_type: "frontend_breadcrumb" }>;
+type RequestEvent = Extract<EventEnvelope, { event_type: "request_event" }>;
 type ProbeEvent = Extract<EventEnvelope, { event_type: "probe_event" }>;
 const originalProbeTriggerSecret = process.env["DEBUGBUNDLE_PROBE_TRIGGER_SECRET"];
 
@@ -723,9 +724,10 @@ describe("sdk-browser", () => {
 
     await sdk.flush();
 
-    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
-    const event = getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]);
-    expect(event.payload).toMatchObject({
+    const events = createTransportEvents(transport, 0);
+    expect(events.map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    const breadcrumbEvent = getFrontendBreadcrumbEvent(events[0]);
+    expect(breadcrumbEvent.payload).toMatchObject({
       breadcrumb_type: "network_request",
       route: "/checkout",
       data: {
@@ -735,7 +737,7 @@ describe("sdk-browser", () => {
         duration_ms: 90
       }
     });
-    expect(event.payload.data["caller_trace"]).toEqual(expect.any(Array));
+    expect(breadcrumbEvent.payload.data["caller_trace"]).toEqual(expect.any(Array));
   });
 
   it("should sample at the session level while still capturing frontend exceptions", async (): Promise<void> => {
@@ -1038,9 +1040,10 @@ describe("sdk-browser", () => {
       body: '{"checkout":true}'
     });
 
-    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
-    const event = getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]);
-    expect(event.payload).toMatchObject({
+    const events = createTransportEvents(transport, 0);
+    expect(events.map((event) => event.event_type)).toEqual(["frontend_breadcrumb", "request_event"]);
+    const breadcrumbEvent = getFrontendBreadcrumbEvent(events[0]);
+    expect(breadcrumbEvent.payload).toMatchObject({
       breadcrumb_type: "network_request",
       route: "/checkout",
       data: {
@@ -1049,7 +1052,15 @@ describe("sdk-browser", () => {
         status_code: 503
       }
     });
-    expect(event.payload.data["duration_ms"]).toBeGreaterThanOrEqual(0);
+    expect(breadcrumbEvent.payload.data["duration_ms"]).toBeGreaterThanOrEqual(0);
+
+    const requestEvent = events[1] as RequestEvent | undefined;
+    expect(requestEvent?.event_type).toBe("request_event");
+    expect(requestEvent?.payload).toMatchObject({
+      method: "POST",
+      path: "/xhr-checkout",
+      response_status: 503
+    });
   });
 
   it("should read probe_directives from ingestion responses without extra polling", async (): Promise<void> => {

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-11
+
+### Changed
+- Browser SDK network hooks now promote first-party 5xx `fetch`/`XMLHttpRequest` responses to standalone `request_event` incident signals while retaining the network breadcrumb.
+- Node SDK capture-policy fallback defaults now match the service policy presets, including 5xx request capture in minimal and balanced modes.
+
+### Fixed
+- Node and browser relay handling now accepts browser-originated `request_event` payloads so relay transport supports promoted 5xx request failures.
+- Node request capture preserves 5xx request events even when local request-event capture is otherwise disabled.
+
 ## [0.1.0] - 2026-05-07
 
 ### Added

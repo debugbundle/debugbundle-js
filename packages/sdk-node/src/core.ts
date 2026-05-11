@@ -846,18 +846,21 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   private shouldCaptureRequestEvent(response: CaptureResponseInput): boolean {
     const policy = this.remoteProbeConfig.capturePolicy.captureRequestEvents;
+    const statusCode = response.statusCode ?? response.status ?? 0;
+    if (statusCode >= 500) {
+      return true;
+    }
     if (policy === "off") {
       return false;
     }
     if (policy === "all") {
       return true;
     }
-    const statusCode = response.statusCode ?? response.status ?? 0;
     if (policy === "failures_only") {
-      return statusCode >= 500;
+      return false;
     }
     // "filtered" — treat as failures_only for now (SDK has no user-defined filters)
-    return statusCode >= 500;
+    return false;
   }
 
   private scheduleFlush(delayMs?: number): void {

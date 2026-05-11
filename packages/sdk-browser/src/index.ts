@@ -594,6 +594,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       (breadcrumb) => {
         this.addBreadcrumb(breadcrumb);
       },
+      (breadcrumb) => {
+        this.captureNetworkRequestFailure(breadcrumb);
+      },
       (url, statusCode, durationMs) => this.shouldCaptureNetworkRequest(url, statusCode, durationMs),
       () => this.getCurrentRoute()
     );
@@ -722,6 +725,73 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     });
   }
 
+  private captureNetworkRequestFailure(breadcrumb: BrowserBreadcrumb): void {
+    const config = this.config;
+    if (config === null || breadcrumb.breadcrumb_type !== "network_request") {
+      return;
+    }
+
+    const data = breadcrumb.data;
+    const statusCode = typeof data["status_code"] === "number" ? data["status_code"] : 0;
+    if (statusCode < 500) {
+      return;
+    }
+
+    const rawUrl = typeof data["url"] === "string" && data["url"].length > 0 ? data["url"] : "/";
+    const method = typeof data["method"] === "string" && data["method"].length > 0 ? data["method"] : "GET";
+    const durationMs = typeof data["duration_ms"] === "number" && Number.isFinite(data["duration_ms"])
+      ? data["duration_ms"]
+      : 0;
+    const requestTarget = this.resolveRequestTarget(rawUrl);
+
+    this.enqueueEvent(
+      this.createSdkEventEnvelope(config, {
+        schema_version: SDK_SCHEMA_VERSION,
+        event_type: "request_event",
+        ...this.getProjectTokenFields(config),
+        sdk_name: SDK_NAME,
+        sdk_version: SDK_VERSION,
+        service: {
+          name: config.service,
+          runtime: "browser",
+          framework: null,
+          environment: config.environment
+        },
+        occurred_at: breadcrumb.ts,
+        correlation: this.createCorrelation(),
+        payload: {
+          method,
+          path: requestTarget.path,
+          query: requestTarget.query,
+          headers: {},
+          response_status: statusCode,
+          duration_ms: durationMs,
+          ...(Object.prototype.hasOwnProperty.call(data, "request_body") ? { body: data["request_body"] } : {}),
+          ...(typeof data["response_headers"] === "object" && data["response_headers"] !== null
+            ? { response_headers: data["response_headers"] as Record<string, unknown> }
+            : {}),
+          ...(Object.prototype.hasOwnProperty.call(data, "response_body") ? { response_body: data["response_body"] } : {})
+        }
+      }),
+      false
+    );
+  }
+
+  private resolveRequestTarget(rawUrl: string): { path: string; query: Record<string, string> } {
+    const locationSource = getLocationSource();
+    const baseHref = typeof locationSource?.href === "string" && locationSource.href.length > 0 ? locationSource.href : undefined;
+
+    try {
+      const parsedUrl = baseHref === undefined ? new URL(rawUrl) : new URL(rawUrl, baseHref);
+      return {
+        path: parsedUrl.pathname || "/",
+        query: Object.fromEntries(parsedUrl.searchParams.entries())
+      };
+    } catch {
+      return { path: rawUrl.startsWith("/") ? rawUrl : "/", query: {} };
+    }
+  }
+
   private getCurrentRoute(): string | null {
     const locationSource = getLocationSource();
     if (locationSource === null) {
@@ -788,6 +858,15 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       });
     }
 
+    if (event.event_type === "request_event") {
+      return JSON.stringify({
+        event_type: event.event_type,
+        method: event.payload.method,
+        path: event.payload.path,
+        response_status: event.payload.response_status
+      });
+    }
+
     return null;
   }
 
@@ -797,7 +876,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return false;
     }
 
-    if (event.event_type === "frontend_exception" || event.event_type === "error_suppressed") {
+    if (
+      event.event_type === "frontend_exception" ||
+      event.event_type === "error_suppressed" ||
+      (event.event_type === "request_event" && event.payload.response_status >= 500)
+    ) {
       return true;
     }
 
