@@ -177,6 +177,53 @@ describe("sdk-node framework and logger integrations", () => {
     expect(getEventTypes(transport)).toEqual(["log_event", "request_event", "backend_exception"]);
   });
 
+  it("should correlate logs captured during a fastify request context", async (): Promise<void> => {
+    const { sdk, transport } = createSdk();
+    const hooks: Record<string, (...args: unknown[]) => unknown> = {};
+    const fastify = {
+      log: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+      },
+      addHook: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => {
+        hooks[name] = handler;
+      })
+    };
+
+    sdk.fastify()(fastify, {}, () => undefined);
+
+    await hooks["onRequest"]?.(
+      {
+        method: "GET",
+        url: "/github/app/install-url",
+        headers: {
+          "x-request-id": "req_github_install",
+          "x-debugbundle-trace-id": "trace_github_install"
+        },
+        query: {},
+        routeOptions: { url: "/v1/github/app/install-url" }
+      },
+      {},
+      () => {
+        fastify.log.error({ upstream: "github" }, "github install url failed");
+      }
+    );
+
+    await sdk.flush();
+
+    const logEvent = getTransportEvents(transport).find((event) => event.event_type === "log_event");
+    expect(logEvent?.event_type).toBe("log_event");
+    if (logEvent?.event_type === "log_event") {
+      expect(logEvent.correlation).toEqual({
+        request_id: "req_github_install",
+        trace_id: "trace_github_install",
+        session_id: null,
+        user_id_hash: null
+      });
+    }
+  });
+
   it("should capture a 500 backend exception when fastify onError still reports reply status 200", async (): Promise<void> => {
     const { sdk, transport } = createSdk();
     const hooks: Record<string, (...args: unknown[]) => unknown> = {};

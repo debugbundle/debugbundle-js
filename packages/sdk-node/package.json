@@ -1,6 +1,6 @@
 {
   "name": "@debugbundle/sdk-node",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -28,8 +28,8 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@debugbundle/shared-types": "0.1.0",
-    "@debugbundle/redaction": "0.1.0",
+    "@debugbundle/shared-types": "0.1.2",
+    "@debugbundle/redaction": "0.1.2",
     "zod": "^3.24.2"
   }
 }

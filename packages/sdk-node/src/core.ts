@@ -45,6 +45,7 @@ import {
 import {
   buildSdkConfigEndpoint,
   detectRuntimeContext,
+  detectProcessRuntimeFacts,
   ensureObject,
   extractHeaderValue,
   fetchWithTimeout,
@@ -311,6 +312,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       const request = this.buildRequestSnapshot(context.request);
       const response = this.buildResponseSnapshot(context.response);
       const probeData = config.probeFlushOnError ? this.consumeProbeData() : null;
+      const runtime = detectProcessRuntimeFacts();
 
       const event = createEventEnvelope({
         schema_version: SDK_SCHEMA_VERSION,
@@ -329,11 +331,15 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
           request,
           response,
           runtime: {
-            version: process.version
+            version: runtime.version
           },
           ...(probeData === null ? {} : { probe_data: probeData })
         }
       });
+
+      if (event.event_type === "backend_exception") {
+        event.payload.runtime = runtime;
+      }
 
       this.enqueueEvent(event);
     } catch (caught) {

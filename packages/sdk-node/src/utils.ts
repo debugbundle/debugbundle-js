@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 
 import { redact, type JsonObject, type JsonValue } from "@debugbundle/redaction";
@@ -10,6 +11,23 @@ const MAX_SANITIZE_ARRAY_ITEMS = 50;
 const MAX_SANITIZE_OBJECT_KEYS = 50;
 const MAX_RETRY_AFTER_MS = 5 * 60 * 1_000;
 const TRUNCATED_MARKER = "[Truncated]";
+
+export interface ProcessRuntimeFacts {
+  version: string;
+  platform: string | null;
+  arch: string | null;
+  pid: number | null;
+  cwd: string | null;
+  uptime_sec: number | null;
+  hostname: string | null;
+  memory: {
+    rss: number | null;
+    heap_total: number | null;
+    heap_used: number | null;
+    external: number | null;
+    peak: number | null;
+  } | null;
+}
 
 export function detectRuntimeContext(): RuntimeDetectionResult {
   try {
@@ -42,6 +60,51 @@ export function detectRuntimeContext(): RuntimeDetectionResult {
       framework: null
     };
   }
+}
+
+function readRuntimeString(callback: () => string): string | null {
+  try {
+    const value = callback();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function readRuntimeNumber(callback: () => number): number | null {
+  try {
+    const value = callback();
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function detectProcessRuntimeFacts(): ProcessRuntimeFacts {
+  let memory: ProcessRuntimeFacts["memory"] = null;
+  try {
+    const usage = process.memoryUsage();
+    memory = {
+      rss: readRuntimeNumber(() => usage.rss),
+      heap_total: readRuntimeNumber(() => usage.heapTotal),
+      heap_used: readRuntimeNumber(() => usage.heapUsed),
+      external: readRuntimeNumber(() => usage.external),
+      peak: null
+    };
+  } catch {
+    memory = null;
+  }
+
+  return {
+    version: process.version,
+    platform: readRuntimeString(() => process.platform),
+    arch: readRuntimeString(() => process.arch),
+    pid: readRuntimeNumber(() => process.pid),
+    cwd: readRuntimeString(() => process.cwd()),
+    uptime_sec: readRuntimeNumber(() => Number(process.uptime().toFixed(3))),
+    hostname: readRuntimeString(() => hostname()),
+    memory
+  };
 }
 
 function requireFile(fileName: string): string {

@@ -225,6 +225,33 @@ describe("sdk-node", () => {
     expect(getObjectField(event.payload.request.body, "password")).toBe("[REDACTED]");
   });
 
+  it("should include safe process runtime facts on backend exceptions", async (): Promise<void> => {
+    const { sdk, transport } = createSdk();
+
+    sdk.captureException(new Error("runtime failed"));
+
+    await sdk.flush();
+
+    const runtime = getBackendExceptionEvent(getTransportEvents(transport, 0)[0]).payload.runtime;
+    expect(runtime).toEqual(expect.objectContaining({
+      version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      pid: process.pid,
+      cwd: process.cwd(),
+      hostname: expect.any(String),
+      uptime_sec: expect.any(Number),
+      memory: expect.objectContaining({
+        rss: expect.any(Number),
+        heap_total: expect.any(Number),
+        heap_used: expect.any(Number),
+        external: expect.any(Number),
+        peak: null
+      })
+    }));
+    expect(JSON.stringify(runtime)).not.toContain("DEBUGBUNDLE_PROBE_TRIGGER_SECRET");
+  });
+
   it("should attach always-on probe data to exceptions and keep heavy probes dormant", async (): Promise<void> => {
     const { sdk, transport } = createSdk();
     const heavyProbe = vi.fn(() => ({ plan: "full scan" }));
