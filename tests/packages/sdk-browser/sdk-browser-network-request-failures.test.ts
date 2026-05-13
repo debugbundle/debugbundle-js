@@ -87,9 +87,16 @@ function installBrowserGlobals(): { fetchMock: ReturnType<typeof vi.fn> } {
 }
 
 function createSdk(
-  overrides: Parameters<DebugBundleBrowserSdk["init"]>[0] = {}
+  overrides: Parameters<DebugBundleBrowserSdk["init"]>[0] = {},
+  options: { sdkConfigPayload?: Record<string, unknown> } = {}
 ): { sdk: DebugBundleBrowserSdk; transport: TransportMock; fetchMock: ReturnType<typeof vi.fn> } {
   const { fetchMock } = installBrowserGlobals();
+  if (options.sdkConfigPayload !== undefined) {
+    fetchMock.mockResolvedValueOnce({
+      status: 200,
+      json: async () => options.sdkConfigPayload
+    });
+  }
   const transport = vi.fn().mockResolvedValue({ status: 202 });
   const sdk = createDebugBundleBrowserSdk();
   activeSdks.push(sdk);
@@ -135,6 +142,94 @@ describe("browser SDK network request failures", () => {
     });
   });
 
+  it("should promote balanced 429 network responses to request events after sdk config is loaded", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({}, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "balanced" }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 429 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(429);
+  });
+
+  it("should promote balanced anomaly-eligible network responses to request events", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({}, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "balanced", capture_request_events: "failures_only" }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(404);
+  });
+
+  it("should keep balanced anomaly-eligible responses as breadcrumb-only context when request capture is off", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false }, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "balanced", capture_request_events: "off" }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data["status_code"]).toBe(404);
+  });
+
+  it("should promote investigative 409 network responses to request events after sdk config is loaded", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({}, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "investigative" }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 409 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(409);
+  });
+
   it("should leave third-party 5xx network responses as breadcrumb-only context", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false });
 
@@ -153,5 +248,27 @@ describe("browser SDK network request failures", () => {
       method: "POST",
       status_code: 503
     });
+  });
+
+  it("should keep minimal 429 network responses as breadcrumb-only context", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false }, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "minimal" }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 429 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data["status_code"]).toBe(429);
   });
 });

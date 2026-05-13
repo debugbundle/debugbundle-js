@@ -1,7 +1,9 @@
 import {
   DEFAULT_LOG_LEVEL,
   LOG_LEVELS,
+  type BrowserCaptureRequestEvents,
   type BrowserConsoleLike,
+  type BrowserCapturePreset,
   type BrowserCryptoSource,
   type BrowserDocumentSource,
   type BrowserEventSource,
@@ -453,6 +455,16 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
     return null;
   }
 
+  const capturePolicy = asRecord(record["capture_policy"]);
+  const requestFailurePreset =
+    capturePolicy !== null && isBrowserCapturePreset(capturePolicy["preset"])
+      ? capturePolicy["preset"]
+      : "minimal";
+  const requestCaptureEvents =
+    capturePolicy !== null && isBrowserCaptureRequestEvents(capturePolicy["capture_request_events"])
+      ? capturePolicy["capture_request_events"]
+      : "failures_only";
+
   return {
     probesEnabled: record["probes_enabled"] === true,
     remoteProbesEnabled: record["remote_probes_enabled"] === true,
@@ -461,8 +473,18 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
           .map((directive) => parseRemoteProbeDirective(directive, nowMs))
           .filter((directive): directive is BrowserRemoteProbeDirective => directive !== null)
       : [],
-    triggerTokenKey: asString(record["trigger_token_key"])
+    triggerTokenKey: asString(record["trigger_token_key"]),
+    requestFailurePreset,
+    requestCaptureEvents
   };
+}
+
+function isBrowserCapturePreset(value: unknown): value is BrowserCapturePreset {
+  return value === "minimal" || value === "balanced" || value === "investigative";
+}
+
+function isBrowserCaptureRequestEvents(value: unknown): value is BrowserCaptureRequestEvents {
+  return value === "off" || value === "failures_only" || value === "filtered" || value === "all";
 }
 
 export function parseIngestionProbeDirectives(payload: unknown, nowMs: number): BrowserRemoteProbeDirective[] | null {

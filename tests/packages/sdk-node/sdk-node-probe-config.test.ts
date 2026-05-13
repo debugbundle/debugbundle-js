@@ -376,7 +376,7 @@ describe("sdk-node capture policy enforcement", () => {
     expect(requestEvents[0]?.payload).toMatchObject({ path: "/api/test", response_status: 503 });
   });
 
-  it("should only capture 500+ request events when capture_request_events is failures_only", async (): Promise<void> => {
+  it("should capture balanced request failures and anomaly candidates when capture_request_events is failures_only", async (): Promise<void> => {
     vi.useFakeTimers();
 
     const fetchImpl = vi.fn().mockResolvedValue(
@@ -391,6 +391,8 @@ describe("sdk-node capture policy enforcement", () => {
 
     sdk.captureRequest({ method: "GET", path: "/ok" }, { statusCode: 200 });
     sdk.captureRequest({ method: "GET", path: "/not-found" }, { statusCode: 404 });
+    sdk.captureRequest({ method: "POST", path: "/rate-limited" }, { statusCode: 429 });
+    sdk.captureRequest({ method: "POST", path: "/conflict" }, { statusCode: 409 });
     sdk.captureRequest({ method: "POST", path: "/error" }, { statusCode: 500 });
     sdk.captureRequest({ method: "POST", path: "/gateway" }, { statusCode: 502 });
     await sdk.flush();
@@ -400,7 +402,29 @@ describe("sdk-node capture policy enforcement", () => {
       .filter((e) => e.event_type === "request_event")
       .map((e) => e.payload.path);
 
-    expect(requestPaths).toEqual(["/error", "/gateway"]);
+    expect(requestPaths).toEqual(["/not-found", "/rate-limited", "/conflict", "/error", "/gateway"]);
+  });
+
+  it("should still capture investigative 409 request events when capture_request_events is off", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createConfigResponse({
+        ...BALANCED_POLICY,
+        preset: "investigative",
+        capture_request_events: "off"
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureRequest({ method: "POST", path: "/conflict" }, { statusCode: 409 });
+    await sdk.flush();
+
+    const requestEvents = getTransportEvents(transport, 0).filter((event) => event.event_type === "request_event");
+    expect(requestEvents).toHaveLength(1);
+    expect(requestEvents[0]?.payload).toMatchObject({ path: "/conflict", response_status: 409 });
   });
 
   it("should capture all request events when capture_request_events is all", async (): Promise<void> => {
@@ -462,6 +486,7 @@ describe("sdk-node capture policy enforcement", () => {
     await settleConfigPolling();
 
     sdk.captureRequest({ method: "GET", path: "/ok" }, { statusCode: 200 });
+    sdk.captureRequest({ method: "GET", path: "/not-found" }, { statusCode: 404 });
     sdk.captureRequest({ method: "POST", path: "/boom" }, { statusCode: 503 });
     sdk.captureLog("info message", "info");
     sdk.captureLog("warning message", "warning");

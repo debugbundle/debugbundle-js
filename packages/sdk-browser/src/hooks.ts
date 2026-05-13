@@ -239,7 +239,7 @@ export function installNetworkHook(
         input !== configEndpoint &&
         shouldCaptureNetworkRequest(input, response.status, durationMs);
 
-      if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 500)) {
+      if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 400)) {
         const responseBody = await captureResponseBody(response);
         const requestBody = captureRequestBody(inputInit);
         const responseHeaders = extractResponseHeaders(response);
@@ -271,7 +271,7 @@ export function installNetworkHook(
         if (shouldCaptureNetworkBreadcrumb) {
           addBreadcrumb(breadcrumb);
         }
-        if (injectTraceHeader && response.status >= 500) {
+        if (injectTraceHeader && response.status >= 400) {
           captureRequestFailure(breadcrumb);
         }
       }
@@ -291,7 +291,7 @@ export function installNetworkHook(
         url !== configEndpoint &&
         shouldCaptureNetworkRequest(url, statusCode, durationMs);
 
-      if (shouldCaptureNetworkBreadcrumb || (isFirstParty && statusCode >= 500)) {
+      if (shouldCaptureNetworkBreadcrumb || (isFirstParty && statusCode >= 400)) {
         const breadcrumb = {
           ts: new Date().toISOString(),
           breadcrumb_type: "network_request",
@@ -307,7 +307,7 @@ export function installNetworkHook(
         if (shouldCaptureNetworkBreadcrumb) {
           addBreadcrumb(breadcrumb);
         }
-        if (isFirstParty && statusCode >= 500) {
+        if (isFirstParty && statusCode >= 400) {
           captureRequestFailure(breadcrumb);
         }
       }

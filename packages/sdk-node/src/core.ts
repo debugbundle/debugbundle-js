@@ -65,6 +65,48 @@ function normalizeLogLevel(level: string | undefined): LogLevel {
   return level in LOG_LEVEL_ORDER ? (level as LogLevel) : DEFAULT_LOG_LEVEL;
 }
 
+const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
+const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
+const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
+const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
+const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
+
+function isImmediateRequestIncidentStatus(statusCode: number, preset: string): boolean {
+  if (!Number.isFinite(statusCode)) {
+    return false;
+  }
+
+  if (statusCode >= 500) {
+    return true;
+  }
+
+  if (preset === "investigative") {
+    return INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
+  }
+
+  if (preset === "balanced") {
+    return BALANCED_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
+  }
+
+  return false;
+}
+
+function isRequestAnomalyCandidateStatus(statusCode: number, preset: string): boolean {
+  if (!Number.isFinite(statusCode) || statusCode < 400 || statusCode >= 500) {
+    return false;
+  }
+
+  if (preset === "investigative") {
+    return INVESTIGATIVE_ANOMALY_STATUSES.has(statusCode);
+  }
+
+  if (preset === "balanced") {
+    return BALANCED_STANDARD_ANOMALY_STATUSES.has(statusCode) || BALANCED_HIGH_VOLUME_ANOMALY_STATUSES.has(statusCode);
+  }
+
+  return false;
+}
+
 export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   private config: ActiveConfig | null = null;
   private buffer: EventEnvelope[] = [];
@@ -851,9 +893,10 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private shouldCaptureRequestEvent(response: CaptureResponseInput): boolean {
-    const policy = this.remoteProbeConfig.capturePolicy.captureRequestEvents;
+    const capturePolicy = this.remoteProbeConfig.capturePolicy;
+    const policy = capturePolicy.captureRequestEvents;
     const statusCode = response.statusCode ?? response.status ?? 0;
-    if (statusCode >= 500) {
+    if (isImmediateRequestIncidentStatus(statusCode, capturePolicy.preset)) {
       return true;
     }
     if (policy === "off") {
@@ -863,9 +906,9 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return true;
     }
     if (policy === "failures_only") {
-      return false;
+      return isRequestAnomalyCandidateStatus(statusCode, capturePolicy.preset);
     }
-    // "filtered" — treat as failures_only for now (SDK has no user-defined filters)
+    // "filtered" has no user-defined filters yet, so only immediate failures above are kept.
     return false;
   }
 

@@ -44,6 +44,8 @@ import {
   SDK_VERSION,
   type ActiveConfig,
   type BrowserBreadcrumb,
+  type BrowserCaptureRequestEvents,
+  type BrowserCapturePreset,
   type BrowserCorrelationFields,
   type BrowserDeviceInfo,
   type BrowserFetch,
@@ -66,6 +68,64 @@ export type {
   DebugBundleBrowserTransportRequest,
   DebugBundleBrowserTransportResponse
 } from "./types.js";
+
+const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
+const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
+const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
+const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
+const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
+
+function isImmediateRequestIncidentStatus(statusCode: number, preset: BrowserCapturePreset): boolean {
+  if (!Number.isFinite(statusCode)) {
+    return false;
+  }
+
+  if (statusCode >= 500) {
+    return true;
+  }
+
+  if (preset === "investigative") {
+    return INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
+  }
+
+  if (preset === "balanced") {
+    return BALANCED_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
+  }
+
+  return false;
+}
+
+function isRequestAnomalyCandidateStatus(statusCode: number, preset: BrowserCapturePreset): boolean {
+  if (!Number.isFinite(statusCode) || statusCode < 400 || statusCode >= 500) {
+    return false;
+  }
+
+  if (preset === "investigative") {
+    return INVESTIGATIVE_ANOMALY_STATUSES.has(statusCode);
+  }
+
+  if (preset === "balanced") {
+    return BALANCED_STANDARD_ANOMALY_STATUSES.has(statusCode) || BALANCED_HIGH_VOLUME_ANOMALY_STATUSES.has(statusCode);
+  }
+
+  return false;
+}
+
+function shouldCaptureRequestStatus(statusCode: number, preset: BrowserCapturePreset, policy: BrowserCaptureRequestEvents): boolean {
+  if (isImmediateRequestIncidentStatus(statusCode, preset)) {
+    return true;
+  }
+
+  if (policy === "all") {
+    return Number.isFinite(statusCode) && statusCode >= 400;
+  }
+
+  if (policy === "failures_only") {
+    return isRequestAnomalyCandidateStatus(statusCode, preset);
+  }
+
+  return false;
+}
 
 export class BrowserSdk implements DebugBundleBrowserSdk {
   private config: ActiveConfig | null = null;
@@ -93,7 +153,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     probesEnabled: false,
     remoteProbesEnabled: false,
     directives: [],
-    triggerTokenKey: null
+    triggerTokenKey: null,
+    requestFailurePreset: "minimal",
+    requestCaptureEvents: "failures_only"
   };
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
@@ -446,7 +508,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       probesEnabled: false,
       remoteProbesEnabled: false,
       directives: [],
-      triggerTokenKey: null
+      triggerTokenKey: null,
+        requestFailurePreset: "minimal",
+        requestCaptureEvents: "failures_only"
     };
     this.pendingTriggerToken = null;
     this.activeTriggerDirective = null;
@@ -733,7 +797,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
     const data = breadcrumb.data;
     const statusCode = typeof data["status_code"] === "number" ? data["status_code"] : 0;
-    if (statusCode < 500) {
+    if (!shouldCaptureRequestStatus(statusCode, this.remoteProbeState.requestFailurePreset, this.remoteProbeState.requestCaptureEvents)) {
       return;
     }
 
@@ -879,7 +943,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     if (
       event.event_type === "frontend_exception" ||
       event.event_type === "error_suppressed" ||
-      (event.event_type === "request_event" && event.payload.response_status >= 500)
+      (
+        event.event_type === "request_event" &&
+        isImmediateRequestIncidentStatus(event.payload.response_status, this.remoteProbeState.requestFailurePreset)
+      )
     ) {
       return true;
     }
