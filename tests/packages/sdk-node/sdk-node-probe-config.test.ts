@@ -272,7 +272,7 @@ describe("sdk-node remote probe config", () => {
 });
 
 describe("sdk-node capture policy enforcement", () => {
-  function createConfigResponse(capturePolicy: Record<string, string>): Response {
+  function createConfigResponse(capturePolicy: Record<string, unknown>): Response {
     return createJsonResponse({
       probes_enabled: false,
       remote_probes_enabled: false,
@@ -287,7 +287,8 @@ describe("sdk-node capture policy enforcement", () => {
     capture_logs: "warning",
     capture_request_events: "all",
     capture_breadcrumbs: "local_only",
-    capture_probe_events: "standalone_when_activated"
+    capture_probe_events: "standalone_when_activated",
+    immediate_client_error_statuses: []
   };
 
   it("should filter log events based on capture_logs policy from server config", async (): Promise<void> => {
@@ -374,6 +375,29 @@ describe("sdk-node capture policy enforcement", () => {
     const requestEvents = getTransportEvents(transport, 0).filter((event) => event.event_type === "request_event");
     expect(requestEvents).toHaveLength(1);
     expect(requestEvents[0]?.payload).toMatchObject({ path: "/api/test", response_status: 503 });
+  });
+
+  it("should capture configured client error incidents even when capture_request_events is off", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createConfigResponse({
+        ...BALANCED_POLICY,
+        preset: "minimal",
+        capture_request_events: "off",
+        immediate_client_error_statuses: [403]
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureRequest({ method: "POST", path: "/forbidden" }, { statusCode: 403 });
+    await sdk.flush();
+
+    const requestEvents = getTransportEvents(transport, 0).filter((event) => event.event_type === "request_event");
+    expect(requestEvents).toHaveLength(1);
+    expect(requestEvents[0]?.payload).toMatchObject({ path: "/forbidden", response_status: 403 });
   });
 
   it("should capture balanced request failures and anomaly candidates when capture_request_events is failures_only", async (): Promise<void> => {

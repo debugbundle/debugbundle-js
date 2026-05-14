@@ -456,6 +456,12 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
   }
 
   const capturePolicy = asRecord(record["capture_policy"]);
+  const immediateClientErrorStatuses =
+    capturePolicy !== null && Array.isArray(capturePolicy["immediate_client_error_statuses"])
+      ? capturePolicy["immediate_client_error_statuses"]
+          .filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry) && entry >= 400 && entry <= 499)
+          .sort((left, right) => left - right)
+      : [];
   const requestFailurePreset =
     capturePolicy !== null && isBrowserCapturePreset(capturePolicy["preset"])
       ? capturePolicy["preset"]
@@ -475,7 +481,8 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
       : [],
     triggerTokenKey: asString(record["trigger_token_key"]),
     requestFailurePreset,
-    requestCaptureEvents
+    requestCaptureEvents,
+    immediateClientErrorStatuses: Array.from(new Set(immediateClientErrorStatuses))
   };
 }
 

@@ -71,12 +71,20 @@ const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
 const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
 const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
 
-function isImmediateRequestIncidentStatus(statusCode: number, preset: string): boolean {
+function isImmediateRequestIncidentStatus(
+  statusCode: number,
+  preset: string,
+  immediateClientErrorStatuses: readonly number[] = []
+): boolean {
   if (!Number.isFinite(statusCode)) {
     return false;
   }
 
   if (statusCode >= 500) {
+    return true;
+  }
+
+  if (immediateClientErrorStatuses.includes(statusCode)) {
     return true;
   }
 
@@ -896,7 +904,13 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     const capturePolicy = this.remoteProbeConfig.capturePolicy;
     const policy = capturePolicy.captureRequestEvents;
     const statusCode = response.statusCode ?? response.status ?? 0;
-    if (isImmediateRequestIncidentStatus(statusCode, capturePolicy.preset)) {
+    if (
+      isImmediateRequestIncidentStatus(
+        statusCode,
+        capturePolicy.preset,
+        capturePolicy.immediateClientErrorStatuses
+      )
+    ) {
       return true;
     }
     if (policy === "off") {

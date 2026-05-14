@@ -191,6 +191,7 @@ export interface BrowserRemoteProbeState {
   triggerTokenKey: string | null;
   requestFailurePreset: BrowserCapturePreset;
   requestCaptureEvents: BrowserCaptureRequestEvents;
+  immediateClientErrorStatuses: number[];
 }
 
 export interface DebugBundleBrowserTransportRequest {

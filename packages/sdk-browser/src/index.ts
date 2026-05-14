@@ -75,12 +75,20 @@ const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
 const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
 const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
 
-function isImmediateRequestIncidentStatus(statusCode: number, preset: BrowserCapturePreset): boolean {
+function isImmediateRequestIncidentStatus(
+  statusCode: number,
+  preset: BrowserCapturePreset,
+  immediateClientErrorStatuses: readonly number[] = []
+): boolean {
   if (!Number.isFinite(statusCode)) {
     return false;
   }
 
   if (statusCode >= 500) {
+    return true;
+  }
+
+  if (immediateClientErrorStatuses.includes(statusCode)) {
     return true;
   }
 
@@ -111,8 +119,13 @@ function isRequestAnomalyCandidateStatus(statusCode: number, preset: BrowserCapt
   return false;
 }
 
-function shouldCaptureRequestStatus(statusCode: number, preset: BrowserCapturePreset, policy: BrowserCaptureRequestEvents): boolean {
-  if (isImmediateRequestIncidentStatus(statusCode, preset)) {
+function shouldCaptureRequestStatus(
+  statusCode: number,
+  preset: BrowserCapturePreset,
+  policy: BrowserCaptureRequestEvents,
+  immediateClientErrorStatuses: readonly number[] = []
+): boolean {
+  if (isImmediateRequestIncidentStatus(statusCode, preset, immediateClientErrorStatuses)) {
     return true;
   }
 
@@ -155,7 +168,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     directives: [],
     triggerTokenKey: null,
     requestFailurePreset: "minimal",
-    requestCaptureEvents: "failures_only"
+    requestCaptureEvents: "failures_only",
+    immediateClientErrorStatuses: []
   };
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
@@ -509,8 +523,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       remoteProbesEnabled: false,
       directives: [],
       triggerTokenKey: null,
-        requestFailurePreset: "minimal",
-        requestCaptureEvents: "failures_only"
+      requestFailurePreset: "minimal",
+      requestCaptureEvents: "failures_only",
+      immediateClientErrorStatuses: []
     };
     this.pendingTriggerToken = null;
     this.activeTriggerDirective = null;
@@ -797,7 +812,14 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
     const data = breadcrumb.data;
     const statusCode = typeof data["status_code"] === "number" ? data["status_code"] : 0;
-    if (!shouldCaptureRequestStatus(statusCode, this.remoteProbeState.requestFailurePreset, this.remoteProbeState.requestCaptureEvents)) {
+    if (
+      !shouldCaptureRequestStatus(
+        statusCode,
+        this.remoteProbeState.requestFailurePreset,
+        this.remoteProbeState.requestCaptureEvents,
+        this.remoteProbeState.immediateClientErrorStatuses
+      )
+    ) {
       return;
     }
 
@@ -945,7 +967,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       event.event_type === "error_suppressed" ||
       (
         event.event_type === "request_event" &&
-        isImmediateRequestIncidentStatus(event.payload.response_status, this.remoteProbeState.requestFailurePreset)
+        isImmediateRequestIncidentStatus(
+          event.payload.response_status,
+          this.remoteProbeState.requestFailurePreset,
+          this.remoteProbeState.immediateClientErrorStatuses
+        )
       )
     ) {
       return true;

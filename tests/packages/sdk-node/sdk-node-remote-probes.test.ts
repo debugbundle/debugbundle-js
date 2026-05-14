@@ -192,7 +192,8 @@ describe("sdk-node capture policy parsing", () => {
           capture_logs: "error",
           capture_request_events: "off",
           capture_breadcrumbs: "local_only",
-          capture_probe_events: "buffer_only"
+          capture_probe_events: "buffer_only",
+          immediate_client_error_statuses: [401, 403]
         }
       },
       30_000,
@@ -204,7 +205,8 @@ describe("sdk-node capture policy parsing", () => {
       captureLogs: "error",
       captureRequestEvents: "off",
       captureBreadcrumbs: "local_only",
-      captureProbeEvents: "buffer_only"
+      captureProbeEvents: "buffer_only",
+      immediateClientErrorStatuses: [401, 403]
     });
   });
 
@@ -251,7 +253,8 @@ describe("sdk-node capture policy parsing", () => {
         capture_logs: level,
         capture_request_events: "all",
         capture_breadcrumbs: "local_only",
-        capture_probe_events: "buffer_only"
+        capture_probe_events: "buffer_only",
+        immediate_client_error_statuses: []
       });
       expect(policy).not.toBeNull();
       expect(policy!.captureLogs).toBe(level);
@@ -265,7 +268,8 @@ describe("sdk-node capture policy parsing", () => {
         capture_logs: "warning",
         capture_request_events: mode,
         capture_breadcrumbs: "local_only",
-        capture_probe_events: "buffer_only"
+        capture_probe_events: "buffer_only",
+        immediate_client_error_statuses: []
       });
       expect(policy).not.toBeNull();
       expect(policy!.captureRequestEvents).toBe(mode);

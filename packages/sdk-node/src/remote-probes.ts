@@ -23,6 +23,26 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function parseImmediateClientErrorStatuses(value: unknown): number[] | null {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const statuses = value
+    .filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry) && entry >= 400 && entry <= 499)
+    .sort((left, right) => left - right);
+
+  if (statuses.length !== value.length || statuses.length > 12) {
+    return null;
+  }
+
+  return Array.from(new Set(statuses));
+}
+
 function parseDirective(value: unknown): RemoteProbeDirective | null {
   const record = asRecord(value);
   if (record === null) {
@@ -67,6 +87,7 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
   const captureRequestEvents = asString(record["capture_request_events"]);
   const captureBreadcrumbs = asString(record["capture_breadcrumbs"]);
   const captureProbeEvents = asString(record["capture_probe_events"]);
+  const immediateClientErrorStatuses = parseImmediateClientErrorStatuses(record["immediate_client_error_statuses"]);
 
   if (captureLogs === null || !VALID_CAPTURE_LOGS.has(captureLogs)) {
     return null;
@@ -80,13 +101,17 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
   if (captureProbeEvents === null || !VALID_CAPTURE_PROBE_EVENTS.has(captureProbeEvents)) {
     return null;
   }
+  if (immediateClientErrorStatuses === null) {
+    return null;
+  }
 
   return {
     preset,
     captureLogs: captureLogs as CapturePolicy["captureLogs"],
     captureRequestEvents: captureRequestEvents as CapturePolicy["captureRequestEvents"],
     captureBreadcrumbs: captureBreadcrumbs as CapturePolicy["captureBreadcrumbs"],
-    captureProbeEvents: captureProbeEvents as CapturePolicy["captureProbeEvents"]
+    captureProbeEvents: captureProbeEvents as CapturePolicy["captureProbeEvents"],
+    immediateClientErrorStatuses
   };
 }
 

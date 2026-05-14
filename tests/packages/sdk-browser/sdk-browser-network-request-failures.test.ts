@@ -230,6 +230,32 @@ describe("browser SDK network request failures", () => {
     expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(409);
   });
 
+  it("should promote configured client error statuses to request events after sdk config is loaded", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({}, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {
+          preset: "minimal",
+          capture_request_events: "off",
+          immediate_client_error_statuses: [403]
+        }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(403);
+  });
+
   it("should leave third-party 5xx network responses as breadcrumb-only context", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false });
 

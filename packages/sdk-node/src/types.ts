@@ -37,6 +37,7 @@ export interface CapturePolicy {
   captureRequestEvents: CaptureRequestEvents;
   captureBreadcrumbs: CaptureBreadcrumbs;
   captureProbeEvents: CaptureProbeEvents;
+  immediateClientErrorStatuses: number[];
 }
 
 export const BALANCED_CAPTURE_POLICY: CapturePolicy = {
@@ -44,7 +45,8 @@ export const BALANCED_CAPTURE_POLICY: CapturePolicy = {
   captureLogs: "warning",
   captureRequestEvents: "failures_only",
   captureBreadcrumbs: "exception_only",
-  captureProbeEvents: "buffer_only"
+  captureProbeEvents: "buffer_only",
+  immediateClientErrorStatuses: []
 };
 
 export const MINIMAL_CAPTURE_POLICY: CapturePolicy = {
@@ -52,7 +54,8 @@ export const MINIMAL_CAPTURE_POLICY: CapturePolicy = {
   captureLogs: "error",
   captureRequestEvents: "failures_only",
   captureBreadcrumbs: "local_only",
-  captureProbeEvents: "buffer_only"
+  captureProbeEvents: "buffer_only",
+  immediateClientErrorStatuses: []
 };
 
 export interface RuntimeDetectionResult {
