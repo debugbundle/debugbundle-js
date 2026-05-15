@@ -59,6 +59,22 @@ import {
   type DebugBundleBrowserSdk
 } from "./types.js";
 
+const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
+const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
+const DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES: number[] = [];
+
+function createInitialRemoteProbeState(): BrowserRemoteProbeState {
+  return {
+    probesEnabled: false,
+    remoteProbesEnabled: false,
+    directives: [],
+    triggerTokenKey: null,
+    requestFailurePreset: DEFAULT_REQUEST_FAILURE_PRESET,
+    requestCaptureEvents: DEFAULT_REQUEST_CAPTURE_EVENTS,
+    immediateClientErrorStatuses: [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES]
+  };
+}
+
 export type {
   CaptureBrowserExceptionContext,
   DebugBundleBrowserInitConfig,
@@ -151,6 +167,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private nextRetryAt: number | null = null;
   private _lastEventAt: number | null = null;
   private _consecutiveFailures = 0;
+  private authRejected = false;
   private registeredListeners: Array<() => void> = [];
   private originalPushState: ((state: unknown, title: string, url?: string | URL | null) => void) | null = null;
   private originalReplaceState: ((state: unknown, title: string, url?: string | URL | null) => void) | null = null;
@@ -162,20 +179,16 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private sessionEventCount = 0;
   private probeBuffers = new Map<string, BrowserProbeBufferItem[]>();
   private readonly suppressionTracker = new EventSuppressionTracker();
-  private remoteProbeState: BrowserRemoteProbeState = {
-    probesEnabled: false,
-    remoteProbesEnabled: false,
-    directives: [],
-    triggerTokenKey: null,
-    requestFailurePreset: "minimal",
-    requestCaptureEvents: "failures_only",
-    immediateClientErrorStatuses: []
-  };
+  private remoteProbeState: BrowserRemoteProbeState = createInitialRemoteProbeState();
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
 
   public get status(): "healthy" | "degraded" | "disconnected" {
     if (this.config === null) {
+      return "disconnected";
+    }
+
+    if (this.authRejected) {
       return "disconnected";
     }
 
@@ -237,6 +250,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       transportMode: resolvedTransport.mode
     };
 
+    this.authRejected = false;
     this.sessionSampledIn = this.config.sessionSampleRate >= 1 || Math.random() < this.config.sessionSampleRate;
     this.sessionEventCount = 0;
     this.deviceInfo = collectDeviceInfo();
@@ -461,6 +475,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
+    if (this.authRejected) {
+      return;
+    }
+
     this.clearFlushTimer();
 
     const events = [...this.bufferedEvents];
@@ -485,6 +503,14 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         }
 
         this._consecutiveFailures++;
+        if (response.status === 401 || response.status === 403) {
+          this.authRejected = true;
+          this.nextRetryAt = null;
+          this.reportUnauthorizedTransportFailure(response.status, config.endpoint, response.body);
+          this.bufferedEvents = [];
+          return;
+        }
+
         if (response.status === 429) {
           this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
         }
@@ -517,16 +543,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.nextRetryAt = null;
     this._lastEventAt = null;
     this._consecutiveFailures = 0;
+    this.authRejected = false;
     this.suppressionTracker.reset();
-    this.remoteProbeState = {
-      probesEnabled: false,
-      remoteProbesEnabled: false,
-      directives: [],
-      triggerTokenKey: null,
-      requestFailurePreset: "minimal",
-      requestCaptureEvents: "failures_only",
-      immediateClientErrorStatuses: []
-    };
+    this.remoteProbeState = createInitialRemoteProbeState();
     this.pendingTriggerToken = null;
     this.activeTriggerDirective = null;
 
@@ -565,6 +584,27 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       (globalThis as Record<string, unknown>)["XMLHttpRequest"] = this.originalXmlHttpRequest;
       this.originalXmlHttpRequest = null;
     }
+  }
+
+  private reportUnauthorizedTransportFailure(statusCode: 401 | 403, endpoint: string, body: unknown): void {
+    const consoleSource = getConsoleSource();
+    if (consoleSource === null) {
+      return;
+    }
+
+    const bodyRecord = normalizeUnknownRecord(body);
+    const errorCode = typeof bodyRecord["error"] === "string" && bodyRecord["error"].length > 0 ? bodyRecord["error"] : null;
+    const detail = errorCode === null ? "" : ` (${errorCode})`;
+    const message =
+      `DebugBundle browser SDK disabled after ingestion returned ${statusCode} for ${endpoint}. ` +
+      `Check the project token or relay configuration${detail}.`;
+
+    if (typeof consoleSource.error === "function") {
+      consoleSource.error(message);
+      return;
+    }
+
+    consoleSource.warn?.(message);
   }
 
   private installBrowserHooks(): void {
@@ -694,7 +734,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private addBreadcrumb(breadcrumb: BrowserBreadcrumb): void {
     const config = this.config;
-    if (config === null || !this.shouldCaptureBreadcrumb()) {
+    if (config === null || this.authRejected || !this.shouldCaptureBreadcrumb()) {
       return;
     }
 
@@ -712,7 +752,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private bufferProbe(label: string, data: Record<string, unknown>): void {
     const config = this.config;
-    if (config === null) {
+    if (config === null || this.authRejected) {
       return;
     }
 
@@ -903,7 +943,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private enqueueInternalEvent(event: EventEnvelope, countTowardSession = true): void {
     const config = this.config;
-    if (config === null) {
+    if (config === null || this.authRejected) {
       return;
     }
 

@@ -121,6 +121,20 @@ afterEach(() => {
 });
 
 describe("browser SDK network request failures", () => {
+  it("should promote anomaly-eligible request failures before sdk config is loaded", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk();
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(404);
+  });
+
   it("should promote same-origin 5xx network responses to request events", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk();
 

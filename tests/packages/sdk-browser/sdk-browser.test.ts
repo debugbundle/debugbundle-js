@@ -663,7 +663,9 @@ describe("sdk-browser", () => {
     sdk.captureException(new Error("Session bootstrap failed"));
     await sdk.flush();
 
-    const event = getFrontendExceptionEvent(createTransportEvents(transport, 0)[0]);
+    const event = getFrontendExceptionEvent(
+      createTransportEvents(transport, 0).find((candidate) => candidate.event_type === "frontend_exception")
+    );
     const networkBreadcrumb = (event.payload.breadcrumbs ?? []).find(
       (breadcrumb) => breadcrumb.breadcrumb_type === "network_request"
     );
@@ -1173,6 +1175,45 @@ describe("sdk-browser", () => {
     await expect(sdk.flush()).resolves.toBeUndefined();
     expect(transport).toHaveBeenCalledTimes(2);
     expect(createTransportEvents(transport, 1).map((event) => event.event_type)).toEqual(["log_event"]);
+  });
+
+  it("should stop retrying after an unauthorized ingestion response", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    void globals;
+    const consoleSource = { error: vi.fn(), warn: vi.fn() };
+    vi.stubGlobal("console", consoleSource as unknown);
+
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 401, body: { error: "invalid_project_token" } })
+      .mockResolvedValueOnce({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport
+    });
+
+    sdk.captureMessage("browser unauthorized", "error");
+
+    await expect(sdk.flush()).resolves.toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(sdk.status).toBe("disconnected");
+    expect(consoleSource.error).toHaveBeenCalledTimes(1);
+    expect(consoleSource.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "DebugBundle browser SDK disabled after ingestion returned 401 for https://api.debugbundle.com/v1/events"
+      )
+    );
+    expect(consoleSource.error).toHaveBeenCalledWith(expect.stringContaining("invalid_project_token"));
+
+    sdk.captureMessage("browser unauthorized again", "error");
+    await expect(sdk.flush()).resolves.toBeUndefined();
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(consoleSource.error).toHaveBeenCalledTimes(1);
   });
 
   it("should buffer probes locally and flush them inline with frontend exceptions", async (): Promise<void> => {

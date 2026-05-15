@@ -222,7 +222,7 @@ describe("sdk-browser runtime helpers", () => {
     ).toEqual({
       probesEnabled: true,
       remoteProbesEnabled: true,
-      requestFailurePreset: "minimal",
+      requestFailurePreset: "balanced",
       requestCaptureEvents: "failures_only",
       immediateClientErrorStatuses: [],
       directives: [

@@ -27,6 +27,10 @@ import {
   type NormalizedBrowserNetworkFilter
 } from "./types.js";
 
+const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
+const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
+const DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES: number[] = [];
+
 export interface ResolvedBrowserTransport {
   mode: BrowserTransportMode | "disabled";
   endpoint: string | null;
@@ -465,11 +469,11 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
   const requestFailurePreset =
     capturePolicy !== null && isBrowserCapturePreset(capturePolicy["preset"])
       ? capturePolicy["preset"]
-      : "minimal";
+      : DEFAULT_REQUEST_FAILURE_PRESET;
   const requestCaptureEvents =
     capturePolicy !== null && isBrowserCaptureRequestEvents(capturePolicy["capture_request_events"])
       ? capturePolicy["capture_request_events"]
-      : "failures_only";
+      : DEFAULT_REQUEST_CAPTURE_EVENTS;
 
   return {
     probesEnabled: record["probes_enabled"] === true,
@@ -482,7 +486,10 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
     triggerTokenKey: asString(record["trigger_token_key"]),
     requestFailurePreset,
     requestCaptureEvents,
-    immediateClientErrorStatuses: Array.from(new Set(immediateClientErrorStatuses))
+    immediateClientErrorStatuses:
+      immediateClientErrorStatuses.length === 0
+        ? [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES]
+        : Array.from(new Set(immediateClientErrorStatuses))
   };
 }
 
