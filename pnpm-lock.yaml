@@ -56,10 +56,10 @@ importers:
 
 packages:
 
-  '@debugbundle/redaction@0.1.7':
+  '@debugbundle/redaction@0.1.6':
     resolution: {integrity: sha512-oSFQK9xWvqmr6GGu4GrVoXsmmBHycGZrk/eTLoWx+WwBHQ4zA6K4mYCQOP/N0UqHhPQDRhZRd+Z8jpf4c6PLbQ==}
 
-  '@debugbundle/shared-types@0.1.7':
+  '@debugbundle/shared-types@0.1.6':
     resolution: {integrity: sha512-UI2/QtFKwqLyWIEvTR9Kw1MqD4FVvcRLPAzCH2Th3Xfk2Z+6vUmsbPer/Poaxh2aSH7RQAmyPMCy7NIwyCt21w==}
 
   '@emnapi/core@1.9.2':
@@ -924,9 +924,9 @@ packages:
 
 snapshots:
 
-  '@debugbundle/redaction@0.1.7': {}
+  '@debugbundle/redaction@0.1.6': {}
 
-  '@debugbundle/shared-types@0.1.7':
+  '@debugbundle/shared-types@0.1.6':
     dependencies:
       zod: 3.25.76
 
