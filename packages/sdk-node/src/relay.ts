@@ -163,14 +163,9 @@ const BrowserRelayEventSchema = z.discriminatedUnion("event_type", [
   })
 ]);
 
-const BrowserRelayRequestBodySchema = z.union([
-  z.object({
-    batch: z.array(z.unknown())
-  }),
-  z.object({
-    events: z.array(z.unknown())
-  })
-]);
+const BrowserRelayRequestBodySchema = z.object({
+  batch: z.array(z.unknown())
+});
 
 const STRIPPED_REQUEST_HEADERS = new Set(["authorization", "cookie", "x-api-key"]);
 
@@ -308,7 +303,7 @@ function isAcceptedRelayContentType(contentType: string | undefined): boolean {
   }
 
   const normalized = contentType.toLowerCase();
-  return normalized.includes("application/json") || normalized.includes("text/plain");
+  return normalized.includes("application/json");
 }
 
 function getBodyText(body: string | Uint8Array): string {
@@ -417,7 +412,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
         body: {
           accepted: 0,
           rejected: 0,
-          errors: ["Relay requests must use Content-Type: application/json or text/plain JSON payloads."]
+          errors: ["Relay requests must use Content-Type: application/json."]
         }
       };
     }
@@ -440,7 +435,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
     existingState.timestamps.push(receivedAt.getTime());
     rateLimits.set(rateLimitKey, existingState);
 
-    let parsedBody: { batch: unknown[] } | { events: unknown[] };
+    let parsedBody: { batch: unknown[] };
     try {
       parsedBody = BrowserRelayRequestBodySchema.parse(JSON.parse(getBodyText(request.body)));
     } catch {
@@ -457,7 +452,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
     const acceptedEvents: BrowserRelayEvent[] = [];
     const errors: string[] = [];
 
-    const candidates = "batch" in parsedBody ? parsedBody.batch : parsedBody.events;
+    const candidates = parsedBody.batch;
 
     for (const [index, candidate] of candidates.entries()) {
       const rawEventType =

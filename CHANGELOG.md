@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-05-19
+
+### Changed
+- Node relay handling now enforces the canonical V1 relay request contract with `Content-Type: application/json` and a `batch` body property only, backed by the shared relay compliance fixtures.
+
 ## [0.1.7] - 2026-05-19
 
 ### Changed

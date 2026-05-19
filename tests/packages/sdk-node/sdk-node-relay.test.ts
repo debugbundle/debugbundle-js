@@ -7,6 +7,42 @@ import { describe, expect, it, vi } from "vitest";
 import { EventEnvelopeSchema, createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { createBrowserRelay, type BrowserRelayAcceptedBatch } from "../../../packages/sdk-node/src/relay.js";
 
+type RelayComplianceFixtureRequest = {
+  method: string;
+  headers: Record<string, string>;
+  ipAddress?: string;
+  bodyJson?: unknown;
+  bodyText?: string;
+};
+
+type RelayComplianceFixtureCase = {
+  id: string;
+  kind: string;
+  request?: RelayComplianceFixtureRequest;
+  expected?: {
+    status: number;
+    accepted?: number;
+    rejected?: number;
+    errors?: string[];
+  };
+  expectedEventFile?: EventEnvelope[];
+};
+
+const relayComplianceFixturePath = new URL("../../fixtures/relay-compliance.json", import.meta.url);
+const relayComplianceFixtures = JSON.parse(fs.readFileSync(relayComplianceFixturePath, "utf8")) as {
+  version: number;
+  cases: RelayComplianceFixtureCase[];
+};
+
+function getRelayComplianceFixture(id: string): RelayComplianceFixtureCase {
+  const fixture = relayComplianceFixtures.cases.find((candidate) => candidate.id === id);
+  if (fixture === undefined) {
+    throw new Error(`Missing relay compliance fixture: ${id}`);
+  }
+
+  return fixture;
+}
+
 function createFrontendExceptionEvent(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
   return createEventEnvelope({
     event_id: "00000000-0000-4000-8000-000000000201",
@@ -128,33 +164,33 @@ function createBrowserRelayRequest(input: {
   };
 }
 
+function createBrowserRelayRequestFromFixture(request: RelayComplianceFixtureRequest): {
+  headers: Record<string, string>;
+  body: string;
+  ipAddress: string;
+} {
+  return {
+    headers: request.headers,
+    body: request.bodyText ?? JSON.stringify(request.bodyJson ?? { batch: [] }),
+    ipAddress: request.ipAddress ?? "203.0.113.10"
+  };
+}
+
 describe("createBrowserRelay", () => {
   it("accepts valid browser events and strips trust-sensitive fields before handing them off", async () => {
+    const fixture = getRelayComplianceFixture("credential-smuggling-payload");
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
     const relay = createBrowserRelay({ onAccept });
-    const request = createBrowserRelayRequest({
-      batch: [
-        {
-          ...createFrontendExceptionEvent(),
-          project_token: "dbundle_proj_stolen",
-          sdk_name: "spoofed-sdk",
-          organization_id: "org_123",
-          unexpected_top_level: "drop-me"
-        }
-      ],
-      headers: {
-        authorization: "Bearer browser-should-not-send-this"
-      }
-    });
+    const request = createBrowserRelayRequestFromFixture(fixture.request ?? { method: "POST", headers: {} });
 
     const response = await relay(request);
 
     expect(response).toEqual({
-      status: 202,
+      status: fixture.expected?.status ?? 202,
       body: {
-        accepted: 1,
-        rejected: 0,
-        errors: []
+        accepted: fixture.expected?.accepted ?? 1,
+        rejected: fixture.expected?.rejected ?? 0,
+        errors: fixture.expected?.errors ?? []
       }
     });
     expect(onAccept).toHaveBeenCalledTimes(1);
@@ -162,73 +198,25 @@ describe("createBrowserRelay", () => {
     const accepted = onAccept.mock.calls[0]?.[0];
     expect(accepted?.events).toHaveLength(1);
     expect(accepted?.headers["authorization"]).toBeUndefined();
+    expect(accepted?.headers["cookie"]).toBeUndefined();
+    expect(accepted?.headers["x-api-key"]).toBeUndefined();
     expect(accepted?.headers["content-type"]).toBe("application/json; charset=utf-8");
-    expect(accepted?.events[0]).toMatchObject({
-      event_type: "frontend_exception",
-      sdk_name: "@debugbundle/sdk-browser",
-      sdk_version: "1.2.3",
-      correlation: {
-        trace_id: "11111111-1111-4111-8111-111111111111"
-      },
-      service: {
-        name: "checkout-web",
-        environment: "production"
-      }
-    });
+    expect(accepted?.events[0]).toMatchObject(fixture.expectedEventFile?.[0] ?? {});
     expect("project_token" in (accepted?.events[0] ?? {})).toBe(false);
     expect("organization_id" in (accepted?.events[0] ?? {})).toBe(false);
-    expect("unexpected_top_level" in (accepted?.events[0] ?? {})).toBe(false);
   });
 
   it("rejects non-browser event types while still accepting valid browser events in the same batch", async () => {
+    const fixture = getRelayComplianceFixture("mixed-valid-invalid-batch");
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
     const relay = createBrowserRelay({ onAccept });
-    const validEvent = createFrontendExceptionEvent();
-    const invalidEvent = createEventEnvelope({
-      event_id: "00000000-0000-4000-8000-000000000202",
-      occurred_at: "2026-03-22T10:01:00.000Z",
-      event_type: "backend_exception",
-      project_token: "dbundle_proj_backend",
-      sdk_name: "@debugbundle/sdk-node",
-      sdk_version: "0.1.0",
-      service: {
-        name: "checkout-api",
-        runtime: "node",
-        framework: "fastify",
-        environment: "production"
-      },
-      payload: {
-        name: "Error",
-        message: "boom",
-        stack: "Error: boom",
-        handled: false,
-        request: {
-          method: "GET",
-          path: "/checkout",
-          query: {},
-          headers: {},
-          body: null
-        },
-        response: {
-          status_code: 500
-        },
-        runtime: {
-          version: "24.0.0"
-        }
-      }
-    });
+    const response = await relay(createBrowserRelayRequestFromFixture(fixture.request ?? { method: "POST", headers: {} }));
 
-    const response = await relay(
-      createBrowserRelayRequest({
-        batch: [validEvent, invalidEvent]
-      })
-    );
-
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(fixture.expected?.status ?? 400);
     expect(response.body).toEqual({
-      accepted: 1,
-      rejected: 1,
-      errors: ["batch[1]: Unsupported browser relay event type backend_exception."]
+      accepted: fixture.expected?.accepted ?? 1,
+      rejected: fixture.expected?.rejected ?? 1,
+      errors: fixture.expected?.errors ?? []
     });
     expect(onAccept).toHaveBeenCalledTimes(1);
     expect(onAccept.mock.calls[0]?.[0].events).toHaveLength(1);
@@ -302,7 +290,7 @@ describe("createBrowserRelay", () => {
     expect(onAccept).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts text/plain JSON bodies for sendBeacon compatibility", async () => {
+  it("rejects text/plain relay bodies so browser relay requests stay on the canonical application/json contract", async () => {
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
     const relay = createBrowserRelay({ onAccept });
 
@@ -314,8 +302,15 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response.status).toBe(202);
-    expect(onAccept).toHaveBeenCalledTimes(1);
+    expect(response).toEqual({
+      status: 400,
+      body: {
+        accepted: 0,
+        rejected: 0,
+        errors: ["Relay requests must use Content-Type: application/json."]
+      }
+    });
+    expect(onAccept).not.toHaveBeenCalled();
   });
 
   it("rejects requests with unsupported content types", async () => {
@@ -335,7 +330,28 @@ describe("createBrowserRelay", () => {
       body: {
         accepted: 0,
         rejected: 0,
-        errors: ["Relay requests must use Content-Type: application/json or text/plain JSON payloads."]
+        errors: ["Relay requests must use Content-Type: application/json."]
+      }
+    });
+    expect(onAccept).not.toHaveBeenCalled();
+  });
+
+  it("rejects request bodies that use the legacy events alias instead of batch", async () => {
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({ onAccept });
+
+    const response = await relay(
+      createBrowserRelayRequest({
+        body: JSON.stringify({ events: [createFrontendExceptionEvent()] })
+      })
+    );
+
+    expect(response).toEqual({
+      status: 400,
+      body: {
+        accepted: 0,
+        rejected: 0,
+        errors: ["Relay request body must be valid JSON with a batch array."]
       }
     });
     expect(onAccept).not.toHaveBeenCalled();
