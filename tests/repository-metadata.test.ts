@@ -47,16 +47,29 @@ describe("debugbundle-js repository metadata", () => {
     expect(readme).not.toContain("@debugbundle/sdk-browser@next");
 
     expect(changelog).toContain("## [Unreleased]");
+    expect(changelog).toContain("minimum supported runtime for `@debugbundle/sdk-node`");
     expect(changelog).toMatch(/## \[0\.1\.0\] - \d{4}-\d{2}-\d{2}/);
     expect(security).toContain("https://github.com/debugbundle/debugbundle-js/security/advisories/new");
+
+    const issueTemplate = readFileSync(path.join(repoRoot, ".github/ISSUE_TEMPLATE/bug_report.yml"), "utf8");
+    expect(issueTemplate).toContain("Node.js 22");
+
+    const ciWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+    expect(ciWorkflow).toContain("sdk-node-runtime:");
+    expect(ciWorkflow).toContain('node-version: "22"');
+    expect(ciWorkflow).toContain("pnpm install --config.engine-strict=false --frozen-lockfile");
+    expect(ciWorkflow).toContain("pnpm --filter @debugbundle/sdk-node build");
+    expect(ciWorkflow).toContain("pnpm vitest run tests/packages/sdk-node --config vitest.config.ts");
   });
 
   it("uses published shared package dependencies instead of workspace links", (): void => {
     const rootPackage = readJsonFile<{
+      engines: { node: string };
       scripts: Record<string, string>;
       repository: { url: string };
     }>("package.json");
     const sdkNodePackage = readJsonFile<{
+      engines: { node: string };
       private: boolean;
       repository: { url: string };
       dependencies: Record<string, string>;
@@ -68,6 +81,7 @@ describe("debugbundle-js repository metadata", () => {
     }>("packages/sdk-browser/package.json");
 
     expect(rootPackage.repository.url).toContain("debugbundle/debugbundle-js");
+    expect(rootPackage.engines.node).toBe(">=24 <25");
     expect(rootPackage.scripts).toMatchObject({
       lint: expect.any(String),
       typecheck: expect.any(String),
@@ -77,11 +91,15 @@ describe("debugbundle-js repository metadata", () => {
 
     expect(sdkNodePackage.private).toBe(false);
     expect(sdkBrowserPackage.private).toBe(false);
+    expect(sdkNodePackage.engines.node).toBe(">=22");
     expect(sdkNodePackage.repository.url).toContain("debugbundle/debugbundle-js");
     expect(sdkBrowserPackage.repository.url).toContain("debugbundle/debugbundle-js");
     expect(sdkNodePackage.dependencies["@debugbundle/shared-types"]).not.toBe("workspace:*");
     expect(sdkNodePackage.dependencies["@debugbundle/redaction"]).not.toBe("workspace:*");
     expect(sdkBrowserPackage.dependencies["@debugbundle/shared-types"]).not.toBe("workspace:*");
     expect(sdkBrowserPackage.dependencies["@debugbundle/redaction"]).not.toBe("workspace:*");
+
+    const sdkNodeReadme = readFileSync(path.join(repoRoot, "packages/sdk-node/README.md"), "utf8");
+    expect(sdkNodeReadme).toContain("Requires Node.js 22 or newer.");
   });
 });

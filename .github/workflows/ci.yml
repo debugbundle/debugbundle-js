@@ -37,3 +37,28 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  sdk-node-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+
+      - name: Install dependencies
+        run: pnpm install --config.engine-strict=false --frozen-lockfile
+
+      - name: Build sdk-node
+        run: pnpm --filter @debugbundle/sdk-node build
+
+      - name: Test sdk-node
+        run: pnpm vitest run tests/packages/sdk-node --config vitest.config.ts

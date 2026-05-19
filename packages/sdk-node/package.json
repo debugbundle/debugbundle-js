@@ -1,6 +1,6 @@
 {
   "name": "@debugbundle/sdk-node",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -16,6 +16,9 @@
   "homepage": "https://github.com/debugbundle/debugbundle-js/tree/main/packages/sdk-node",
   "publishConfig": {
     "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "exports": {
     ".": "./src/index.ts",

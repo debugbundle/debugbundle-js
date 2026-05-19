@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-05-19
+
+### Changed
+- Declared Node.js 22 as the minimum supported runtime for `@debugbundle/sdk-node` while keeping the standalone SDK repository tooling pinned to Node.js 24.x.
+
 ## [0.1.1] - 2026-05-11
 
 ### Changed

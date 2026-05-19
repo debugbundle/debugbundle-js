@@ -4,6 +4,8 @@ Node.js SDK for DebugBundle.
 
 Use this package to capture backend exceptions, request metadata, logs, and probe data from Node.js services. It also ships the browser relay handlers through subpath exports.
 
+Requires Node.js 22 or newer.
+
 ## Install
 
 Stable npm release:
