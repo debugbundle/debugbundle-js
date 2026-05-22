@@ -358,7 +358,7 @@ export function normalizeNetworkPatterns(value: BrowserPattern[] | undefined): B
     return [];
   }
 
-  return value.filter((pattern): pattern is BrowserPattern => typeof pattern === "string" || pattern instanceof RegExp);
+  return value.filter((pattern): pattern is BrowserPattern => typeof pattern === "string");
 }
 
 function normalizeStringPatterns(value: string[] | undefined): string[] {
@@ -535,12 +535,7 @@ export function stringifyConsoleArgs(args: unknown[]): string {
 }
 
 export function matchesBrowserPattern(value: string, pattern: BrowserPattern): boolean {
-  if (typeof pattern === "string") {
-    return value.includes(pattern);
-  }
-
-  pattern.lastIndex = 0;
-  return pattern.test(value);
+  return value.includes(pattern);
 }
 
 export function shouldInjectTraceHeader(url: string, tracePropagationTargets: BrowserPattern[] = []): boolean {

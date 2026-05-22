@@ -26,7 +26,7 @@ export const DEFAULT_LOG_LEVEL: BrowserLogLevel = "warning";
 export type BrowserLogLevel = (typeof LOG_LEVELS)[number];
 export type BrowserTransportMode = "direct" | "relay";
 export type BreadcrumbType = "route_change" | "click" | "form_submit" | "console_log" | "network_request";
-export type BrowserPattern = string | RegExp;
+export type BrowserPattern = string;
 export type BrowserCapturePreset = "minimal" | "balanced" | "investigative";
 export type BrowserCaptureRequestEvents = "off" | "failures_only" | "filtered" | "all";
 export interface BrowserRequestMetadata {

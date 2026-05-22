@@ -27,6 +27,7 @@ import {
   normalizeNetworkFilter,
   normalizePositiveNumber,
   normalizeSampleRate,
+  normalizeTracePropagationTargets,
   normalizeUnknownRecord,
   parseIngestionProbeDirectives,
   parseRemoteProbeConfigPayload,
@@ -285,9 +286,10 @@ describe("sdk-browser runtime helpers", () => {
 
     expect(stringifyConsoleArgs(["hello", new Error("boom"), { ok: true }, circular])).toContain("hello boom {\"ok\":true}");
 
-    const regex = /checkout/g;
-    expect(matchesBrowserPattern("/checkout", regex)).toBe(true);
-    expect(matchesBrowserPattern("/checkout", regex)).toBe(true);
+    expect(normalizeTracePropagationTargets(["api.example.com", /^https:\/\/api\.example\.com/ as never])).toEqual([
+      "api.example.com"
+    ]);
+    expect(matchesBrowserPattern("/checkout", "checkout")).toBe(true);
     expect(matchesBrowserPattern("/cart", "/cart")).toBe(true);
 
     expect(matchesStatusCodeFilter(404, [404, 500])).toBe(true);

@@ -414,7 +414,7 @@ describe("sdk-browser hooks direct", () => {
     installNetworkHook(
       {
         ...createConfig(),
-        tracePropagationTargets: [/^https:\/\/api\.example\.com/]
+        tracePropagationTargets: ["https://api.example.com"]
       } as ActiveConfig,
       vi.fn(),
       vi.fn(),
