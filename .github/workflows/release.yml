@@ -12,7 +12,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
@@ -153,12 +153,10 @@ jobs:
           pnpm test
           pnpm build
 
-      - name: Prepare publishable packages
-        if: steps.published_state.outputs.state == 'none'
+      - name: Prepare release packages
         run: pnpm prepare:release
 
       - name: Smoke test packed SDK artifacts
-        if: steps.published_state.outputs.state == 'none'
         shell: bash
         run: |
           set -euo pipefail
@@ -258,3 +256,12 @@ jobs:
           EOF
         env:
           RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.release_version.outputs.value }}
+          files: |
+            .tmp/npm-packages/debugbundle-sdk-node-${{ steps.release_version.outputs.value }}.tgz
+            .tmp/npm-packages/debugbundle-sdk-browser-${{ steps.release_version.outputs.value }}.tgz
+          generate_release_notes: true
