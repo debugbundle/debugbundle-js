@@ -24,7 +24,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@debugbundle/shared-types": "0.1.9",
-    "@debugbundle/redaction": "0.1.9"
+    "@debugbundle/shared-types": "0.1.10",
+    "@debugbundle/redaction": "0.1.10"
   }
 }

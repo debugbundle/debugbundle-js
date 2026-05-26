@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@debugbundle/shared-types':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
       '@types/node':
         specifier: ^24.0.0
         version: 24.12.2
@@ -36,31 +36,31 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
       '@debugbundle/shared-types':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
       '@debugbundle/shared-types':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
       zod:
         specifier: ^3.24.2
         version: 3.25.76
 
 packages:
 
-  '@debugbundle/redaction@0.1.9':
-    resolution: {integrity: sha512-gW/uPZL0IGPc1qzGSnSIEjElHCCiBMGf6GZ0V7XBxFOkbzl0kJK8hOtNAthBvAHlhV9YOv+2vHsn6yoxPp2rKw==}
+  '@debugbundle/redaction@0.1.10':
+    resolution: {integrity: sha512-V3dIzAhxIFi9cR6AOJrRe82LbauniGT85e6UmL1FHGB9EnPeIYgSaFanGP3wGrX1o72P30N23bXWQJgiPbQxEg==}
 
-  '@debugbundle/shared-types@0.1.9':
-    resolution: {integrity: sha512-acLgzkZy2yPmab2xzz9plvJGEI3rRrA5ZMUqqA7kUgtP7VvvN2v2j3zR+U/UpWHwUeq1gduV3S3ZlKgJU6TgiQ==}
+  '@debugbundle/shared-types@0.1.10':
+    resolution: {integrity: sha512-dtwklNYoYfwRpg1x6mFFTqLNP2fdsmjAnge9K5z92ac6rivQP1DQRGc+5VJE1dWH8UAHCZ2ZXqzRrrIVMjBHlA==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -924,9 +924,9 @@ packages:
 
 snapshots:
 
-  '@debugbundle/redaction@0.1.9': {}
+  '@debugbundle/redaction@0.1.10': {}
 
-  '@debugbundle/shared-types@0.1.9':
+  '@debugbundle/shared-types@0.1.10':
     dependencies:
       zod: 3.25.76
 

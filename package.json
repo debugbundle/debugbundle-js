@@ -13,7 +13,7 @@
     "url": "https://github.com/debugbundle/debugbundle-js/issues"
   },
   "homepage": "https://github.com/debugbundle/debugbundle-js#readme",
-  "packageManager": "pnpm@10.32.1",
+  "packageManager": "pnpm@11.3.0",
   "engines": {
     "node": ">=24 <25"
   },
@@ -27,7 +27,7 @@
     "smoke:registry": "node scripts/smoke-release.mjs registry"
   },
   "devDependencies": {
-    "@debugbundle/shared-types": "0.1.9",
+    "@debugbundle/shared-types": "0.1.10",
     "@types/node": "^24.0.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
