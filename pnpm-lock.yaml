@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@debugbundle/shared-types':
-        specifier: 0.1.6
-        version: 0.1.6
+        specifier: 0.1.9
+        version: 0.1.9
       '@types/node':
         specifier: ^24.0.0
         version: 24.12.2
@@ -36,34 +36,31 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.8
-        version: 0.1.8
+        specifier: 0.1.9
+        version: 0.1.9
       '@debugbundle/shared-types':
-        specifier: 0.1.8
-        version: 0.1.8
+        specifier: 0.1.9
+        version: 0.1.9
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.8
-        version: 0.1.8
+        specifier: 0.1.9
+        version: 0.1.9
       '@debugbundle/shared-types':
-        specifier: 0.1.8
-        version: 0.1.8
+        specifier: 0.1.9
+        version: 0.1.9
       zod:
         specifier: ^3.24.2
         version: 3.25.76
 
 packages:
 
-  '@debugbundle/redaction@0.1.8':
-    resolution: {integrity: sha512-4bm3SKD+ZRYSdpurRwJudG3pXV2RTr8F1YFxysp5GuB3zQ77NX6HL5Ay+U7bwGRGJGvalVsukX+ngeypkt4yvg==}
+  '@debugbundle/redaction@0.1.9':
+    resolution: {integrity: sha512-gW/uPZL0IGPc1qzGSnSIEjElHCCiBMGf6GZ0V7XBxFOkbzl0kJK8hOtNAthBvAHlhV9YOv+2vHsn6yoxPp2rKw==}
 
-  '@debugbundle/shared-types@0.1.6':
-    resolution: {integrity: sha512-UI2/QtFKwqLyWIEvTR9Kw1MqD4FVvcRLPAzCH2Th3Xfk2Z+6vUmsbPer/Poaxh2aSH7RQAmyPMCy7NIwyCt21w==}
-
-  '@debugbundle/shared-types@0.1.8':
-    resolution: {integrity: sha512-JYlUFmFAhn3PL1Npb0K0o2MFKSYmkZ6QcK0spRRB8CsHm+Nft6IhWJxuSayCKELaX5jJ87a21NaByHU9NJQfYQ==}
+  '@debugbundle/shared-types@0.1.9':
+    resolution: {integrity: sha512-acLgzkZy2yPmab2xzz9plvJGEI3rRrA5ZMUqqA7kUgtP7VvvN2v2j3zR+U/UpWHwUeq1gduV3S3ZlKgJU6TgiQ==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -927,13 +924,9 @@ packages:
 
 snapshots:
 
-  '@debugbundle/redaction@0.1.8': {}
+  '@debugbundle/redaction@0.1.9': {}
 
-  '@debugbundle/shared-types@0.1.6':
-    dependencies:
-      zod: 3.25.76
-
-  '@debugbundle/shared-types@0.1.8':
+  '@debugbundle/shared-types@0.1.9':
     dependencies:
       zod: 3.25.76
 
