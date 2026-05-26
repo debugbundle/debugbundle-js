@@ -150,10 +150,10 @@ describe("debugbundle-js repository metadata", () => {
 
     expect(sdkNodeTypes).toContain('import packageJson from "../package.json"');
     expect(sdkNodeTypes).toContain("export const SDK_VERSION = packageJson.version;");
-    expect(sdkNodePackage.version).toBe("0.1.8");
+    expect(sdkNodePackage.version).toBe(readJsonFile<{ version: string }>("package.json").version);
 
     expect(sdkBrowserTypes).toContain('import packageJson from "../package.json"');
     expect(sdkBrowserTypes).toContain("export const SDK_VERSION = packageJson.version;");
-    expect(sdkBrowserPackage.version).toBe("0.1.8");
+    expect(sdkBrowserPackage.version).toBe(readJsonFile<{ version: string }>("package.json").version);
   });
 });

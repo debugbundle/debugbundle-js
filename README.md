@@ -23,7 +23,7 @@ This repository publishes the DebugBundle JavaScript SDK packages used to captur
 `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` ship as one versioned SDK family. Keep the package versions aligned in every public snippet and real application install.
 
 ```bash
-npm install @debugbundle/sdk-node@0.1.9 @debugbundle/sdk-browser@0.1.9
+npm install @debugbundle/sdk-node@0.1.10 @debugbundle/sdk-browser@0.1.10
 ```
 
 If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, keep them on the same version as the SDK packages. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
@@ -213,7 +213,7 @@ pnpm smoke:packed
 After publish, the release workflow runs the same application-level verification against the npm registry:
 
 ```bash
-DEBUGBUNDLE_SMOKE_VERSION=0.1.9 pnpm smoke:registry
+DEBUGBUNDLE_SMOKE_VERSION=0.1.10 pnpm smoke:registry
 ```
 
 ## Safety Defaults
