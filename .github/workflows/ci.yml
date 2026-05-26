@@ -38,6 +38,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Clean-install smoke
+        run: pnpm smoke:packed
+
   sdk-node-runtime:
     runs-on: ubuntu-latest
     steps:

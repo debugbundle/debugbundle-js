@@ -497,6 +497,185 @@ describe("sdk-browser", () => {
     });
   });
 
+  it("captures opaque window error metadata without blaming the SDK fallback", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk();
+
+    globals.windowTarget.dispatch("error", {
+      filename: "https://user:secret@app.example/assets/app.js?token=secret#bootstrap",
+      lineno: 42,
+      colno: 9
+    });
+
+    await sdk.flush();
+
+    const event = getFrontendExceptionEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.message).toBe("Window error");
+    expect((event.payload as Record<string, unknown>)["browser_event"]).toEqual({
+      kind: "window_error",
+      message: null,
+      file_name: "https://app.example/assets/app.js",
+      line_number: 42,
+      column_number: 9,
+      target: null,
+      opaque: true
+    });
+  });
+
+  it("captures resource load error targets from the window error hook", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk();
+
+    globals.windowTarget.dispatch("error", {
+      target: {
+        tagName: "SCRIPT",
+        src: "https://cdn.example/app.js?access_token=secret#chunk"
+      }
+    });
+
+    await sdk.flush();
+
+    const event = getFrontendExceptionEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.message).toBe("Browser resource load error");
+    expect((event.payload as Record<string, unknown>)["browser_event"]).toEqual({
+      kind: "resource_error",
+      message: null,
+      file_name: null,
+      line_number: null,
+      column_number: null,
+      target: {
+        tag_name: "script",
+        source_url: "https://cdn.example/app.js"
+      },
+      opaque: true
+    });
+  });
+
+  it("demotes matching resource load exceptions into breadcrumb context after sdk config loads", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      status: 200,
+      json: async () => ({
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000101",
+            project_id: "proj_123",
+            name: "Demote CDN resource noise",
+            description: null,
+            enabled: true,
+            action: "demote",
+            matcher: {
+              event_types: ["frontend_exception"],
+              browser_event_kind: "resource_error",
+              resource_url: { host: "cdn.example" }
+            },
+            sample_rate: null,
+            sample_event_class: null,
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      })
+    });
+
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      breadcrumbsOnErrorOnly: false,
+      transport
+    });
+
+    await settleAsyncInit();
+    globals.windowTarget.dispatch("error", {
+      target: {
+        tagName: "SCRIPT",
+        src: "https://cdn.example/app.js?access_token=secret#chunk"
+      }
+    });
+
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    const event = getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.data).toMatchObject({
+      source: "capture_rule_demoted_exception",
+      browser_event_kind: "resource_error",
+      source_url: "https://cdn.example/app.js"
+    });
+  });
+
+  it("drops sampled-out resource load exceptions after sdk config loads", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      status: 200,
+      json: async () => ({
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000102",
+            project_id: "proj_123",
+            name: "Sample out CDN resource noise",
+            description: null,
+            enabled: true,
+            action: "sample",
+            matcher: {
+              event_types: ["frontend_exception"],
+              browser_event_kind: "resource_error",
+              resource_url: { host: "cdn.example" }
+            },
+            sample_rate: 0,
+            sample_event_class: "preserve",
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      })
+    });
+
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport
+    });
+
+    await settleAsyncInit();
+    globals.windowTarget.dispatch("error", {
+      target: {
+        tagName: "SCRIPT",
+        src: "https://cdn.example/app.js?access_token=secret#chunk"
+      }
+    });
+
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("should honor breadcrumb caps and capture toggles", async (): Promise<void> => {
     const { sdk, transport, globals } = createSdk({
       maxBreadcrumbs: 2,

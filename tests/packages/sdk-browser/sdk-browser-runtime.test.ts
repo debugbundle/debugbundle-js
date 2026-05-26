@@ -33,6 +33,7 @@ import {
   parseRemoteProbeConfigPayload,
   stringifyConsoleArgs
 } from "../../../packages/sdk-browser/src/runtime.js";
+import { parseRemoteCaptureRulesPayload } from "../../../packages/sdk-browser/src/capture-rules.js";
 import { DEFAULT_ENDPOINT } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser runtime helpers", () => {
@@ -132,6 +133,66 @@ describe("sdk-browser runtime helpers", () => {
     expect(deriveSdkConfigEndpoint("https://api.debugbundle.com/v1/events")).toBe("https://api.debugbundle.com/v1/sdk/config");
     expect(deriveSdkConfigEndpoint("https://api.debugbundle.com/events")).toBe("https://api.debugbundle.com/sdk/config");
     expect(deriveSdkConfigEndpoint("https://api.debugbundle.com/v1/sdk/config")).toBe("https://api.debugbundle.com/v1/sdk/config");
+  });
+
+  it("should parse valid remote capture rules and ignore malformed entries", (): void => {
+    expect(
+      parseRemoteCaptureRulesPayload({
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000101",
+            project_id: "proj_123",
+            name: "Demote analytics resource noise",
+            description: null,
+            enabled: true,
+            action: "demote",
+            matcher: {
+              event_types: ["frontend_exception"],
+              browser_event_kind: "resource_error",
+              resource_url: { host: "analytics.example.com" }
+            },
+            sample_rate: null,
+            sample_event_class: null,
+            created_by_user_id: "usr_owner",
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          },
+          {
+            id: "broken-rule",
+            action: "demote"
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        id: "00000000-0000-4000-8000-000000000101",
+        project_id: "proj_123",
+        name: "Demote analytics resource noise",
+        description: null,
+        enabled: true,
+        action: "demote",
+        matcher: {
+          event_types: ["frontend_exception"],
+          browser_event_kind: "resource_error",
+          resource_url: { host: "analytics.example.com" }
+        },
+        sample_rate: null,
+        sample_event_class: null,
+        created_by_user_id: "usr_owner",
+        created_from_incident_id: null,
+        created_from_event_id: null,
+        expires_at: null,
+        hit_count: 0,
+        last_matched_at: null,
+        created_at: "2026-05-26T10:00:00.000Z",
+        updated_at: "2026-05-26T10:00:00.000Z"
+      }
+    ]);
   });
 
   it("should serialize relay transport bodies with batch payloads and direct bodies with events payloads", (): void => {

@@ -55,7 +55,8 @@ describe("sdk-node remote probe helpers", () => {
       ],
       pollIntervalMs: 45500,
       triggerTokenKey: "trigger-key",
-      capturePolicy: BALANCED_CAPTURE_POLICY
+      capturePolicy: BALANCED_CAPTURE_POLICY,
+      captureRules: []
     });
   });
 

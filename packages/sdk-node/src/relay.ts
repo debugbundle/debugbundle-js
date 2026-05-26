@@ -83,6 +83,21 @@ const InlineProbeDataSchema = z.object({
   )
 });
 
+const BrowserExceptionEventSchema = z.object({
+  kind: z.enum(["window_error", "resource_error"]),
+  message: z.string().nullable(),
+  file_name: z.string().nullable(),
+  line_number: z.number().int().nonnegative().nullable(),
+  column_number: z.number().int().nonnegative().nullable(),
+  target: z
+    .object({
+      tag_name: z.string().nullable(),
+      source_url: z.string().nullable()
+    })
+    .nullable(),
+  opaque: z.boolean()
+});
+
 const FrontendExceptionPayloadSchema = z.object({
   name: z.string().min(1),
   message: z.string().min(1),
@@ -94,6 +109,7 @@ const FrontendExceptionPayloadSchema = z.object({
   }),
   breadcrumbs: z.array(FrontendExceptionBreadcrumbSchema).optional(),
   device: DeviceInfoSchema.nullable().optional(),
+  browser_event: BrowserExceptionEventSchema.optional(),
   dom_context: z.object({
     mode: z.literal("lightweight"),
     html_excerpt: z.string().min(1)
@@ -318,12 +334,35 @@ function getIssueMessage(error: z.ZodError): string {
   return error.issues[0]?.message ?? "Invalid browser relay event payload.";
 }
 
+function parseEventEnvelopeWithBrowserMetadata(candidate: unknown): EventEnvelope {
+  if (candidate !== null && typeof candidate === "object") {
+    const record = candidate as Record<string, unknown>;
+    const payload = record["payload"];
+
+    if (record["event_type"] === "frontend_exception" && payload !== null && typeof payload === "object") {
+      const { browser_event: browserEvent, ...payloadWithoutBrowserEvent } = payload as Record<string, unknown>;
+      const event = EventEnvelopeSchema.parse({
+        ...record,
+        payload: payloadWithoutBrowserEvent
+      });
+
+      if (browserEvent !== undefined) {
+        (event.payload as Record<string, unknown>)["browser_event"] = browserEvent;
+      }
+
+      return event;
+    }
+  }
+
+  return EventEnvelopeSchema.parse(candidate);
+}
+
 function toBrowserRelayEvent(
   candidate: unknown,
   overrides: { service?: string; environment?: string }
 ): BrowserRelayEvent {
   const parsedCandidate = BrowserRelayEventSchema.parse(candidate);
-  const normalizedEvent = EventEnvelopeSchema.parse({
+  const normalizedEvent = parseEventEnvelopeWithBrowserMetadata({
     ...parsedCandidate,
     sdk_name: BROWSER_SDK_NAME,
     service: {
@@ -342,7 +381,7 @@ function resolveDefaultRelaySpoolDir(cwd: string = process.cwd()): string {
 
 function attachProjectToken(events: BrowserRelayEvent[], projectToken: string): EventEnvelope[] {
   return events.map((event) =>
-    EventEnvelopeSchema.parse({
+    parseEventEnvelopeWithBrowserMetadata({
       ...event,
       project_token: projectToken
     })

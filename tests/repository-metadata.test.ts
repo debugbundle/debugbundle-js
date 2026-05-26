@@ -102,4 +102,58 @@ describe("debugbundle-js repository metadata", () => {
     const sdkNodeReadme = readFileSync(path.join(repoRoot, "packages/sdk-node/README.md"), "utf8");
     expect(sdkNodeReadme).toContain("Requires Node.js 22 or newer.");
   });
+
+  it("keeps the shared release smoke and documentation gates wired for both SDK packages", (): void => {
+    const rootPackage = readJsonFile<{
+      scripts: Record<string, string>;
+    }>("package.json");
+    const readme = readFileSync(path.join(repoRoot, "README.md"), "utf8");
+    const sdkNodeReadme = readFileSync(path.join(repoRoot, "packages/sdk-node/README.md"), "utf8");
+    const sdkBrowserReadme = readFileSync(path.join(repoRoot, "packages/sdk-browser/README.md"), "utf8");
+    const ciWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+    const releaseWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/release.yml"), "utf8");
+
+    expect(existsSync(path.join(repoRoot, "scripts/smoke-release.mjs"))).toBe(true);
+    expect(rootPackage.scripts).toMatchObject({
+      "smoke:packed": expect.any(String),
+      "smoke:registry": expect.any(String)
+    });
+
+    expect(ciWorkflow).toContain("pnpm smoke:packed");
+    expect(releaseWorkflow).toContain("pnpm smoke:packed");
+    expect(releaseWorkflow).toContain("pnpm smoke:registry");
+
+    expect(readme).toContain("capture-policy fields are server-owned");
+    expect(readme).toContain("Configuration source precedence");
+    expect(readme).toContain("Runtime support labels");
+    expect(readme).toContain("Dependency alignment");
+    expect(readme).toContain("Service naming guidance");
+    expect(readme).toContain("Safe startup behavior");
+    expect(readme).toContain("First-event verification");
+    expect(readme).toContain("pnpm smoke:packed");
+
+    expect(sdkNodeReadme).toContain("local-only mode");
+    expect(sdkNodeReadme).toContain("same-origin relay");
+    expect(sdkNodeReadme).toContain("Safe startup behavior");
+    expect(sdkNodeReadme).toContain("First-event verification");
+
+    expect(sdkBrowserReadme).toContain("write-only token");
+    expect(sdkBrowserReadme).toContain("same-origin relay");
+    expect(sdkBrowserReadme).toContain("First-event verification");
+  });
+
+  it("derives emitted sdk_version values from the published package versions", (): void => {
+    const sdkNodePackage = readJsonFile<{ version: string }>("packages/sdk-node/package.json");
+    const sdkBrowserPackage = readJsonFile<{ version: string }>("packages/sdk-browser/package.json");
+    const sdkNodeTypes = readFileSync(path.join(repoRoot, "packages/sdk-node/src/types.ts"), "utf8");
+    const sdkBrowserTypes = readFileSync(path.join(repoRoot, "packages/sdk-browser/src/types.ts"), "utf8");
+
+    expect(sdkNodeTypes).toContain('import packageJson from "../package.json"');
+    expect(sdkNodeTypes).toContain("export const SDK_VERSION = packageJson.version;");
+    expect(sdkNodePackage.version).toBe("0.1.8");
+
+    expect(sdkBrowserTypes).toContain('import packageJson from "../package.json"');
+    expect(sdkBrowserTypes).toContain("export const SDK_VERSION = packageJson.version;");
+    expect(sdkBrowserPackage.version).toBe("0.1.8");
+  });
 });

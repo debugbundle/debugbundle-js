@@ -1,6 +1,7 @@
 import {
   DEFAULT_LOG_LEVEL,
   LOG_LEVELS,
+  type BrowserExceptionEventContext,
   type BrowserCaptureRequestEvents,
   type BrowserConsoleLike,
   type BrowserCapturePreset,
@@ -181,6 +182,77 @@ export function normalizeError(error: unknown): { name: string; message: string;
     name: "Error",
     message: "Unknown browser error",
     stack: "Error: Unknown browser error"
+  };
+}
+
+function getStringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function sanitizeBrowserEventUrl(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const locationHref = getLocationSource()?.href;
+  const baseHref = typeof locationHref === "string" && locationHref.length > 0 ? locationHref : "https://debugbundle.local";
+
+  try {
+    const parsed = new URL(trimmed, baseHref);
+    const isRelative = !/^[a-z][a-z\d+\-.]*:/i.test(trimmed);
+
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      const path = parsed.pathname || "/";
+      return isRelative ? path : `${parsed.origin}${path}`;
+    }
+
+    return `${parsed.protocol.replace(/:$/, "")}:`;
+  } catch {
+    const firstUnsafeIndex = trimmed.search(/[?#]/);
+    return firstUnsafeIndex === -1 ? trimmed.slice(0, 512) : trimmed.slice(0, firstUnsafeIndex);
+  }
+}
+
+function getNonnegativeIntegerField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventContext["target"] {
+  const record = normalizeUnknownRecord(target);
+  const tagName = getStringField(record, "tagName")?.toLowerCase() ?? null;
+  const sourceUrl = getStringField(record, "src") ?? getStringField(record, "href");
+
+  if (tagName === null && sourceUrl === null) {
+    return null;
+  }
+
+  return {
+    tag_name: tagName,
+    source_url: sanitizeBrowserEventUrl(sourceUrl)
+  };
+}
+
+export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEventContext {
+  const record = normalizeUnknownRecord(event);
+  const target = normalizeBrowserErrorTarget(record["target"]);
+  const hasErrorObject = record["error"] instanceof Error;
+  const kind = target !== null && target.source_url !== null ? "resource_error" : "window_error";
+
+  return {
+    kind,
+    message: getStringField(record, "message"),
+    file_name: sanitizeBrowserEventUrl(getStringField(record, "filename")),
+    line_number: getNonnegativeIntegerField(record, "lineno"),
+    column_number: getNonnegativeIntegerField(record, "colno"),
+    target,
+    opaque: !hasErrorObject
   };
 }
 

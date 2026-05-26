@@ -96,6 +96,7 @@ function createConfig(overrides: Partial<ActiveConfig> = {}): ActiveConfig {
     maxProbeEntriesPerLabel: 10,
     probeFlushOnError: true,
     requestTimeoutMs: 5_000,
+    captureRules: [],
     fetchImpl: vi.fn() as typeof fetch,
     transport: vi.fn(),
     transportMode: "direct",
@@ -179,6 +180,7 @@ describe("sdk-browser hooks direct", () => {
         requestFailures.push(breadcrumb);
       },
       (url, statusCode) => url.includes("checkout") && statusCode >= 500,
+      () => true,
       () => "/checkout"
     ));
 
@@ -253,6 +255,7 @@ describe("sdk-browser hooks direct", () => {
       vi.fn(),
       vi.fn(),
       () => false,
+      () => true,
       () => "/checkout"
     );
 
@@ -290,6 +293,7 @@ describe("sdk-browser hooks direct", () => {
         breadcrumbs.push(breadcrumb);
       },
       vi.fn(),
+      () => true,
       () => true,
       () => "/login"
     );
@@ -359,6 +363,7 @@ describe("sdk-browser hooks direct", () => {
         requestFailures.push(breadcrumb);
       },
       (_url, statusCode) => statusCode >= 500,
+      () => true,
       () => "/orders"
     ));
 
@@ -419,6 +424,7 @@ describe("sdk-browser hooks direct", () => {
       vi.fn(),
       vi.fn(),
       () => false,
+      () => true,
       () => "/orders"
     );
 

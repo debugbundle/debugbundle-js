@@ -22,7 +22,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --config vitest.config.ts",
     "build": "pnpm --filter @debugbundle/sdk-node build && pnpm --filter @debugbundle/sdk-browser build",
-    "prepare:release": "node scripts/prepare-release.mjs .tmp/npm-release"
+    "prepare:release": "node scripts/prepare-release.mjs .tmp/npm-release",
+    "smoke:packed": "node scripts/smoke-release.mjs packed",
+    "smoke:registry": "node scripts/smoke-release.mjs registry"
   },
   "devDependencies": {
     "@debugbundle/shared-types": "0.1.6",

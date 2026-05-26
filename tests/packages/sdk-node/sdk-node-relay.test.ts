@@ -223,6 +223,44 @@ describe("createBrowserRelay", () => {
     expect(onAccept.mock.calls[0]?.[0].events[0]?.event_type).toBe("frontend_exception");
   });
 
+  it("accepts browser-native exception metadata from relay batches", async () => {
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({ onAccept });
+    const event = createFrontendExceptionEvent();
+    (event.payload as Record<string, unknown>)["browser_event"] = {
+      kind: "resource_error",
+      message: null,
+      file_name: null,
+      line_number: null,
+      column_number: null,
+      target: {
+        tag_name: "script",
+        source_url: "https://cdn.example/app.js"
+      },
+      opaque: true
+    };
+
+    const response = await relay(
+      createBrowserRelayRequest({
+        batch: [event]
+      })
+    );
+
+    expect(response.status).toBe(202);
+    expect(onAccept).toHaveBeenCalledTimes(1);
+    expect(onAccept.mock.calls[0]?.[0].events[0]).toMatchObject({
+      event_type: "frontend_exception",
+      payload: {
+        browser_event: {
+          kind: "resource_error",
+          target: {
+            source_url: "https://cdn.example/app.js"
+          }
+        }
+      }
+    });
+  });
+
   it("accepts browser request_event payloads for relay-mode request failure incidents", async () => {
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
     const relay = createBrowserRelay({ onAccept });

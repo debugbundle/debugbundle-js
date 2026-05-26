@@ -1,5 +1,6 @@
 import { redact, type JsonValue } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { evaluateBrowserCaptureRulesForEvent, parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
 import { EventSuppressionTracker } from "./suppression.js";
 import { validateBrowserTriggerToken } from "./trigger-token.js";
@@ -17,6 +18,7 @@ import {
   getWindowSource,
   matchesBrowserPattern,
   matchesStatusCodeFilter,
+  normalizeBrowserErrorEvent,
   normalizeBoolean,
   normalizeError,
   normalizeLogLevel,
@@ -51,6 +53,7 @@ import {
   type BrowserFetch,
   type BrowserLogLevel,
   type BrowserProbeBufferItem,
+  type BrowserCaptureRuleEvaluationResult,
   type BrowserRemoteProbeDirective,
   type BrowserRemoteProbeState,
   type BrowserXmlHttpRequestConstructor,
@@ -245,6 +248,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       maxProbeEntriesPerLabel: normalizePositiveNumber(config.maxProbeEntriesPerLabel, 10),
       probeFlushOnError: normalizeBoolean(config.probeFlushOnError, true),
       requestTimeoutMs: normalizePositiveNumber(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
+      captureRules: [],
       fetchImpl: getFetchSource(),
       transport: config.transport ?? createFetchTransport(),
       transportMode: resolvedTransport.mode
@@ -319,6 +323,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
           dom_context: domContext
         }
       });
+
+      if (context.browser_event !== undefined) {
+        (event.payload as Record<string, unknown>)["browser_event"] = context.browser_event;
+      }
 
       this.removeEmptyProjectToken(event, config);
 
@@ -615,7 +623,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       };
       const onError = (event: unknown): void => {
         const maybeError = normalizeUnknownRecord(event);
-        this.captureException(maybeError["error"] ?? maybeError["message"] ?? new Error("Window error"));
+        const browserEvent = normalizeBrowserErrorEvent(event);
+        const fallbackMessage = browserEvent.kind === "resource_error" ? "Browser resource load error" : "Window error";
+        this.captureException(maybeError["error"] ?? maybeError["message"] ?? new Error(fallbackMessage), {
+          browser_event: browserEvent
+        });
       };
       const onUnhandledRejection = (event: unknown): void => {
         const maybeError = normalizeUnknownRecord(event);
@@ -623,11 +635,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       };
 
       windowSource.addEventListener("pagehide", onPageHide);
-      windowSource.addEventListener("error", onError);
+      windowSource.addEventListener("error", onError, true);
       windowSource.addEventListener("unhandledrejection", onUnhandledRejection);
 
       this.registeredListeners.push(() => windowSource.removeEventListener("pagehide", onPageHide));
-      this.registeredListeners.push(() => windowSource.removeEventListener("error", onError));
+      this.registeredListeners.push(() => windowSource.removeEventListener("error", onError, true));
       this.registeredListeners.push(() => windowSource.removeEventListener("unhandledrejection", onUnhandledRejection));
     }
 
@@ -717,6 +729,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         this.captureNetworkRequestFailure(breadcrumb);
       },
       (url, statusCode, durationMs) => this.shouldCaptureNetworkRequest(url, statusCode, durationMs),
+      (url, durationMs) => this.shouldCaptureFailedNetworkRequest(url, durationMs),
       () => this.getCurrentRoute()
     );
     this.originalFetch = networkHooks.originalFetch;
@@ -928,17 +941,110 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private enqueueEvent(event: EventEnvelope, countTowardSession = true): void {
-    if (!this.shouldCaptureBySampleRate(event)) {
+    const resolvedEvent = this.applyCaptureRulesToEvent(event);
+    if (resolvedEvent === null) {
       return;
     }
 
-    const suppressionKey = this.buildSuppressionKey(event);
+    if (!this.shouldCaptureBySampleRate(resolvedEvent)) {
+      return;
+    }
+
+    const suppressionKey = this.buildSuppressionKey(resolvedEvent);
     if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
       this.scheduleFlush();
       return;
     }
 
-    this.enqueueInternalEvent(event, countTowardSession);
+    this.enqueueInternalEvent(resolvedEvent, countTowardSession);
+  }
+
+  private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
+    const config = this.config;
+    if (config === null || config.captureRules.length === 0) {
+      return event;
+    }
+
+    const projectId = config.captureRules[0]?.project_id;
+    if (typeof projectId !== "string" || projectId.length === 0) {
+      return event;
+    }
+
+    try {
+      const captureRule = evaluateBrowserCaptureRulesForEvent(
+        config.captureRules,
+        projectId,
+        event,
+        new Date().toISOString()
+      );
+
+      if (captureRule === null) {
+        return event;
+      }
+
+      if (captureRule.outcome === "drop" || captureRule.outcome === "sampled_out") {
+        return null;
+      }
+
+      if (
+        event.event_type === "frontend_exception" &&
+        (captureRule.outcome === "demote" || captureRule.sample_event_class === "context")
+      ) {
+        this.addBreadcrumb(this.createDemotedExceptionBreadcrumb(event, captureRule));
+        return null;
+      }
+
+      if (
+        event.event_type === "request_event" &&
+        (captureRule.outcome === "demote" || captureRule.sample_event_class === "context")
+      ) {
+        return null;
+      }
+    } catch {
+      return event;
+    }
+
+    return event;
+  }
+
+  private createDemotedExceptionBreadcrumb(
+    event: Extract<EventEnvelope, { event_type: "frontend_exception" }>,
+    captureRule: BrowserCaptureRuleEvaluationResult
+  ): BrowserBreadcrumb {
+    const payload = event.payload as Record<string, unknown>;
+    const browserEventRecord =
+      typeof payload["browser_event"] === "object" && payload["browser_event"] !== null
+        ? (payload["browser_event"] as Record<string, unknown>)
+        : null;
+    const targetRecord =
+      typeof browserEventRecord?.["target"] === "object" && browserEventRecord["target"] !== null
+        ? (browserEventRecord["target"] as Record<string, unknown>)
+        : null;
+    const browserEventKind =
+      browserEventRecord?.["kind"] === "window_error" || browserEventRecord?.["kind"] === "resource_error"
+        ? browserEventRecord["kind"]
+        : undefined;
+    const sourceUrl =
+      typeof targetRecord?.["source_url"] === "string"
+        ? targetRecord["source_url"]
+        : typeof browserEventRecord?.["file_name"] === "string"
+          ? browserEventRecord["file_name"]
+          : null;
+
+    return {
+      ts: event.occurred_at,
+      breadcrumb_type: "console_log",
+      route: event.payload.route ?? this.getCurrentRoute(),
+      data: {
+        level: "error",
+        message: `${event.payload.name}: ${event.payload.message}`,
+        source: "capture_rule_demoted_exception",
+        capture_rule_action: captureRule.action,
+        capture_rule_outcome: captureRule.outcome,
+        ...(browserEventKind === undefined ? {} : { browser_event_kind: browserEventKind }),
+        ...(sourceUrl === null ? {} : { source_url: sourceUrl })
+      }
+    };
   }
 
   private enqueueInternalEvent(event: EventEnvelope, countTowardSession = true): void {
@@ -1215,6 +1321,28 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     return matchesStatusCodeFilter(statusCode, filter.statusCodes);
   }
 
+  private shouldCaptureFailedNetworkRequest(url: string, durationMs: number): boolean {
+    const config = this.config;
+    if (config === null) {
+      return false;
+    }
+
+    const filter = config.networkFilter;
+    if (filter.urlPatterns.length > 0 && !filter.urlPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
+      return false;
+    }
+
+    if (filter.urlDenyPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
+      return false;
+    }
+
+    if (filter.minResponseTime !== null && durationMs < filter.minResponseTime) {
+      return false;
+    }
+
+    return true;
+  }
+
   private pruneExpiredRemoteProbeDirectives(nowMs: number): void {
     const directives = this.remoteProbeState.directives.filter((directive) => Date.parse(directive.expiresAt) > nowMs);
     if (this.activeTriggerDirective !== null && Date.parse(this.activeTriggerDirective.expiresAt) <= nowMs) {
@@ -1255,6 +1383,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         this.pruneExpiredRemoteProbeDirectives(Date.now());
         await this.activatePendingTriggerTokenIfPossible();
       }
+      config.captureRules = parseRemoteCaptureRulesPayload(payload);
     } catch {
       return;
     }

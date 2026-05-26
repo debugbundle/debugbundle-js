@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { evaluateNodeCaptureRulesForEvent } from "./capture-rules.js";
 import { resolveDefaultNodeTransport } from "./file-transport.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
 import { createExpressMiddleware, createFastifyPlugin, createNextHandlerWrapper } from "./framework-integrations.js";
@@ -137,7 +138,8 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     directives: [],
     pollIntervalMs: DEFAULT_PROBES_POLL_INTERVAL_MS,
     triggerTokenKey: null,
-    capturePolicy: BALANCED_CAPTURE_POLICY
+    capturePolicy: BALANCED_CAPTURE_POLICY,
+    captureRules: []
   };
   private uncaughtExceptionHandler: ((error: Error) => void) | null = null;
   private unhandledRejectionHandler: ((reason: unknown) => void) | null = null;
@@ -216,6 +218,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       maxProbeEntriesPerLabel: normalizeFiniteNumber(config.maxProbeEntriesPerLabel, DEFAULT_MAX_PROBE_ENTRIES, 1),
       probeFlushOnError: config.probeFlushOnError ?? true,
       requestTimeoutMs: normalizeFiniteNumber(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, 1),
+      captureRules: [],
       fetchImpl,
       transport: resolvedTransport.transport,
       autoDetectLoggers: config.autoDetectLoggers ?? true,
@@ -296,7 +299,8 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       directives: [],
       pollIntervalMs: DEFAULT_PROBES_POLL_INTERVAL_MS,
       triggerTokenKey: null,
-      capturePolicy: BALANCED_CAPTURE_POLICY
+      capturePolicy: BALANCED_CAPTURE_POLICY,
+      captureRules: []
     };
     this.suppressionTracker.reset();
   }
@@ -829,6 +833,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private enqueueEvent(event: EventEnvelope): void {
+    const resolvedEvent = this.applyCaptureRulesToEvent(event);
+    if (resolvedEvent === null) {
+      return;
+    }
+
+    event = resolvedEvent;
     const suppressionKey = this.buildSuppressionKey(event);
     if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
       this.scheduleFlush();
@@ -836,6 +846,40 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
 
     this.enqueueInternalEvent(event);
+  }
+
+  private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
+    const config = this.config;
+    const captureRules = this.remoteProbeConfig.captureRules;
+    if (config === null || captureRules.length === 0) {
+      return event;
+    }
+
+    const projectId = captureRules[0]?.project_id;
+    if (typeof projectId !== "string" || projectId.length === 0) {
+      return event;
+    }
+
+    try {
+      const captureRule = evaluateNodeCaptureRulesForEvent(
+        captureRules,
+        projectId,
+        event,
+        new Date().toISOString()
+      );
+
+      if (captureRule === null) {
+        return event;
+      }
+
+      if (captureRule.outcome === "drop" || captureRule.outcome === "sampled_out") {
+        return null;
+      }
+    } catch {
+      return event;
+    }
+
+    return event;
   }
 
   private enqueueInternalEvent(event: EventEnvelope): void {

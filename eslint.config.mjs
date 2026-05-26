@@ -7,7 +7,7 @@ const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default [
   {
-    ignores: ["coverage/**", "packages/**/dist/**", "node_modules/**"]
+    ignores: ["coverage/**", "packages/**/dist/**", "node_modules/**", ".tmp/**"]
   },
   {
     files: ["**/*.ts", "**/*.tsx"],

@@ -1,8 +1,9 @@
+import packageJson from "../package.json" with { type: "json" };
 import type { EventEnvelope } from "@debugbundle/shared-types";
 export type { EventEnvelope };
 
 export const SDK_NAME = "@debugbundle/sdk-browser";
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = packageJson.version;
 export const SDK_SCHEMA_VERSION = "2026-03-01";
 export const DEFAULT_ENDPOINT = "https://api.debugbundle.com/v1/events";
 export const DEFAULT_BATCH_SIZE = 10;
@@ -29,10 +30,70 @@ export type BreadcrumbType = "route_change" | "click" | "form_submit" | "console
 export type BrowserPattern = string;
 export type BrowserCapturePreset = "minimal" | "balanced" | "investigative";
 export type BrowserCaptureRequestEvents = "off" | "failures_only" | "filtered" | "all";
+export type BrowserCaptureRuleAction = "demote" | "sample" | "drop";
+export type BrowserCaptureRuleSampleEventClass = "preserve" | "context";
+export type BrowserCaptureRuleEventType = EventEnvelope["event_type"];
+export type BrowserCaptureRuleRuntime = "browser" | "node" | "python" | "php" | "java" | "go" | "ruby" | "unknown";
+export type BrowserCaptureRuleEventClass = "incident_signal" | "context_signal" | "operational_signal";
 export interface BrowserRequestMetadata {
   operation?: string;
   initiator?: string;
   feature?: string;
+}
+
+export interface BrowserCaptureRuleUrlMatcher {
+  host?: string;
+  host_suffix?: string;
+  path_prefix?: string;
+  path_equals?: string;
+}
+
+export interface BrowserCaptureRuleMatcher {
+  event_types?: readonly BrowserCaptureRuleEventType[];
+  services?: readonly string[];
+  environments?: readonly string[];
+  runtime?: readonly BrowserCaptureRuleRuntime[];
+  first_party?: boolean;
+  error_name?: string;
+  message_contains?: string;
+  message_equals?: string;
+  browser_event_kind?: "window_error" | "resource_error";
+  resource_url?: BrowserCaptureRuleUrlMatcher;
+  request_url?: BrowserCaptureRuleUrlMatcher;
+  status_codes?: readonly number[];
+  status_ranges?: readonly { start: number; end: number }[];
+  fingerprint?: {
+    version: string;
+    value: string;
+  };
+}
+
+export interface BrowserCaptureRule {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  action: BrowserCaptureRuleAction;
+  matcher: BrowserCaptureRuleMatcher;
+  sample_rate: number | null;
+  sample_event_class: BrowserCaptureRuleSampleEventClass | null;
+  created_by_user_id: string | null;
+  created_from_incident_id: string | null;
+  created_from_event_id: string | null;
+  expires_at: string | null;
+  hit_count: number;
+  last_matched_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrowserCaptureRuleEvaluationResult {
+  rule_id: string;
+  action: BrowserCaptureRuleAction;
+  outcome: "demote" | "drop" | "sampled_in" | "sampled_out";
+  sample_rate: number | null;
+  sample_event_class: BrowserCaptureRuleSampleEventClass | null;
 }
 
 export type BrowserFetchInit = {
@@ -121,8 +182,8 @@ export interface BrowserCryptoSource {
 }
 
 export interface BrowserEventSource {
-  addEventListener(eventName: string, listener: (event: unknown) => void): void;
-  removeEventListener(eventName: string, listener: (event: unknown) => void): void;
+  addEventListener(eventName: string, listener: (event: unknown) => void, options?: boolean | { capture?: boolean }): void;
+  removeEventListener(eventName: string, listener: (event: unknown) => void, options?: boolean | { capture?: boolean }): void;
 }
 
 export interface BrowserDocumentSource extends BrowserEventSource {
@@ -244,6 +305,20 @@ export interface CaptureBrowserExceptionContext {
   target?: Record<string, unknown> & {
     outerHTML?: string;
   };
+  browser_event?: BrowserExceptionEventContext;
+}
+
+export interface BrowserExceptionEventContext {
+  kind: "window_error" | "resource_error";
+  message: string | null;
+  file_name: string | null;
+  line_number: number | null;
+  column_number: number | null;
+  target: {
+    tag_name: string | null;
+    source_url: string | null;
+  } | null;
+  opaque: boolean;
 }
 
 export interface DebugBundleBrowserSdk {
@@ -286,6 +361,7 @@ export interface ActiveConfig {
   maxProbeEntriesPerLabel: number;
   probeFlushOnError: boolean;
   requestTimeoutMs: number;
+  captureRules: BrowserCaptureRule[];
   fetchImpl: BrowserFetch | null;
   transport: DebugBundleBrowserTransport;
   transportMode: BrowserTransportMode;

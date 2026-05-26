@@ -1,8 +1,9 @@
+import packageJson from "../package.json" with { type: "json" };
 import type { JsonObject, JsonValue } from "@debugbundle/redaction";
 import type { EventEnvelope } from "@debugbundle/shared-types";
 
 export const SDK_NAME = "@debugbundle/sdk-node";
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = packageJson.version;
 export const SDK_SCHEMA_VERSION = "2026-03-01";
 
 export const DEFAULT_ENDPOINT = "https://api.debugbundle.com/v1/events";
@@ -39,6 +40,60 @@ export interface CapturePolicy {
   captureProbeEvents: CaptureProbeEvents;
   immediateClientErrorStatuses: number[];
 }
+
+export type NodeCaptureRuleAction = "demote" | "sample" | "drop";
+export type NodeCaptureRuleSampleEventClass = "preserve" | "context";
+export type NodeCaptureRuleRuntime = "browser" | "node" | "python" | "php" | "java" | "go" | "ruby" | "unknown";
+
+export type NodeCaptureRuleUrlMatcher = {
+  host?: string;
+  host_suffix?: string;
+  path_prefix?: string;
+  path_equals?: string;
+};
+
+export type NodeCaptureRuleMatcher = {
+  event_types?: EventEnvelope["event_type"][];
+  services?: string[];
+  environments?: string[];
+  runtime?: NodeCaptureRuleRuntime[];
+  first_party?: boolean;
+  error_name?: string;
+  message_contains?: string;
+  message_equals?: string;
+  request_url?: NodeCaptureRuleUrlMatcher;
+  status_codes?: number[];
+  status_ranges?: Array<{ start: number; end: number }>;
+  fingerprint?: { version: string; value: string };
+};
+
+export type NodeCaptureRule = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  action: NodeCaptureRuleAction;
+  matcher: NodeCaptureRuleMatcher;
+  sample_rate: number | null;
+  sample_event_class: NodeCaptureRuleSampleEventClass | null;
+  created_by_user_id: string | null;
+  created_from_incident_id: string | null;
+  created_from_event_id: string | null;
+  expires_at: string | null;
+  hit_count: number;
+  last_matched_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NodeCaptureRuleEvaluationResult = {
+  rule_id: string;
+  action: NodeCaptureRuleAction;
+  outcome: "demote" | "drop" | "sampled_in" | "sampled_out";
+  sample_rate: number | null;
+  sample_event_class: NodeCaptureRuleSampleEventClass | null;
+};
 
 export const BALANCED_CAPTURE_POLICY: CapturePolicy = {
   preset: "balanced",
@@ -180,6 +235,7 @@ export interface ActiveConfig {
   maxProbeEntriesPerLabel: number;
   probeFlushOnError: boolean;
   requestTimeoutMs: number;
+  captureRules: NodeCaptureRule[];
   fetchImpl: typeof fetch;
   transport: DebugBundleTransport;
   autoDetectLoggers: boolean;
@@ -202,6 +258,7 @@ export interface RemoteProbeConfigSnapshot {
   pollIntervalMs: number;
   triggerTokenKey: string | null;
   capturePolicy: CapturePolicy;
+  captureRules: NodeCaptureRule[];
 }
 
 export interface ProbeBufferItem {

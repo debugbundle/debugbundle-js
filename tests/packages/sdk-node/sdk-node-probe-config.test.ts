@@ -278,7 +278,8 @@ describe("sdk-node capture policy enforcement", () => {
       remote_probes_enabled: false,
       active_probes: [],
       poll_interval_ms: 60_000,
-      capture_policy: capturePolicy
+      capture_policy: capturePolicy,
+      capture_rules: []
     });
   }
 
@@ -527,5 +528,99 @@ describe("sdk-node capture policy enforcement", () => {
     const requestEvents = events.filter((e) => e.event_type === "request_event");
     expect(requestEvents).toHaveLength(1);
     expect(requestEvents[0]?.payload).toMatchObject({ path: "/boom", response_status: 503 });
+  });
+
+  it("should drop matching request events locally after sdk config loads", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createJsonResponse({
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        poll_interval_ms: 60_000,
+        capture_policy: BALANCED_POLICY,
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000301",
+            project_id: "proj_123",
+            name: "Drop internal health noise",
+            description: null,
+            enabled: true,
+            action: "drop",
+            matcher: {
+              event_types: ["request_event"],
+              runtime: ["node"],
+              request_url: { path_prefix: "/internal/health" }
+            },
+            sample_rate: null,
+            sample_event_class: null,
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureRequest({ method: "GET", path: "/internal/health/live" }, { statusCode: 503 });
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("should drop sampled-out backend logs locally after sdk config loads", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createJsonResponse({
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        poll_interval_ms: 60_000,
+        capture_policy: BALANCED_POLICY,
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000302",
+            project_id: "proj_123",
+            name: "Sample out cache noise",
+            description: null,
+            enabled: true,
+            action: "sample",
+            matcher: {
+              event_types: ["log_event"],
+              runtime: ["node"],
+              message_contains: "cache heartbeat"
+            },
+            sample_rate: 0,
+            sample_event_class: "preserve",
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureLog("cache heartbeat timeout", "error");
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
   });
 });

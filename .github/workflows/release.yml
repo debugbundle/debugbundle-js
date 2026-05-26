@@ -153,49 +153,8 @@ jobs:
           pnpm test
           pnpm build
 
-      - name: Prepare release packages
-        run: pnpm prepare:release
-
       - name: Smoke test packed SDK artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf .tmp/npm-packages
-          mkdir -p .tmp/npm-packages
-          npm pack ./.tmp/npm-release/sdk-node --pack-destination .tmp/npm-packages
-          npm pack ./.tmp/npm-release/sdk-browser --pack-destination .tmp/npm-packages
-
-          tmpdir="$(mktemp -d)"
-          cat > "$tmpdir/package.json" <<'EOF'
-          {
-            "name": "debugbundle-js-release-smoke",
-            "private": true,
-            "type": "module"
-          }
-          EOF
-
-          npm install --prefix "$tmpdir" --no-package-lock \
-            "@debugbundle/shared-types@${RELEASE_VERSION}" \
-            "@debugbundle/redaction@${RELEASE_VERSION}" \
-            "$PWD/.tmp/npm-packages/debugbundle-sdk-node-${RELEASE_VERSION}.tgz" \
-            "$PWD/.tmp/npm-packages/debugbundle-sdk-browser-${RELEASE_VERSION}.tgz"
-
-          cd "$tmpdir"
-          node --input-type=module <<'EOF'
-          const nodeSdk = await import("@debugbundle/sdk-node");
-          const browserSdk = await import("@debugbundle/sdk-browser");
-
-          if (typeof nodeSdk.createDebugBundleSdk !== "function") {
-            throw new Error("sdk-node export missing");
-          }
-
-          if (typeof browserSdk.createDebugBundleBrowserSdk !== "function") {
-            throw new Error("sdk-browser export missing");
-          }
-          EOF
-        env:
-          RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
+        run: pnpm smoke:packed
 
       - name: Publish SDK packages
         if: steps.published_state.outputs.state == 'none'
@@ -206,56 +165,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Smoke test published SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for package_name in @debugbundle/sdk-node @debugbundle/sdk-browser; do
-            for attempt in $(seq 1 30); do
-              if npm view "${package_name}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-                break
-              fi
-
-              if [[ "$attempt" == "30" ]]; then
-                echo "${package_name}@${RELEASE_VERSION} not visible on npm after propagation wait" >&2
-                npm view "${package_name}@${RELEASE_VERSION}" version
-                exit 1
-              fi
-
-              sleep 10
-            done
-
-            npm view "${package_name}@${RELEASE_VERSION}" version
-          done
-
-          tmpdir="$(mktemp -d)"
-          cat > "$tmpdir/package.json" <<'EOF'
-          {
-            "name": "debugbundle-js-registry-smoke",
-            "private": true,
-            "type": "module"
-          }
-          EOF
-
-          npm install --prefix "$tmpdir" --no-package-lock \
-            "@debugbundle/sdk-node@${RELEASE_VERSION}" \
-            "@debugbundle/sdk-browser@${RELEASE_VERSION}"
-
-          cd "$tmpdir"
-          node --input-type=module <<'EOF'
-          const nodeSdk = await import("@debugbundle/sdk-node");
-          const browserSdk = await import("@debugbundle/sdk-browser");
-
-          if (typeof nodeSdk.createDebugBundleSdk !== "function") {
-            throw new Error("sdk-node export missing");
-          }
-
-          if (typeof browserSdk.createDebugBundleBrowserSdk !== "function") {
-            throw new Error("sdk-browser export missing");
-          }
-          EOF
+        run: pnpm smoke:registry
         env:
-          RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
+          DEBUGBUNDLE_SMOKE_VERSION: ${{ steps.release_version.outputs.value }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

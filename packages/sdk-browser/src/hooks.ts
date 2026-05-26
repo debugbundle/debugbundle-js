@@ -102,6 +102,8 @@ function buildNetworkBreadcrumbData(
     requestBody: unknown;
     responseHeaders: Record<string, string> | undefined;
     responseContentLength: number | undefined;
+    failureKind?: string;
+    failureReason?: string;
   }
 ): Record<string, unknown> {
   const data: Record<string, unknown> = {
@@ -125,6 +127,12 @@ function buildNetworkBreadcrumbData(
   if (extras.responseContentLength !== undefined) {
     data["response_content_length"] = extras.responseContentLength;
   }
+  if (extras.failureKind !== undefined) {
+    data["failure_kind"] = extras.failureKind;
+  }
+  if (extras.failureReason !== undefined) {
+    data["failure_reason"] = extras.failureReason;
+  }
 
   const meta = extras.requestMetadata;
   if (meta?.operation !== undefined) data["operation"] = meta.operation;
@@ -132,6 +140,25 @@ function buildNetworkBreadcrumbData(
   if (meta?.feature !== undefined) data["feature"] = meta.feature;
 
   return data;
+}
+
+function normalizeNetworkFailureReason(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return truncateBody(error.message.trim());
+  }
+
+  if (typeof error === "string" && error.trim().length > 0) {
+    return truncateBody(error.trim());
+  }
+
+  if (typeof error === "object" && error !== null) {
+    const message = (error as Record<string, unknown>)["message"];
+    if (typeof message === "string" && message.trim().length > 0) {
+      return truncateBody(message.trim());
+    }
+  }
+
+  return "network failure";
 }
 
 interface ConsoleHookInstallResult {
@@ -200,6 +227,7 @@ export function installNetworkHook(
   addBreadcrumb: (breadcrumb: BrowserBreadcrumb) => void,
   captureRequestFailure: (breadcrumb: BrowserBreadcrumb) => void,
   shouldCaptureNetworkRequest: (url: string, statusCode: number, durationMs: number) => boolean,
+  shouldCaptureNetworkFailure: (url: string, durationMs: number) => boolean,
   getCurrentRoute: () => string | null
 ): NetworkHookInstallResult {
   const fetchSource = getFetchSource();
@@ -224,59 +252,94 @@ export function installNetworkHook(
       const injectTraceHeader = shouldInjectTraceHeader(input, config.tracePropagationTargets);
       const traceId = injectTraceHeader ? createBrowserTraceId() : null;
       const startedAt = Date.now();
-      const response = await fetchSource(input, {
-        ...forwardedInit,
-        headers: {
-          ...(requestHeaders ?? {}),
-          ...(traceId === null ? {} : { "X-DebugBundle-Trace-Id": traceId })
-        }
-      });
-      const durationMs = Date.now() - startedAt;
+      try {
+        const response = await fetchSource(input, {
+          ...forwardedInit,
+          headers: {
+            ...(requestHeaders ?? {}),
+            ...(traceId === null ? {} : { "X-DebugBundle-Trace-Id": traceId })
+          }
+        });
+        const durationMs = Date.now() - startedAt;
 
-      const shouldCaptureNetworkBreadcrumb =
-        config.captureNetwork === true &&
-        input !== config.endpoint &&
-        input !== configEndpoint &&
-        shouldCaptureNetworkRequest(input, response.status, durationMs);
+        const shouldCaptureNetworkBreadcrumb =
+          config.captureNetwork === true &&
+          input !== config.endpoint &&
+          input !== configEndpoint &&
+          shouldCaptureNetworkRequest(input, response.status, durationMs);
 
-      if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 400)) {
-        const responseBody = await captureResponseBody(response);
         const requestBody = captureRequestBody(inputInit);
-        const responseHeaders = extractResponseHeaders(response);
-        const contentLengthHeader = response.headers?.get("content-length");
-        const responseContentLength = contentLengthHeader !== null && contentLengthHeader !== undefined
-          ? parseInt(contentLengthHeader, 10)
-          : undefined;
+        if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 400)) {
+          const responseBody = await captureResponseBody(response);
+          const responseHeaders = extractResponseHeaders(response);
+          const contentLengthHeader = response.headers?.get("content-length");
+          const responseContentLength = contentLengthHeader !== null && contentLengthHeader !== undefined
+            ? parseInt(contentLengthHeader, 10)
+            : undefined;
 
-        const breadcrumb = {
-          ts: new Date().toISOString(),
-          breadcrumb_type: "network_request",
-          route: getCurrentRoute(),
-          data: buildNetworkBreadcrumbData(
-            input,
-            typeof inputInit.method === "string" ? inputInit.method : "GET",
-            response.status,
-            durationMs,
-            callerTrace,
-            {
-              requestMetadata,
-              responseBody,
-              requestBody,
-              responseHeaders,
-              responseContentLength: Number.isFinite(responseContentLength) ? responseContentLength : undefined
-            }
-          )
-        } satisfies BrowserBreadcrumb;
+          const breadcrumb = {
+            ts: new Date().toISOString(),
+            breadcrumb_type: "network_request",
+            route: getCurrentRoute(),
+            data: buildNetworkBreadcrumbData(
+              input,
+              typeof inputInit.method === "string" ? inputInit.method : "GET",
+              response.status,
+              durationMs,
+              callerTrace,
+              {
+                requestMetadata,
+                responseBody,
+                requestBody,
+                responseHeaders,
+                responseContentLength: Number.isFinite(responseContentLength) ? responseContentLength : undefined
+              }
+            )
+          } satisfies BrowserBreadcrumb;
 
-        if (shouldCaptureNetworkBreadcrumb) {
-          addBreadcrumb(breadcrumb);
+          if (shouldCaptureNetworkBreadcrumb) {
+            addBreadcrumb(breadcrumb);
+          }
+          if (injectTraceHeader && response.status >= 400) {
+            captureRequestFailure(breadcrumb);
+          }
         }
-        if (injectTraceHeader && response.status >= 400) {
-          captureRequestFailure(breadcrumb);
+
+        return response;
+      } catch (error) {
+        const durationMs = Date.now() - startedAt;
+        const shouldCaptureFailedNetworkBreadcrumb =
+          config.captureNetwork === true &&
+          input !== config.endpoint &&
+          input !== configEndpoint &&
+          shouldCaptureNetworkFailure(input, durationMs);
+
+        if (shouldCaptureFailedNetworkBreadcrumb) {
+          addBreadcrumb({
+            ts: new Date().toISOString(),
+            breadcrumb_type: "network_request",
+            route: getCurrentRoute(),
+            data: buildNetworkBreadcrumbData(
+              input,
+              typeof inputInit.method === "string" ? inputInit.method : "GET",
+              0,
+              durationMs,
+              callerTrace,
+              {
+                requestMetadata,
+                responseBody: undefined,
+                requestBody: captureRequestBody(inputInit),
+                responseHeaders: undefined,
+                responseContentLength: undefined,
+                failureKind: "network_error",
+                failureReason: normalizeNetworkFailureReason(error)
+              }
+            )
+          });
         }
+
+        throw error;
       }
-
-      return response;
     };
   }
 

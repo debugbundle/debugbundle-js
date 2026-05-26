@@ -5,6 +5,7 @@ import {
   type RemoteProbeConfigSnapshot,
   type RemoteProbeDirective
 } from "./types.js";
+import { parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 
 const VALID_CAPTURE_LOGS = new Set(["off", "error", "warning", "info"]);
 const VALID_CAPTURE_REQUEST_EVENTS = new Set(["off", "failures_only", "filtered", "all"]);
@@ -151,7 +152,8 @@ export function parseRemoteProbeConfig(
     directives,
     pollIntervalMs: remoteProbesEnabled ? pollIntervalMs : DEFAULT_PROBES_POLL_INTERVAL_MS,
     triggerTokenKey: asString(record["trigger_token_key"]),
-    capturePolicy
+    capturePolicy,
+    captureRules: parseRemoteCaptureRulesPayload(payload)
   };
 }
 

@@ -13,6 +13,8 @@ Use this package to capture frontend exceptions, breadcrumbs, first-party reques
 npm install @debugbundle/sdk-browser
 ```
 
+Keep `@debugbundle/sdk-browser` and `@debugbundle/sdk-node` on the same release version. If you pin the core-owned support packages directly, keep `@debugbundle/shared-types` and `@debugbundle/redaction` on the same version too.
+
 ## Quick Start
 
 ```ts
@@ -37,6 +39,14 @@ The browser SDK starts capture only after `init()` is called. Importing the pack
 | Direct cloud | `projectToken` plus the hosted endpoint | Frontend-only apps without a backend. Use a dedicated write-only token with allowed-origin restrictions. |
 
 For relay setup, see <https://debugbundle.com/docs/sdks/browser-relay>.
+
+### Configuration source precedence
+
+1. Explicit `init(...)` fields win.
+2. Omitted values fall back to package defaults such as `service: "browser-app"` and `environment: "development"`.
+3. Capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local browser config.
+
+Relay mode should configure only the same-origin path plus the service/environment names. Direct-cloud mode requires a dedicated public write-only token and a real ingestion endpoint URL.
 
 ## What It Captures
 
@@ -79,6 +89,12 @@ Breadcrumbs are kept in memory and attached to frontend exceptions by default. T
 | `requestTimeoutMs` | `5000` | Transport timeout in milliseconds. |
 | `transport` | fetch transport | Custom transport function for tests or advanced routing. |
 
+## Service naming guidance
+
+Keep the browser service name distinct from backend deployables inside the same DebugBundle project. A common pattern is `checkout-web` for the browser frontend and `checkout-api` for the backend relay host.
+
+When you send through a same-origin relay, the browser service name should stay browser-owned. The backend relay should not overwrite it unless you intentionally want a shared surface name.
+
 ## Explicit Capture
 
 ```ts
@@ -95,8 +111,42 @@ await debugbundle.flush();
 - SDK failures are caught internally and do not break the host page.
 - Sensitive fields are redacted before transport.
 - Duplicate event storms are suppressed locally.
-- Browser project tokens are never needed when using the relay.
+- Browser project tokens are never needed when using the same-origin relay.
 - Breadcrumb and probe buffers are in-memory only.
+
+## Safe startup behavior
+
+- Relay mode keeps browser-visible credentials out of the page and does not require a token in frontend config.
+- Invalid relay paths or missing direct-cloud credentials fail closed without crashing the host page.
+- `status()` exposes whether the SDK is healthy, degraded, or disconnected.
+- Auth-rejected direct-cloud responses stop pretending capture is healthy and clear buffered events only after the endpoint explicitly rejects the token.
+
+## First-event verification
+
+Minimal application check:
+
+```ts
+import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
+
+const debugbundle = createDebugBundleBrowserSdk();
+
+debugbundle.init({
+  endpoint: "/debugbundle/browser",
+  service: "checkout-web",
+  environment: "development"
+});
+
+debugbundle.captureException(new Error("debugbundle browser smoke"));
+await debugbundle.flush();
+console.log(debugbundle.status());
+```
+
+Repository-level verification runs the same clean-install smoke used by CI and release:
+
+```bash
+pnpm build
+pnpm smoke:packed
+```
 
 ## Documentation
 

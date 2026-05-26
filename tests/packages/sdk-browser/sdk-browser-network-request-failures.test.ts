@@ -222,6 +222,58 @@ describe("browser SDK network request failures", () => {
     expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data["status_code"]).toBe(404);
   });
 
+  it("should demote matching request failures back to breadcrumb-only context", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false }, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: { preset: "balanced", capture_request_events: "failures_only" },
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000101",
+            project_id: "proj_123",
+            name: "Demote checkout request failures",
+            description: null,
+            enabled: true,
+            action: "demote",
+            matcher: {
+              event_types: ["request_event"],
+              request_url: { path_equals: "/v1/billing/checkout" },
+              status_codes: [404]
+            },
+            sample_rate: null,
+            sample_event_class: null,
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    const event = getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.data).toMatchObject({
+      url: "/v1/billing/checkout?plan=team",
+      method: "POST",
+      status_code: 404
+    });
+  });
+
   it("should promote investigative 409 network responses to request events after sdk config is loaded", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk({}, {
       sdkConfigPayload: {
@@ -310,5 +362,26 @@ describe("browser SDK network request failures", () => {
 
     expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
     expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data["status_code"]).toBe(429);
+  });
+
+  it("should capture rejected fetch requests as failed network breadcrumbs", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockRejectedValueOnce(new Error("Failed to fetch"));
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<unknown>;
+    await expect(browserFetch("/v1/billing/checkout?plan=team", { method: "POST" })).rejects.toThrow("Failed to fetch");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data).toMatchObject({
+      url: "/v1/billing/checkout?plan=team",
+      method: "POST",
+      status_code: 0,
+      failure_kind: "network_error",
+      failure_reason: "Failed to fetch"
+    });
   });
 });
