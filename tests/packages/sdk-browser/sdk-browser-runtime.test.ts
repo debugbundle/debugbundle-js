@@ -34,7 +34,7 @@ import {
   stringifyConsoleArgs
 } from "../../../packages/sdk-browser/src/runtime.js";
 import { parseRemoteCaptureRulesPayload } from "../../../packages/sdk-browser/src/capture-rules.js";
-import { DEFAULT_ENDPOINT } from "../../../packages/sdk-browser/src/types.js";
+import { DEFAULT_ENDPOINT, DEFAULT_RELAY_ENDPOINT } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser runtime helpers", () => {
   beforeEach((): void => {
@@ -124,6 +124,7 @@ describe("sdk-browser runtime helpers", () => {
         endpoint: "https://api.debugbundle.com/v1/events",
         headers: { authorization: "Bearer token" },
         events: [],
+        transportMode: "direct",
         timeout_ms: 5000
       })
     ).resolves.toEqual({ status: 202, body: { ok: true } });
@@ -196,8 +197,8 @@ describe("sdk-browser runtime helpers", () => {
   });
 
   it("should serialize relay transport bodies with batch payloads and direct bodies with events payloads", (): void => {
-    expect(buildBrowserTransportRequestBody("/debugbundle/browser", [])).toBe('{"batch":[]}');
-    expect(buildBrowserTransportRequestBody("https://api.debugbundle.com/v1/events", [])).toBe('{"events":[]}');
+    expect(buildBrowserTransportRequestBody("relay", [])).toBe('{"batch":[]}');
+    expect(buildBrowserTransportRequestBody("direct", [])).toBe('{"events":[]}');
   });
 
   it("should resolve browser transport mode from endpoint and project token configuration", (): void => {
@@ -230,8 +231,44 @@ describe("sdk-browser runtime helpers", () => {
       projectToken: null
     });
 
+    expect(resolveBrowserTransport({ transportMode: "relay" })).toEqual({
+      mode: "relay",
+      endpoint: DEFAULT_RELAY_ENDPOINT,
+      projectToken: null
+    });
+
+    expect(
+      resolveBrowserTransport({
+        transportMode: "relay",
+        endpoint: "https://api.example.test/debugbundle/browser",
+        projectToken: "dbundle_proj_should_not_be_used_in_relay"
+      })
+    ).toEqual({
+      mode: "relay",
+      endpoint: "https://api.example.test/debugbundle/browser",
+      projectToken: null
+    });
+
+    expect(
+      resolveBrowserTransport({
+        transportMode: "direct",
+        endpoint: "/debugbundle/browser",
+        projectToken: "dbundle_proj_browser"
+      })
+    ).toEqual({
+      mode: "disabled",
+      endpoint: null,
+      projectToken: null
+    });
+
     for (const endpoint of ["debugbundle/browser", "javascript:alert(1)", "//evil.example/relay"]) {
       expect(resolveBrowserTransport({ endpoint })).toEqual({
+        mode: "disabled",
+        endpoint: null,
+        projectToken: null
+      });
+
+      expect(resolveBrowserTransport({ transportMode: "relay", endpoint })).toEqual({
         mode: "disabled",
         endpoint: null,
         projectToken: null

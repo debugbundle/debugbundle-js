@@ -22,6 +22,7 @@ import {
   type BrowserWindowMetrics,
   type BrowserXmlHttpRequestConstructor,
   DEFAULT_ENDPOINT,
+  DEFAULT_RELAY_ENDPOINT,
   type DebugBundleBrowserTransport,
   type DebugBundleBrowserTransportResponse,
   type EventEnvelope,
@@ -324,7 +325,7 @@ export function createFetchTransport(): DebugBundleBrowserTransport {
     const response = await fetchImpl(request.endpoint, {
       method: "POST",
       headers: request.headers,
-      body: buildBrowserTransportRequestBody(request.endpoint, request.events)
+      body: buildBrowserTransportRequestBody(request.transportMode, request.events)
     });
 
     const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
@@ -337,8 +338,8 @@ export function createFetchTransport(): DebugBundleBrowserTransport {
   };
 }
 
-export function buildBrowserTransportRequestBody(endpoint: string, events: EventEnvelope[]): string {
-  if (isAbsoluteHttpUrl(endpoint)) {
+export function buildBrowserTransportRequestBody(transportMode: BrowserTransportMode, events: EventEnvelope[]): string {
+  if (transportMode === "direct") {
     return JSON.stringify({ events });
   }
 
@@ -367,12 +368,52 @@ function isValidRelayEndpointPath(value: string): boolean {
   }
 }
 
+function isValidRelayEndpoint(value: string): boolean {
+  return isValidRelayEndpointPath(value) || isAbsoluteHttpUrl(value);
+}
+
 export function resolveBrowserTransport(input: {
   endpoint?: string | undefined;
   projectToken?: string | undefined;
+  transportMode?: BrowserTransportMode | undefined;
 }): ResolvedBrowserTransport {
   const endpoint = input.endpoint?.trim();
   const projectToken = input.projectToken?.trim();
+  const transportMode = input.transportMode;
+
+  if (transportMode === "relay") {
+    const relayEndpoint = endpoint !== undefined && endpoint.length > 0 ? endpoint : DEFAULT_RELAY_ENDPOINT;
+    if (!isValidRelayEndpoint(relayEndpoint)) {
+      return {
+        mode: "disabled",
+        endpoint: null,
+        projectToken: null
+      };
+    }
+
+    return {
+      mode: "relay",
+      endpoint: relayEndpoint,
+      projectToken: null
+    };
+  }
+
+  if (transportMode === "direct") {
+    const directEndpoint = endpoint !== undefined && endpoint.length > 0 ? endpoint : DEFAULT_ENDPOINT;
+    if (!isAbsoluteHttpUrl(directEndpoint) || projectToken === undefined || projectToken.length === 0) {
+      return {
+        mode: "disabled",
+        endpoint: null,
+        projectToken: null
+      };
+    }
+
+    return {
+      mode: "direct",
+      endpoint: directEndpoint,
+      projectToken
+    };
+  }
 
   if (endpoint !== undefined && endpoint.length > 0) {
     if (isAbsoluteHttpUrl(endpoint)) {

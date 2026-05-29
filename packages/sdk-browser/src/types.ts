@@ -6,6 +6,7 @@ export const SDK_NAME = "@debugbundle/sdk-browser";
 export const SDK_VERSION = packageJson.version;
 export const SDK_SCHEMA_VERSION = "2026-03-01";
 export const DEFAULT_ENDPOINT = "https://api.debugbundle.com/v1/events";
+export const DEFAULT_RELAY_ENDPOINT = "/debugbundle/browser";
 export const DEFAULT_BATCH_SIZE = 10;
 export const DEFAULT_FLUSH_INTERVAL_MS = 3_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -259,6 +260,7 @@ export interface DebugBundleBrowserTransportRequest {
   endpoint: string;
   headers: Record<string, string>;
   events: EventEnvelope[];
+  transportMode: BrowserTransportMode;
   timeout_ms: number;
 }
 
@@ -283,6 +285,7 @@ export interface DebugBundleBrowserInitConfig {
   batchSize?: number;
   flushInterval?: number;
   endpoint?: string;
+  transportMode?: BrowserTransportMode;
   logLevel?: BrowserLogLevel;
   maxBreadcrumbs?: number;
   breadcrumbsOnErrorOnly?: boolean;

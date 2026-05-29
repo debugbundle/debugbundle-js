@@ -216,7 +216,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     const enabled = config.enabled ?? true;
     const resolvedTransport = resolveBrowserTransport({
       endpoint: config.endpoint,
-      projectToken: config.projectToken
+      projectToken: config.projectToken,
+      transportMode: config.transportMode
     });
 
     if (!enabled || resolvedTransport.mode === "disabled" || resolvedTransport.endpoint === null) {
@@ -496,6 +497,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
           endpoint: config.endpoint,
           headers: this.getTransportHeaders(config),
           events,
+          transportMode: config.transportMode,
           timeout_ms: config.requestTimeoutMs
         });
 
@@ -1158,7 +1160,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     const pendingEvents = [...this.bufferedEvents];
-    const body = buildBrowserTransportRequestBody(config.endpoint, pendingEvents);
+    const body = buildBrowserTransportRequestBody(config.transportMode, pendingEvents);
 
     const flushViaKeepalive = (): void => {
       if (config.fetchImpl === null) {

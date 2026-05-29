@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-05-29
+
+### Added
+- Explicit browser relay transport selection for split frontend and backend deployments, so absolute relay URLs stay on the relay contract instead of falling back to direct-cloud ingestion.
+
+### Fixed
+- Added relay preflight handling and matching CORS headers for explicitly allowed split-host browser relay traffic.
+
 ## [0.1.8] - 2026-05-19
 
 ### Changed

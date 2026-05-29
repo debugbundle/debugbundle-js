@@ -8,12 +8,31 @@ type ExpressRelayRequest = {
 };
 
 type ExpressRelayResponse = {
+  header?: (field: string, value: string) => unknown;
+  set?: (headers: Record<string, string>) => unknown;
   status: (code: number) => {
     json?: (body: unknown) => void;
     end?: () => void;
     send?: (body: unknown) => void;
   };
 };
+
+function applyRelayHeaders(response: ExpressRelayResponse, headers: Record<string, string> | undefined): void {
+  if (headers === undefined) {
+    return;
+  }
+
+  if (typeof response.set === "function") {
+    response.set(headers);
+    return;
+  }
+
+  if (typeof response.header === "function") {
+    for (const [key, value] of Object.entries(headers)) {
+      response.header(key, value);
+    }
+  }
+}
 
 function serializeRelayBody(body: unknown): string | Uint8Array {
   if (typeof body === "string" || body instanceof Uint8Array) {
@@ -38,6 +57,7 @@ export function debugBundleRelay(options: BrowserRelayOptions = {}) {
       ipAddress: request.ip ?? null
     });
 
+    applyRelayHeaders(response, relayResponse.headers);
     const sender = response.status(relayResponse.status);
     if (relayResponse.body === undefined) {
       sender.end?.();

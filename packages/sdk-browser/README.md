@@ -5,7 +5,7 @@ Browser SDK for DebugBundle.
 ![npm](https://img.shields.io/npm/v/%40debugbundle%2Fsdk-browser?label=npm)
 ![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue)
 
-Use this package to capture frontend exceptions, breadcrumbs, first-party request failures, browser device context, trace headers, and probe data. The recommended transport is a same-origin browser relay served by your backend.
+Use this package to capture frontend exceptions, breadcrumbs, first-party request failures, browser device context, trace headers, and probe data. The recommended transport is a browser relay served by your backend.
 
 ## Installation
 
@@ -23,6 +23,7 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 const debugbundle = createDebugBundleBrowserSdk();
 
 debugbundle.init({
+  transportMode: "relay",
   endpoint: "/debugbundle/browser",
   service: "web",
   environment: "production"
@@ -35,7 +36,7 @@ The browser SDK starts capture only after `init()` is called. Importing the pack
 
 | Mode | Configuration | Use when |
 | --- | --- | --- |
-| Relay | `endpoint: "/debugbundle/browser"` | Recommended for full-stack apps. Browser events go to your backend first. |
+| Relay | `transportMode: "relay"`, plus `/debugbundle/browser` or an absolute backend relay URL | Recommended for full-stack apps. Browser events go to your backend first. |
 | Direct cloud | `projectToken` plus the hosted endpoint | Frontend-only apps without a backend. Use a dedicated write-only token with allowed-origin restrictions. |
 
 For relay setup, see <https://debugbundle.com/docs/sdks/browser-relay>.
@@ -46,7 +47,7 @@ For relay setup, see <https://debugbundle.com/docs/sdks/browser-relay>.
 2. Omitted values fall back to package defaults such as `service: "browser-app"` and `environment: "development"`.
 3. Capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local browser config.
 
-Relay mode should configure only the same-origin path plus the service/environment names. Direct-cloud mode requires a dedicated public write-only token and a real ingestion endpoint URL.
+Relay mode should configure only `transportMode`, the relay endpoint, and service/environment names. The same-origin relay path case, such as `/debugbundle/browser`, is inferred as relay for compatibility. Absolute backend relay URLs require `transportMode: "relay"` so the browser SDK stays credential-free and sends the relay batch shape. Direct-cloud mode requires a dedicated public write-only token and a real ingestion endpoint URL.
 
 ## What It Captures
 
@@ -64,6 +65,7 @@ Breadcrumbs are kept in memory and attached to frontend exceptions by default. T
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `endpoint` | derived from transport | Relay or ingestion endpoint. |
+| `transportMode` | inferred | Explicit `"relay"` or `"direct"` transport selection. Use `"relay"` for absolute backend relay URLs. |
 | `projectToken` | none | Direct cloud write-only token for frontend-only deployments. Omit when using relay. |
 | `service` | `browser-app` | Frontend service name shown on incidents and bundles. |
 | `environment` | `development` | Runtime environment such as `production`, `staging`, or `development`. |
@@ -93,7 +95,7 @@ Breadcrumbs are kept in memory and attached to frontend exceptions by default. T
 
 Keep the browser service name distinct from backend deployables inside the same DebugBundle project. A common pattern is `checkout-web` for the browser frontend and `checkout-api` for the backend relay host.
 
-When you send through a same-origin relay, the browser service name should stay browser-owned. The backend relay should not overwrite it unless you intentionally want a shared surface name.
+When you send through a relay, the browser service name should stay browser-owned. The backend relay should not overwrite it unless you intentionally want a shared surface name.
 
 ## Explicit Capture
 
@@ -111,7 +113,7 @@ await debugbundle.flush();
 - SDK failures are caught internally and do not break the host page.
 - Sensitive fields are redacted before transport.
 - Duplicate event storms are suppressed locally.
-- Browser project tokens are never needed when using the same-origin relay.
+- Browser project tokens are never needed when using relay mode.
 - Breadcrumb and probe buffers are in-memory only.
 
 ## Safe startup behavior
@@ -131,6 +133,7 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 const debugbundle = createDebugBundleBrowserSdk();
 
 debugbundle.init({
+  transportMode: "relay",
   endpoint: "/debugbundle/browser",
   service: "checkout-web",
   environment: "development"

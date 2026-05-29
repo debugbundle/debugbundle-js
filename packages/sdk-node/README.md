@@ -113,6 +113,7 @@ Relay behavior summary:
 
 - same-origin is the default when `allowedOrigins` is omitted
 - split frontend/backend hosts should set explicit allowed origins
+- relay adapters answer allowed CORS `OPTIONS` preflight and add matching CORS headers to allowed POST responses
 - requests must use `Content-Type: application/json`
 - request bodies are capped at `256 KB`
 - per-IP rate limiting is enabled

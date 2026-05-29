@@ -201,6 +201,7 @@ export interface BrowserRelayAcceptedBatch {
 
 export interface BrowserRelayResponse {
   status: number;
+  headers?: Record<string, string>;
   body?: {
     accepted: number;
     rejected: number;
@@ -322,6 +323,16 @@ function isAcceptedRelayContentType(contentType: string | undefined): boolean {
   return normalized.includes("application/json");
 }
 
+function buildCorsHeaders(origin: string): Record<string, string> {
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "600",
+    vary: "Origin"
+  };
+}
+
 function getBodyText(body: string | Uint8Array): string {
   return typeof body === "string" ? body : Buffer.from(body).toString("utf8");
 }
@@ -434,30 +445,51 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
   };
 
   return async (request: BrowserRelayRequest): Promise<BrowserRelayResponse> => {
-    if (request.method !== undefined && request.method.toUpperCase() !== "POST") {
-      return { status: 405 };
-    }
-
     const receivedAt = now();
     const headers = getNormalizedHeaders(request.headers);
+    const sourceOrigin = getSourceOrigin(headers);
 
-    if (!isOriginAllowed(getSourceOrigin(headers), headers, options.allowedOrigins)) {
+    if (!isOriginAllowed(sourceOrigin, headers, options.allowedOrigins)) {
       return { status: 403 };
     }
 
-    if (!isAcceptedRelayContentType(headers["content-type"])) {
+    const corsHeaders = sourceOrigin === null ? undefined : buildCorsHeaders(sourceOrigin);
+    const withHeaders = (response: BrowserRelayResponse): BrowserRelayResponse => {
+      if (corsHeaders === undefined) {
+        return response;
+      }
+
       return {
+        ...response,
+        headers: {
+          ...corsHeaders,
+          ...response.headers
+        }
+      };
+    };
+
+    const requestMethod = request.method?.toUpperCase() ?? "POST";
+    if (requestMethod === "OPTIONS") {
+      return withHeaders({ status: 204 });
+    }
+
+    if (requestMethod !== "POST") {
+      return withHeaders({ status: 405 });
+    }
+
+    if (!isAcceptedRelayContentType(headers["content-type"])) {
+      return withHeaders({
         status: 400,
         body: {
           accepted: 0,
           rejected: 0,
           errors: ["Relay requests must use Content-Type: application/json."]
         }
-      };
+      });
     }
 
     if (getBodySize(request.body) > maxBodyBytes) {
-      return { status: 413 };
+      return withHeaders({ status: 413 });
     }
 
     const ipAddress = request.ipAddress ?? null;
@@ -468,7 +500,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
 
     if (existingState.timestamps.length >= rateLimitPerMinute) {
       rateLimits.set(rateLimitKey, existingState);
-      return { status: 429 };
+      return withHeaders({ status: 429 });
     }
 
     existingState.timestamps.push(receivedAt.getTime());
@@ -478,14 +510,14 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
     try {
       parsedBody = BrowserRelayRequestBodySchema.parse(JSON.parse(getBodyText(request.body)));
     } catch {
-      return {
+      return withHeaders({
         status: 400,
         body: {
           accepted: 0,
           rejected: 0,
           errors: ["Relay request body must be valid JSON with a batch array."]
         }
-      };
+      });
     }
 
     const acceptedEvents: BrowserRelayEvent[] = [];
@@ -540,7 +572,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           });
 
           if (localWriteResult.status !== 202) {
-            return { status: 500 };
+            return withHeaders({ status: 500 });
           }
         } else if (options.durableWrite !== false) {
           const spoolTransport = spoolTransports.get(serviceName) ?? createFileTransport({
@@ -557,7 +589,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           });
 
           if (spoolWriteResult.status !== 202) {
-            return { status: 500 };
+            return withHeaders({ status: 500 });
           }
 
           const forwardResult = await forwardConnectedEvents(acceptedEvents);
@@ -569,7 +601,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
         } else {
           const forwardResult = await forwardConnectedEvents(acceptedEvents);
           if (!forwardResult.configured || !forwardResult.succeeded) {
-            return { status: 500 };
+            return withHeaders({ status: 500 });
           }
         }
 
@@ -580,17 +612,17 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           receivedAt: receivedAt.toISOString()
         });
       } catch {
-        return { status: 500 };
+        return withHeaders({ status: 500 });
       }
     }
 
-    return {
+    return withHeaders({
       status: errors.length === 0 ? 202 : 400,
       body: {
         accepted: acceptedEvents.length,
         rejected: errors.length,
         errors
       }
-    };
+    });
   };
 }

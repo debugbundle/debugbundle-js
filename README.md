@@ -23,7 +23,7 @@ This repository publishes the DebugBundle JavaScript SDK packages used to captur
 `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` ship as one versioned SDK family. Keep the package versions aligned in every public snippet and real application install.
 
 ```bash
-npm install @debugbundle/sdk-node@0.1.10 @debugbundle/sdk-browser@0.1.10
+npm install @debugbundle/sdk-node@0.1.11 @debugbundle/sdk-browser@0.1.11
 ```
 
 If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, keep them on the same version as the SDK packages. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
@@ -67,7 +67,7 @@ The package READMEs contain the full option tables. The short rule for this repo
 2. Runtime-derived defaults fill in omitted values such as environment or service fallback.
 3. capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
 
-For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure only the same-origin relay path plus service and environment names. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
+For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure `transportMode: "relay"`, a relay endpoint, plus service and environment names. Same-origin relay paths are inferred for compatibility; absolute backend relay URLs need explicit relay mode. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
 
 ## Quick Start
 
@@ -94,13 +94,14 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 const debugbundle = createDebugBundleBrowserSdk();
 
 debugbundle.init({
+  transportMode: "relay",
   endpoint: "/debugbundle/browser",
   service: "web",
   environment: "production"
 });
 ```
 
-For full-stack apps, route browser events through a same-origin relay so the project token stays server-side.
+For full-stack apps, route browser events through a backend relay so the project token stays server-side.
 
 ## Install examples for claimed modes
 
@@ -137,7 +138,19 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 const debugbundle = createDebugBundleBrowserSdk();
 
 debugbundle.init({
+  transportMode: "relay",
   endpoint: "/debugbundle/browser",
+  service: "checkout-web",
+  environment: "production"
+});
+```
+
+For split frontend/backend deployments, keep the browser credential-free and point explicit relay mode at the backend relay URL:
+
+```ts
+debugbundle.init({
+  transportMode: "relay",
+  endpoint: "https://api.example.com/debugbundle/browser",
   service: "checkout-web",
   environment: "production"
 });
@@ -213,7 +226,7 @@ pnpm smoke:packed
 After publish, the release workflow runs the same application-level verification against the npm registry:
 
 ```bash
-DEBUGBUNDLE_SMOKE_VERSION=0.1.10 pnpm smoke:registry
+DEBUGBUNDLE_SMOKE_VERSION=0.1.11 pnpm smoke:registry
 ```
 
 ## Safety Defaults

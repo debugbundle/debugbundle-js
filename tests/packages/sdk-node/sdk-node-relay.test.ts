@@ -146,13 +146,16 @@ function createBrowserRelayRequest(input: {
   batch?: unknown[];
   headers?: Record<string, string>;
   ipAddress?: string;
+  method?: string;
   body?: string;
 } = {}): {
+  method?: string;
   headers: Record<string, string>;
   body: string;
   ipAddress: string;
 } {
   return {
+    ...(input.method === undefined ? {} : { method: input.method }),
     headers: {
       "content-type": "application/json; charset=utf-8",
       host: "app.example.com",
@@ -185,7 +188,7 @@ describe("createBrowserRelay", () => {
 
     const response = await relay(request);
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       status: fixture.expected?.status ?? 202,
       body: {
         accepted: fixture.expected?.accepted ?? 1,
@@ -271,7 +274,7 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       status: 202,
       body: {
         accepted: 1,
@@ -328,6 +331,63 @@ describe("createBrowserRelay", () => {
     expect(onAccept).toHaveBeenCalledTimes(1);
   });
 
+  it("answers allowed cross-origin preflight without accepting events", async () => {
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({
+      allowedOrigins: ["https://web.example.com"],
+      onAccept
+    });
+
+    const response = await relay(
+      createBrowserRelayRequest({
+        method: "OPTIONS",
+        body: "",
+        headers: {
+          host: "api.example.com",
+          origin: "https://web.example.com",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type"
+        }
+      })
+    );
+
+    expect(response).toMatchObject({
+      status: 204,
+      headers: {
+        "access-control-allow-origin": "https://web.example.com",
+        "access-control-allow-methods": "POST, OPTIONS",
+        "access-control-allow-headers": "content-type",
+        "access-control-max-age": "600",
+        vary: "Origin"
+      }
+    });
+    expect(onAccept).not.toHaveBeenCalled();
+  });
+
+  it("adds CORS headers to accepted cross-origin relay posts", async () => {
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({
+      allowedOrigins: ["https://web.example.com"],
+      onAccept
+    });
+
+    const response = await relay(
+      createBrowserRelayRequest({
+        headers: {
+          host: "api.example.com",
+          origin: "https://web.example.com"
+        }
+      })
+    );
+
+    expect(response.status).toBe(202);
+    expect(response.headers).toMatchObject({
+      "access-control-allow-origin": "https://web.example.com",
+      vary: "Origin"
+    });
+    expect(onAccept).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects text/plain relay bodies so browser relay requests stay on the canonical application/json contract", async () => {
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
     const relay = createBrowserRelay({ onAccept });
@@ -340,7 +400,7 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       status: 400,
       body: {
         accepted: 0,
@@ -363,7 +423,7 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       status: 400,
       body: {
         accepted: 0,
@@ -384,7 +444,7 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       status: 400,
       body: {
         accepted: 0,
@@ -405,7 +465,7 @@ describe("createBrowserRelay", () => {
       })
     );
 
-    expect(response).toEqual({ status: 413 });
+    expect(response).toMatchObject({ status: 413 });
     expect(onAccept).not.toHaveBeenCalled();
   });
 
@@ -422,7 +482,7 @@ describe("createBrowserRelay", () => {
     }
 
     const rateLimited = await relay(createBrowserRelayRequest());
-    expect(rateLimited).toEqual({ status: 429 });
+    expect(rateLimited).toMatchObject({ status: 429 });
 
     currentTime += 60_001;
 
@@ -441,7 +501,7 @@ describe("createBrowserRelay", () => {
 
       const response = await relay(createBrowserRelayRequest());
 
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         status: 202,
         body: {
           accepted: 1,
@@ -498,7 +558,7 @@ describe("createBrowserRelay", () => {
         })
       );
 
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         status: 202,
         body: {
           accepted: 1,
@@ -563,7 +623,7 @@ describe("createBrowserRelay", () => {
 
       const response = await relay(createBrowserRelayRequest());
 
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         status: 202,
         body: {
           accepted: 1,
@@ -575,7 +635,7 @@ describe("createBrowserRelay", () => {
 
       const files = fs.readdirSync(spoolDir).filter((fileName) => fileName.endsWith(".events.json"));
       expect(files).toHaveLength(1);
-  expect(fs.readdirSync(spoolDir).filter((fileName) => fileName.endsWith(".delivered"))).toEqual([]);
+      expect(fs.readdirSync(spoolDir).filter((fileName) => fileName.endsWith(".delivered"))).toEqual([]);
 
       const spooledBatch = JSON.parse(fs.readFileSync(path.join(spoolDir, files[0] ?? ""), "utf8")) as unknown[];
       expect(spooledBatch).toHaveLength(1);
@@ -610,7 +670,7 @@ describe("createBrowserRelay", () => {
 
       const response = await relay(createBrowserRelayRequest());
 
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         status: 202,
         body: {
           accepted: 1,
@@ -655,7 +715,7 @@ describe("createBrowserRelay", () => {
 
       const response = await relay(createBrowserRelayRequest());
 
-      expect(response).toEqual({ status: 500 });
+      expect(response).toMatchObject({ status: 500 });
       expect(fs.readdirSync(spoolDir)).toEqual([]);
     } finally {
       fs.rmSync(spoolDir, { recursive: true, force: true });

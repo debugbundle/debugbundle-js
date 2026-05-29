@@ -400,10 +400,43 @@ describe("sdk-browser", () => {
 
     const transportRequest = (transport.mock.calls as Array<[DebugBundleBrowserTransportRequest]>)[0]?.[0];
     expect(transportRequest?.endpoint).toBe("/debugbundle/browser");
+    expect(transportRequest?.transportMode).toBe("relay");
     expect(transportRequest?.headers).toEqual({
       "content-type": "application/json"
     });
     expect(transportRequest?.events).toHaveLength(1);
+    expect(transportRequest?.events[0]).not.toHaveProperty("project_token");
+  });
+
+  it("should support explicit relay mode for absolute backend relay endpoints", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+
+    sdk.init({
+      transportMode: "relay",
+      endpoint: "https://api.example.test/debugbundle/browser",
+      projectToken: "dbundle_proj_should_not_be_used_in_relay",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport
+    });
+
+    await settleBrowserTriggerActivation();
+
+    expect(globals.fetchMock).not.toHaveBeenCalled();
+
+    sdk.captureException(new Error("cross-origin relay mode failure"));
+    await sdk.flush();
+
+    const transportRequest = (transport.mock.calls as Array<[DebugBundleBrowserTransportRequest]>)[0]?.[0];
+    expect(transportRequest?.endpoint).toBe("https://api.example.test/debugbundle/browser");
+    expect(transportRequest?.transportMode).toBe("relay");
+    expect(transportRequest?.headers).toEqual({
+      "content-type": "application/json"
+    });
     expect(transportRequest?.events[0]).not.toHaveProperty("project_token");
   });
 
@@ -1125,6 +1158,41 @@ describe("sdk-browser", () => {
         "content-type": "application/json"
       }
     });
+  });
+
+  it("should keep absolute relay unload flushes credential-free and batch-shaped", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+
+    sdk.init({
+      transportMode: "relay",
+      endpoint: "https://api.example.test/debugbundle/browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000
+    });
+
+    globals.sendBeacon.mockReturnValue(false);
+
+    sdk.captureMessage("flush me through absolute relay", "error");
+    globals.windowTarget.dispatch("pagehide", {});
+
+    await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
+    expect(globals.fetchMock).toHaveBeenCalledTimes(1);
+    expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/debugbundle/browser");
+    expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "content-type": "application/json"
+      }
+    });
+    expect(String(globals.fetchMock.mock.calls[0]?.[1]?.body)).toContain('"batch"');
+    expect(String(globals.fetchMock.mock.calls[0]?.[1]?.body)).not.toContain('"events"');
   });
 
   it("should inject trace headers into allowlisted cross-origin fetch requests", async (): Promise<void> => {

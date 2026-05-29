@@ -10,6 +10,7 @@ type FastifyRelayRequest = {
 };
 
 type FastifyRelayReply = {
+  header?: (name: string, value: string) => unknown;
   code: (statusCode: number) => {
     send: (body: unknown) => void;
   };
@@ -21,11 +22,21 @@ type FastifyRelayPluginOptions = BrowserRelayOptions & {
 
 type FastifyRouteRegistrar = {
   route: (definition: {
-    method: "POST";
+    method: "OPTIONS" | "POST";
     url: string;
     handler: (request: unknown, reply: unknown) => Promise<void>;
   }) => void;
 };
+
+function applyRelayHeaders(reply: FastifyRelayReply, headers: Record<string, string> | undefined): void {
+  if (headers === undefined || typeof reply.header !== "function") {
+    return;
+  }
+
+  for (const [key, value] of Object.entries(headers)) {
+    reply.header(key, value);
+  }
+}
 
 function serializeRelayBody(body: unknown): string | Uint8Array {
   if (typeof body === "string" || body instanceof Uint8Array) {
@@ -47,21 +58,30 @@ export function debugBundleRelayPlugin(
   const { routePath = DEFAULT_RELAY_ROUTE_PATH, ...relayOptions } = options;
   const relay = createBrowserRelay(relayOptions);
 
+  const handler = async (requestInput: unknown, replyInput: unknown): Promise<void> => {
+    const request = requestInput as FastifyRelayRequest;
+    const reply = replyInput as FastifyRelayReply;
+    const relayResponse = await relay({
+      method: request.method ?? "POST",
+      ...(request.headers === undefined ? {} : { headers: request.headers }),
+      body: serializeRelayBody(request.body),
+      ipAddress: request.ip ?? null
+    });
+
+    applyRelayHeaders(reply, relayResponse.headers);
+    reply.code(relayResponse.status).send(relayResponse.body);
+  };
+
+  fastify.route({
+    method: "OPTIONS",
+    url: routePath,
+    handler
+  });
+
   fastify.route({
     method: "POST",
     url: routePath,
-    handler: async (requestInput, replyInput): Promise<void> => {
-      const request = requestInput as FastifyRelayRequest;
-      const reply = replyInput as FastifyRelayReply;
-      const relayResponse = await relay({
-        method: request.method ?? "POST",
-        ...(request.headers === undefined ? {} : { headers: request.headers }),
-        body: serializeRelayBody(request.body),
-        ipAddress: request.ip ?? null
-      });
-
-      reply.code(relayResponse.status).send(relayResponse.body);
-    }
+    handler
   });
 
   done();

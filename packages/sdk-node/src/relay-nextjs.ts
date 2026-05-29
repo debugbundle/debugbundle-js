@@ -25,13 +25,15 @@ export function createNextjsRelayHandler(options: BrowserRelayOptions = {}) {
 
     if (relayResponse.body === undefined) {
       return new Response(null, {
-        status: relayResponse.status
+        status: relayResponse.status,
+        ...(relayResponse.headers === undefined ? {} : { headers: relayResponse.headers })
       });
     }
 
     return new Response(JSON.stringify(relayResponse.body), {
       status: relayResponse.status,
       headers: {
+        ...relayResponse.headers,
         "content-type": "application/json"
       }
     });

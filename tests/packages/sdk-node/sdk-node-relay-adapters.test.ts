@@ -84,8 +84,10 @@ describe("sdk-node relay adapters", () => {
       });
       const json = vi.fn();
       const end = vi.fn();
+      const set = vi.fn();
       const status = vi.fn(() => ({ json, end }));
       const response = {
+        set,
         status
       };
 
@@ -102,11 +104,51 @@ describe("sdk-node relay adapters", () => {
       );
 
       expect(status).toHaveBeenCalledWith(202);
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          "access-control-allow-origin": "https://app.example.com",
+          vary: "Origin"
+        })
+      );
       expect(json).toHaveBeenCalledWith({ accepted: 1, rejected: 0, errors: [] });
       expect(fs.readdirSync(eventsDir).filter((fileName) => fileName.endsWith(".events.json"))).toHaveLength(1);
     } finally {
       fs.rmSync(eventsDir, { recursive: true, force: true });
     }
+  });
+
+  it("answers Express relay OPTIONS preflight with CORS headers", async () => {
+    const middleware = debugBundleRelay({ allowedOrigins: ["https://web.example.com"] });
+    const end = vi.fn();
+    const set = vi.fn();
+    const status = vi.fn(() => ({ end }));
+
+    await middleware(
+      {
+        method: "OPTIONS",
+        headers: {
+          host: "api.example.com",
+          origin: "https://web.example.com",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type"
+        },
+        body: undefined,
+        ip: "127.0.0.1"
+      },
+      { set, status } as unknown as {
+        set: (headers: Record<string, string>) => void;
+        status: (code: number) => { end: () => void };
+      }
+    );
+
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        "access-control-allow-origin": "https://web.example.com",
+        "access-control-allow-methods": "POST, OPTIONS"
+      })
+    );
+    expect(status).toHaveBeenCalledWith(204);
+    expect(end).toHaveBeenCalled();
   });
 
   it("registers a Fastify POST /debugbundle/browser route that writes local-only relay files", async () => {
@@ -122,7 +164,7 @@ describe("sdk-node relay adapters", () => {
 
       debugBundleRelayPlugin(
         fastify as unknown as {
-          route: (definition: { method: "POST"; url: string; handler: (request: unknown, reply: unknown) => Promise<void> }) => void;
+          route: (definition: { method: "POST" | "OPTIONS"; url: string; handler: (request: unknown, reply: unknown) => Promise<void> }) => void;
         },
         {
           projectMode: "local-only",
@@ -131,32 +173,82 @@ describe("sdk-node relay adapters", () => {
         vi.fn()
       );
 
-      expect(routes).toHaveLength(1);
-      expect(routes[0]).toMatchObject({
+      expect(routes).toHaveLength(2);
+      const postRoute = routes.find((route) => route.method === "POST");
+      expect(postRoute).toMatchObject({
         method: "POST",
+        url: "/debugbundle/browser"
+      });
+      expect(routes.find((route) => route.method === "OPTIONS")).toMatchObject({
+        method: "OPTIONS",
         url: "/debugbundle/browser"
       });
 
       const send = vi.fn();
       const code = vi.fn(() => ({ send }));
+      const header = vi.fn();
 
-      await routes[0]?.handler(
+      await postRoute?.handler(
         {
+          method: "POST",
           headers: relayHeaders(),
           body: JSON.parse(createBrowserRequestBody()),
           ip: "127.0.0.1"
         },
         {
+          header,
           code
         }
       );
 
       expect(code).toHaveBeenCalledWith(202);
+      expect(header).toHaveBeenCalledWith("access-control-allow-origin", "https://app.example.com");
       expect(send).toHaveBeenCalledWith({ accepted: 1, rejected: 0, errors: [] });
       expect(fs.readdirSync(eventsDir).filter((fileName) => fileName.endsWith(".events.json"))).toHaveLength(1);
     } finally {
       fs.rmSync(eventsDir, { recursive: true, force: true });
     }
+  });
+
+  it("registers a Fastify OPTIONS preflight route", async () => {
+    const routes: Array<{ method: string; url: string; handler: (request: unknown, reply: unknown) => Promise<void> | void }> = [];
+    const fastify = {
+      route: vi.fn((definition: { method: string; url: string; handler: (request: unknown, reply: unknown) => Promise<void> | void }) => {
+        routes.push(definition);
+      })
+    };
+
+    debugBundleRelayPlugin(
+      fastify as unknown as {
+        route: (definition: { method: "OPTIONS" | "POST"; url: string; handler: (request: unknown, reply: unknown) => Promise<void> }) => void;
+      },
+      {
+        allowedOrigins: ["https://web.example.com"]
+      },
+      vi.fn()
+    );
+
+    const optionsRoute = routes.find((route) => route.method === "OPTIONS");
+    const send = vi.fn();
+    const code = vi.fn(() => ({ send }));
+    const header = vi.fn();
+
+    await optionsRoute?.handler(
+      {
+        method: "OPTIONS",
+        headers: {
+          host: "api.example.com",
+          origin: "https://web.example.com",
+          "access-control-request-method": "POST"
+        },
+        ip: "127.0.0.1"
+      },
+      { header, code }
+    );
+
+    expect(header).toHaveBeenCalledWith("access-control-allow-origin", "https://web.example.com");
+    expect(code).toHaveBeenCalledWith(204);
+    expect(send).toHaveBeenCalledWith(undefined);
   });
 
   it("returns a Next.js POST handler that writes local-only relay files", async () => {
@@ -182,5 +274,25 @@ describe("sdk-node relay adapters", () => {
     } finally {
       fs.rmSync(eventsDir, { recursive: true, force: true });
     }
+  });
+
+  it("returns a Next.js OPTIONS handler response with CORS headers", async () => {
+    const handler = createNextjsRelayHandler({ allowedOrigins: ["https://web.example.com"] });
+
+    const response = await handler(
+      new Request("https://api.example.com/debugbundle/browser", {
+        method: "OPTIONS",
+        headers: {
+          host: "api.example.com",
+          origin: "https://web.example.com",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type"
+        }
+      })
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://web.example.com");
+    expect(response.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
   });
 });

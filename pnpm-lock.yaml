@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@debugbundle/shared-types':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
       '@types/node':
         specifier: ^24.0.0
         version: 24.12.2
@@ -36,31 +36,31 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
       '@debugbundle/shared-types':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
       '@debugbundle/shared-types':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
       zod:
         specifier: ^3.24.2
         version: 3.25.76
 
 packages:
 
-  '@debugbundle/redaction@0.1.10':
-    resolution: {integrity: sha512-V3dIzAhxIFi9cR6AOJrRe82LbauniGT85e6UmL1FHGB9EnPeIYgSaFanGP3wGrX1o72P30N23bXWQJgiPbQxEg==}
+  '@debugbundle/redaction@0.1.11':
+    resolution: {integrity: sha512-hkor2aITY5k9uPcO8D153CERCpDwlJoeI5hsJvlz4L0Yg3VgGgL5iZSHcPxyp7RVy3goJJZZaJevK5xL5pnrNQ==}
 
-  '@debugbundle/shared-types@0.1.10':
-    resolution: {integrity: sha512-dtwklNYoYfwRpg1x6mFFTqLNP2fdsmjAnge9K5z92ac6rivQP1DQRGc+5VJE1dWH8UAHCZ2ZXqzRrrIVMjBHlA==}
+  '@debugbundle/shared-types@0.1.11':
+    resolution: {integrity: sha512-5q2/8RZTDuT3lPabf41jKu5qkjxfScYN52f3Hb1qTby9dtOQUxgisBexARvlQKNO5Uf/OzL6JFmGY6WV7u41Qw==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -924,9 +924,9 @@ packages:
 
 snapshots:
 
-  '@debugbundle/redaction@0.1.10': {}
+  '@debugbundle/redaction@0.1.11': {}
 
-  '@debugbundle/shared-types@0.1.10':
+  '@debugbundle/shared-types@0.1.11':
     dependencies:
       zod: 3.25.76
 
