@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Stable SDK version to publish (for example 0.1.0)
+        description: Stable SDK version to publish (for example 1.0.0)
         required: true
         type: string
   push:
@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
@@ -170,7 +170,7 @@ jobs:
           DEBUGBUNDLE_SMOKE_VERSION: ${{ steps.release_version.outputs.value }}
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.release_version.outputs.value }}
           files: |
