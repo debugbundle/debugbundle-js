@@ -1,6 +1,6 @@
 {
   "name": "debugbundle-js",
-  "version": "0.1.11",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -27,7 +27,7 @@
     "smoke:registry": "node scripts/smoke-release.mjs registry"
   },
   "devDependencies": {
-    "@debugbundle/shared-types": "0.1.11",
+    "@debugbundle/shared-types": "1.0.0",
     "@types/node": "^24.0.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",

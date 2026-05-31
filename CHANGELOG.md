@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-31
+
+### Changed
+- Promoted `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` to the first stable `1.0.0` JavaScript SDK family release.
+- Aligned the published shared package dependencies to `@debugbundle/shared-types@1.0.0` and `@debugbundle/redaction@1.0.0`.
+
 ## [0.1.11] - 2026-05-29
 
 ### Added
