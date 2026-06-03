@@ -191,6 +191,11 @@ function getStringField(record: Record<string, unknown>, key: string): string | 
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function getBooleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function sanitizeBrowserEventUrl(value: string | null): string | null {
   if (value === null) {
     return null;
@@ -225,10 +230,54 @@ function getNonnegativeIntegerField(record: Record<string, unknown>, key: string
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+function normalizeReadyState(value: unknown): NonNullable<BrowserExceptionEventContext["page"]>["ready_state"] {
+  return value === "loading" || value === "interactive" || value === "complete" ? value : null;
+}
+
+function normalizeVisibilityState(value: unknown): NonNullable<BrowserExceptionEventContext["page"]>["visibility_state"] {
+  return value === "visible" || value === "hidden" || value === "prerender" || value === "unloaded" ? value : null;
+}
+
+function normalizeBrowserErrorPage(): NonNullable<BrowserExceptionEventContext["page"]> {
+  const locationSource = getLocationSource();
+  const documentSource = getDocumentSource();
+
+  return {
+    url: sanitizeBrowserEventUrl(typeof locationSource?.href === "string" ? locationSource.href : null),
+    referrer: sanitizeBrowserEventUrl(typeof documentSource?.referrer === "string" ? documentSource.referrer : null),
+    ready_state: normalizeReadyState(documentSource?.readyState),
+    visibility_state: normalizeVisibilityState(documentSource?.visibilityState)
+  };
+}
+
+function normalizeBrowserErrorTargetAttributes(record: Record<string, unknown>): NonNullable<NonNullable<BrowserExceptionEventContext["target"]>["attributes"]> | undefined {
+  const attributes: NonNullable<NonNullable<BrowserExceptionEventContext["target"]>["attributes"]> = {};
+  const rel = getStringField(record, "rel");
+  const as = getStringField(record, "as");
+  const type = getStringField(record, "type");
+  const media = getStringField(record, "media");
+  const crossOrigin = getStringField(record, "crossOrigin");
+  const async = getBooleanField(record, "async");
+  const defer = getBooleanField(record, "defer");
+  const integrity = getStringField(record, "integrity");
+
+  if (rel !== null) attributes.rel = rel.slice(0, 128);
+  if (as !== null) attributes.as = as.slice(0, 64);
+  if (type !== null) attributes.type = type.slice(0, 128);
+  if (media !== null) attributes.media = media.slice(0, 128);
+  if (crossOrigin !== null) attributes.cross_origin = crossOrigin.slice(0, 64);
+  if (async !== undefined) attributes.async = async;
+  if (defer !== undefined) attributes.defer = defer;
+  if (integrity !== null) attributes.integrity_present = true;
+
+  return Object.keys(attributes).length > 0 ? attributes : undefined;
+}
+
 function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventContext["target"] {
   const record = normalizeUnknownRecord(target);
   const tagName = getStringField(record, "tagName")?.toLowerCase() ?? null;
-  const sourceUrl = getStringField(record, "src") ?? getStringField(record, "href");
+  const sourceUrl = getStringField(record, "src") ?? getStringField(record, "href") ?? getStringField(record, "currentSrc");
+  const attributes = normalizeBrowserErrorTargetAttributes(record);
 
   if (tagName === null && sourceUrl === null) {
     return null;
@@ -236,7 +285,8 @@ function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventCont
 
   return {
     tag_name: tagName,
-    source_url: sanitizeBrowserEventUrl(sourceUrl)
+    source_url: sanitizeBrowserEventUrl(sourceUrl),
+    ...(attributes === undefined ? {} : { attributes })
   };
 }
 
@@ -253,6 +303,7 @@ export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEven
     line_number: getNonnegativeIntegerField(record, "lineno"),
     column_number: getNonnegativeIntegerField(record, "colno"),
     target,
+    page: normalizeBrowserErrorPage(),
     opaque: !hasErrorObject
   };
 }

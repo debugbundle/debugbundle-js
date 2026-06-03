@@ -238,7 +238,18 @@ describe("createBrowserRelay", () => {
       column_number: null,
       target: {
         tag_name: "script",
-        source_url: "https://cdn.example/app.js"
+        source_url: "https://cdn.example/app.js",
+        attributes: {
+          cross_origin: "anonymous",
+          async: true,
+          integrity_present: true
+        }
+      },
+      page: {
+        url: "https://example.com/checkout",
+        referrer: "https://example.com/start",
+        ready_state: "interactive",
+        visibility_state: "visible"
       },
       opaque: true
     };
@@ -257,7 +268,18 @@ describe("createBrowserRelay", () => {
         browser_event: {
           kind: "resource_error",
           target: {
-            source_url: "https://cdn.example/app.js"
+            source_url: "https://cdn.example/app.js",
+            attributes: {
+              cross_origin: "anonymous",
+              async: true,
+              integrity_present: true
+            }
+          },
+          page: {
+            url: "https://example.com/checkout",
+            referrer: "https://example.com/start",
+            ready_state: "interactive",
+            visibility_state: "visible"
           }
         }
       }

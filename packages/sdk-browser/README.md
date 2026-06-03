@@ -60,6 +60,8 @@ Relay mode should configure only `transportMode`, the relay endpoint, and servic
 
 Breadcrumbs are kept in memory and attached to frontend exceptions by default. They are not independently shipped unless configured.
 
+Browser-native `window.error` and resource-load failures include sanitized `browser_event` metadata when the browser exposes it: event kind, message/file/line/column, opaque-error flag, technical resource target details, and page lifecycle state. URLs are stripped to origin plus path for absolute URLs or path only for relative URLs.
+
 ## Configuration
 
 | Option | Default | Purpose |

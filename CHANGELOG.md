@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-03
+
+### Added
+- Browser SDK global error capture now attaches optional sanitized page lifecycle context and resource-target attributes to `frontend_exception.payload.browser_event`, improving opaque `window_error` and `resource_error` bundles without changing existing event fields.
+
+### Fixed
+- Node relay validation now accepts and preserves the enriched browser-native error metadata emitted by the browser SDK.
+- Aligned the published shared package dependencies to `@debugbundle/shared-types@1.0.1` and `@debugbundle/redaction@1.0.1`.
+
 ## [1.0.0] - 2026-05-31
 
 ### Changed

@@ -142,6 +142,7 @@ const ingestionRequests = [];
 const relayRequests = [];
 let sawNodeMessageEvent = false;
 let sawBrowserExceptionEvent = false;
+let sawBrowserResourceErrorEvent = false;
 
 function defineGlobal(name, value) {
   Object.defineProperty(globalThis, name, {
@@ -195,6 +196,28 @@ const ingestionServer = createHttpServer(async (request, response) => {
       assert.equal(event.service?.environment, "smoke-test");
       assert.equal(event.project_token, serverProjectToken);
       sawBrowserExceptionEvent = true;
+    }
+
+    if (
+      event.sdk_name === "@debugbundle/sdk-browser" &&
+      event.event_type === "frontend_exception" &&
+      event.payload?.browser_event?.kind === "resource_error"
+    ) {
+      assert.equal(event.payload.browser_event.opaque, true);
+      assert.equal(event.payload.browser_event.target?.source_url, \`\${appOrigin}/assets/plugin.js\`);
+      assert.deepEqual(event.payload.browser_event.target?.attributes, {
+        cross_origin: "anonymous",
+        async: true,
+        defer: false,
+        integrity_present: true
+      });
+      assert.deepEqual(event.payload.browser_event.page, {
+        url: \`\${appOrigin}/smoke-browser\`,
+        referrer: \`\${appOrigin}/previous\`,
+        ready_state: "complete",
+        visibility_state: "visible"
+      });
+      sawBrowserResourceErrorEvent = true;
     }
   }
 
@@ -280,6 +303,8 @@ defineGlobal("window", {
   }
 });
 defineGlobal("document", {
+  readyState: "complete",
+  referrer: \`\${appOrigin}/previous?token=secret#hash\`,
   visibilityState: "visible",
   addEventListener(type, handler) {
     documentListeners.set(type, handler);
@@ -293,9 +318,9 @@ defineGlobal("history", {
   replaceState() {}
 });
 defineGlobal("location", {
-  href: \`\${appOrigin}/smoke-browser\`,
+  href: \`\${appOrigin}/smoke-browser?token=secret#hash\`,
   pathname: "/smoke-browser",
-  search: ""
+  search: "?token=secret"
 });
 defineGlobal("navigator", {
   userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
@@ -338,6 +363,22 @@ browserSdk.init({
   flushInterval: 60_000
 });
 browserSdk.captureException(new Error("browser smoke exception"));
+const browserErrorHandler = windowListeners.get("error");
+assert.equal(typeof browserErrorHandler, "function");
+browserErrorHandler({
+  message: "Script error.",
+  filename: \`\${appOrigin}/assets/app.js?token=secret#hash\`,
+  lineno: 12,
+  colno: 34,
+  target: {
+    tagName: "SCRIPT",
+    src: \`\${appOrigin}/assets/plugin.js?token=secret#hash\`,
+    crossOrigin: "anonymous",
+    async: true,
+    defer: false,
+    integrity: "sha384-smoke"
+  }
+});
 await browserSdk.flush();
 browserSdk.dispose();
 
@@ -348,12 +389,13 @@ assert.equal(relayRequests.length, 1);
 const relayRequest = relayRequests[0];
 assert.equal(relayRequest.headers.authorization, undefined);
 assert.ok(Array.isArray(relayRequest.body.batch));
-assert.equal(relayRequest.body.batch.length, 1);
+assert.equal(relayRequest.body.batch.length, 2);
 assert.equal(relayRequest.body.batch[0].project_token, undefined);
 assert.equal(relayRequest.body.batch[0].service.name, "smoke-web");
 assert.ok(ingestionRequests.length >= 2);
 assert.equal(sawNodeMessageEvent, true);
 assert.equal(sawBrowserExceptionEvent, true);
+assert.equal(sawBrowserResourceErrorEvent, true);
 
 ingestionServer.closeAllConnections?.();
 appServer.closeAllConnections?.();

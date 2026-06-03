@@ -92,9 +92,25 @@ const BrowserExceptionEventSchema = z.object({
   target: z
     .object({
       tag_name: z.string().nullable(),
-      source_url: z.string().nullable()
+      source_url: z.string().nullable(),
+      attributes: z.object({
+        rel: z.string().optional(),
+        as: z.string().optional(),
+        type: z.string().optional(),
+        media: z.string().optional(),
+        cross_origin: z.string().optional(),
+        async: z.boolean().optional(),
+        defer: z.boolean().optional(),
+        integrity_present: z.boolean().optional()
+      }).optional()
     })
     .nullable(),
+  page: z.object({
+    url: z.string().nullable(),
+    referrer: z.string().nullable(),
+    ready_state: z.enum(["loading", "interactive", "complete"]).nullable(),
+    visibility_state: z.enum(["visible", "hidden", "prerender", "unloaded"]).nullable()
+  }).optional(),
   opaque: z.boolean()
 });
 

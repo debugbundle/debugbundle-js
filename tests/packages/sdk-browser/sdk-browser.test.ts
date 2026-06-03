@@ -55,6 +55,8 @@ interface InstalledBrowserGlobals {
   windowTarget: FakeEventTarget;
   documentTarget: FakeEventTarget & {
     visibilityState: "visible" | "hidden";
+    readyState: "loading" | "interactive" | "complete";
+    referrer: string;
     activeElement: unknown;
   };
   historyCalls: string[];
@@ -112,9 +114,13 @@ function installBrowserGlobals(): InstalledBrowserGlobals {
   const windowTarget = new FakeEventTarget();
   const documentBase = new FakeEventTarget() as FakeEventTarget & {
     visibilityState: "visible" | "hidden";
+    readyState: "loading" | "interactive" | "complete";
+    referrer: string;
     activeElement: unknown;
   };
   documentBase.visibilityState = "visible";
+  documentBase.readyState = "interactive";
+  documentBase.referrer = "https://example.com/start?token=secret#section";
   documentBase.activeElement = null;
 
   const historyCalls: string[] = [];
@@ -170,7 +176,7 @@ function installBrowserGlobals(): InstalledBrowserGlobals {
   vi.stubGlobal("window", windowTarget as unknown);
   vi.stubGlobal("document", documentBase as unknown);
   vi.stubGlobal("history", history as unknown);
-  vi.stubGlobal("location", { href: "https://example.com/checkout", pathname: "/checkout", search: "" } as unknown);
+  vi.stubGlobal("location", { href: "https://example.com/checkout?token=secret#payment", pathname: "/checkout", search: "?token=secret" } as unknown);
   vi.stubGlobal(
     "navigator",
     {
@@ -550,6 +556,12 @@ describe("sdk-browser", () => {
       line_number: 42,
       column_number: 9,
       target: null,
+      page: {
+        url: "https://example.com/checkout",
+        referrer: "https://example.com/start",
+        ready_state: "interactive",
+        visibility_state: "visible"
+      },
       opaque: true
     });
   });
@@ -560,7 +572,11 @@ describe("sdk-browser", () => {
     globals.windowTarget.dispatch("error", {
       target: {
         tagName: "SCRIPT",
-        src: "https://cdn.example/app.js?access_token=secret#chunk"
+        src: "https://cdn.example/app.js?access_token=secret#chunk",
+        crossOrigin: "anonymous",
+        async: true,
+        defer: false,
+        integrity: "sha384-secret"
       }
     });
 
@@ -576,7 +592,19 @@ describe("sdk-browser", () => {
       column_number: null,
       target: {
         tag_name: "script",
-        source_url: "https://cdn.example/app.js"
+        source_url: "https://cdn.example/app.js",
+        attributes: {
+          cross_origin: "anonymous",
+          async: true,
+          defer: false,
+          integrity_present: true
+        }
+      },
+      page: {
+        url: "https://example.com/checkout",
+        referrer: "https://example.com/start",
+        ready_state: "interactive",
+        visibility_state: "visible"
       },
       opaque: true
     });

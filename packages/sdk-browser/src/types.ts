@@ -188,6 +188,8 @@ export interface BrowserEventSource {
 }
 
 export interface BrowserDocumentSource extends BrowserEventSource {
+  readyState?: string;
+  referrer?: string;
   visibilityState?: string;
 }
 
@@ -320,7 +322,23 @@ export interface BrowserExceptionEventContext {
   target: {
     tag_name: string | null;
     source_url: string | null;
+    attributes?: {
+      rel?: string;
+      as?: string;
+      type?: string;
+      media?: string;
+      cross_origin?: string;
+      async?: boolean;
+      defer?: boolean;
+      integrity_present?: boolean;
+    };
   } | null;
+  page?: {
+    url: string | null;
+    referrer: string | null;
+    ready_state: "loading" | "interactive" | "complete" | null;
+    visibility_state: "visible" | "hidden" | "prerender" | "unloaded" | null;
+  };
   opaque: boolean;
 }
 
