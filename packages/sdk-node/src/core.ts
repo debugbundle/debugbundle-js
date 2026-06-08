@@ -35,6 +35,7 @@ import {
   type DebugBundleDiagnostic,
   type DebugBundleNodeInitConfig,
   type FrameworkSdkBridge,
+  type HttpMethod,
   type LogLevel,
   type NextApiHandler,
   type NextWrappedHandler,
@@ -68,14 +69,13 @@ function normalizeLogLevel(level: string | undefined): LogLevel {
 
 const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
 const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
-const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
-const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
-const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
-
 function isImmediateRequestIncidentStatus(
   statusCode: number,
   preset: string,
-  immediateClientErrorStatuses: readonly number[] = []
+  immediateClientErrorStatuses: readonly number[] = [],
+  requestPath?: string,
+  httpMethod?: string,
+  immediateClientErrorPathRules: CapturePolicy["immediateClientErrorPathRules"] = []
 ): boolean {
   if (!Number.isFinite(statusCode)) {
     return false;
@@ -86,6 +86,9 @@ function isImmediateRequestIncidentStatus(
   }
 
   if (immediateClientErrorStatuses.includes(statusCode)) {
+    return true;
+  }
+  if (matchesImmediateClientErrorPathRule(statusCode, requestPath, httpMethod, immediateClientErrorPathRules)) {
     return true;
   }
 
@@ -100,20 +103,42 @@ function isImmediateRequestIncidentStatus(
   return false;
 }
 
-function isRequestAnomalyCandidateStatus(statusCode: number, preset: string): boolean {
-  if (!Number.isFinite(statusCode) || statusCode < 400 || statusCode >= 500) {
+function matchesImmediateClientErrorPathRule(
+  statusCode: number,
+  requestPath: string | undefined,
+  httpMethod: string | undefined,
+  rules: CapturePolicy["immediateClientErrorPathRules"]
+): boolean {
+  if (statusCode < 400 || statusCode > 499 || requestPath === undefined) {
     return false;
   }
+  const normalizedPath = normalizeRequestPath(requestPath);
+  const normalizedMethod = typeof httpMethod === "string" ? httpMethod.toUpperCase() : null;
+  return rules.some((rule) => {
+    if (rule.statusCode !== statusCode) {
+      return false;
+    }
+    if (rule.methods.length > 0 && (normalizedMethod === null || !rule.methods.includes(normalizedMethod as HttpMethod))) {
+      return false;
+    }
+    if (rule.pathPattern.endsWith("*")) {
+      return normalizedPath.startsWith(rule.pathPattern.slice(0, -1));
+    }
+    return normalizedPath === rule.pathPattern;
+  });
+}
 
-  if (preset === "investigative") {
-    return INVESTIGATIVE_ANOMALY_STATUSES.has(statusCode);
+function normalizeRequestPath(value: string): string {
+  try {
+    return new URL(value, "https://debugbundle.local").pathname || "/";
+  } catch {
+    const queryIndex = value.indexOf("?");
+    const fragmentIndex = value.indexOf("#");
+    const end =
+      queryIndex === -1 ? (fragmentIndex === -1 ? value.length : fragmentIndex) : fragmentIndex === -1 ? queryIndex : Math.min(queryIndex, fragmentIndex);
+    const path = value.slice(0, end);
+    return path.startsWith("/") && path.length > 0 ? path : "/";
   }
-
-  if (preset === "balanced") {
-    return BALANCED_STANDARD_ANOMALY_STATUSES.has(statusCode) || BALANCED_HIGH_VOLUME_ANOMALY_STATUSES.has(statusCode);
-  }
-
-  return false;
 }
 
 export class DebugBundleNodeSdk implements FrameworkSdkBridge {
@@ -454,7 +479,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    if (!this.shouldCaptureRequestEvent(response)) {
+    if (!this.shouldCaptureRequestEvent(request, response)) {
       return;
     }
 
@@ -944,7 +969,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     return LOG_LEVEL_ORDER[initLogLevel] >= LOG_LEVEL_ORDER[policyLogLevel] ? initLogLevel : policyLogLevel;
   }
 
-  private shouldCaptureRequestEvent(response: CaptureResponseInput): boolean {
+  private shouldCaptureRequestEvent(request: CaptureRequestInput, response: CaptureResponseInput): boolean {
     const capturePolicy = this.remoteProbeConfig.capturePolicy;
     const policy = capturePolicy.captureRequestEvents;
     const statusCode = response.statusCode ?? response.status ?? 0;
@@ -952,7 +977,10 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       isImmediateRequestIncidentStatus(
         statusCode,
         capturePolicy.preset,
-        capturePolicy.immediateClientErrorStatuses
+        capturePolicy.immediateClientErrorStatuses,
+        request.path ?? request.url,
+        request.method,
+        capturePolicy.immediateClientErrorPathRules
       )
     ) {
       return true;
@@ -964,7 +992,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return true;
     }
     if (policy === "failures_only") {
-      return isRequestAnomalyCandidateStatus(statusCode, capturePolicy.preset);
+      return statusCode >= 500;
     }
     // "filtered" has no user-defined filters yet, so only immediate failures above are kept.
     return false;

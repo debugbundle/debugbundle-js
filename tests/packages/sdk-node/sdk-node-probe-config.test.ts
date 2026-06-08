@@ -401,7 +401,33 @@ describe("sdk-node capture policy enforcement", () => {
     expect(requestEvents[0]?.payload).toMatchObject({ path: "/forbidden", response_status: 403 });
   });
 
-  it("should capture balanced request failures and anomaly candidates when capture_request_events is failures_only", async (): Promise<void> => {
+  it("should capture path-configured client error incidents even when capture_request_events is off", async (): Promise<void> => {
+    vi.useFakeTimers();
+
+    const fetchImpl = vi.fn().mockResolvedValue(
+      createConfigResponse({
+        ...BALANCED_POLICY,
+        preset: "minimal",
+        capture_request_events: "off",
+        immediate_client_error_path_rules: [
+          { status_code: 404, path_pattern: "/checkout/*", methods: ["POST"] }
+        ]
+      })
+    );
+
+    const { sdk, transport } = createSdk({ fetchImpl });
+    await settleConfigPolling();
+
+    sdk.captureRequest({ method: "POST", path: "/checkout/cart" }, { statusCode: 404 });
+    sdk.captureRequest({ method: "GET", path: "/checkout/cart" }, { statusCode: 404 });
+    await sdk.flush();
+
+    const requestEvents = getTransportEvents(transport, 0).filter((event) => event.event_type === "request_event");
+    expect(requestEvents).toHaveLength(1);
+    expect(requestEvents[0]?.payload).toMatchObject({ path: "/checkout/cart", response_status: 404 });
+  });
+
+  it("should capture immediate request failures but not unconfigured 4xx when capture_request_events is failures_only", async (): Promise<void> => {
     vi.useFakeTimers();
 
     const fetchImpl = vi.fn().mockResolvedValue(
@@ -427,7 +453,7 @@ describe("sdk-node capture policy enforcement", () => {
       .filter((e) => e.event_type === "request_event")
       .map((e) => e.payload.path);
 
-    expect(requestPaths).toEqual(["/not-found", "/rate-limited", "/conflict", "/error", "/gateway"]);
+    expect(requestPaths).toEqual(["/rate-limited", "/error", "/gateway"]);
   });
 
   it("should still capture investigative 409 request events when capture_request_events is off", async (): Promise<void> => {

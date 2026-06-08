@@ -121,7 +121,7 @@ afterEach(() => {
 });
 
 describe("browser SDK network request failures", () => {
-  it("should promote anomaly-eligible request failures before sdk config is loaded", async (): Promise<void> => {
+  it("should not promote unconfigured 404 responses before sdk config is loaded", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk();
 
     fetchMock.mockClear();
@@ -131,8 +131,7 @@ describe("browser SDK network request failures", () => {
     await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
     await sdk.flush();
 
-    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
-    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(404);
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("should promote same-origin 5xx network responses to request events", async (): Promise<void> => {
@@ -178,7 +177,7 @@ describe("browser SDK network request failures", () => {
     expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(429);
   });
 
-  it("should promote balanced anomaly-eligible network responses to request events", async (): Promise<void> => {
+  it("should not promote unconfigured 404 network responses in failures_only", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk({}, {
       sdkConfigPayload: {
         probes_enabled: false,
@@ -196,11 +195,10 @@ describe("browser SDK network request failures", () => {
     await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
     await sdk.flush();
 
-    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
-    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload.response_status).toBe(404);
+    expect(transport).not.toHaveBeenCalled();
   });
 
-  it("should keep balanced anomaly-eligible responses as breadcrumb-only context when request capture is off", async (): Promise<void> => {
+  it("should keep unconfigured 404 responses as breadcrumb-only context when request capture is off", async (): Promise<void> => {
     const { sdk, transport, fetchMock } = createSdk({ breadcrumbsOnErrorOnly: false }, {
       sdkConfigPayload: {
         probes_enabled: false,
@@ -220,6 +218,37 @@ describe("browser SDK network request failures", () => {
 
     expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
     expect(getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]).payload.data["status_code"]).toBe(404);
+  });
+
+  it("should promote path-configured 404 network responses even when request capture is off", async (): Promise<void> => {
+    const { sdk, transport, fetchMock } = createSdk({}, {
+      sdkConfigPayload: {
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {
+          preset: "balanced",
+          capture_request_events: "off",
+          immediate_client_error_path_rules: [
+            { status_code: 404, path_pattern: "/v1/billing/*", methods: ["POST"] }
+          ]
+        }
+      }
+    });
+
+    await settleAsyncInit();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+
+    const browserFetch = globalThis.fetch as unknown as (input: string, init?: { method?: string }) => Promise<{ status: number }>;
+    await browserFetch("/v1/billing/checkout?plan=team", { method: "POST" });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["request_event"]);
+    expect(getRequestEvent(createTransportEvents(transport, 0)[0]).payload).toMatchObject({
+      path: "/v1/billing/checkout",
+      response_status: 404
+    });
   });
 
   it("should demote matching request failures back to breadcrumb-only context", async (): Promise<void> => {

@@ -32,6 +32,14 @@ export type CaptureRequestEvents = "off" | "failures_only" | "filtered" | "all";
 export type CaptureBreadcrumbs = "local_only" | "exception_only" | "standalone";
 export type CaptureProbeEvents = "buffer_only" | "standalone_when_activated";
 
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+
+export interface ImmediateClientErrorPathRule {
+  statusCode: number;
+  pathPattern: string;
+  methods: HttpMethod[];
+}
+
 export interface CapturePolicy {
   preset: string;
   captureLogs: CaptureLogs;
@@ -39,6 +47,7 @@ export interface CapturePolicy {
   captureBreadcrumbs: CaptureBreadcrumbs;
   captureProbeEvents: CaptureProbeEvents;
   immediateClientErrorStatuses: number[];
+  immediateClientErrorPathRules: ImmediateClientErrorPathRule[];
 }
 
 export type NodeCaptureRuleAction = "demote" | "sample" | "drop";
@@ -101,7 +110,8 @@ export const BALANCED_CAPTURE_POLICY: CapturePolicy = {
   captureRequestEvents: "failures_only",
   captureBreadcrumbs: "exception_only",
   captureProbeEvents: "buffer_only",
-  immediateClientErrorStatuses: []
+  immediateClientErrorStatuses: [],
+  immediateClientErrorPathRules: []
 };
 
 export const MINIMAL_CAPTURE_POLICY: CapturePolicy = {
@@ -110,7 +120,8 @@ export const MINIMAL_CAPTURE_POLICY: CapturePolicy = {
   captureRequestEvents: "failures_only",
   captureBreadcrumbs: "local_only",
   captureProbeEvents: "buffer_only",
-  immediateClientErrorStatuses: []
+  immediateClientErrorStatuses: [],
+  immediateClientErrorPathRules: []
 };
 
 export interface RuntimeDetectionResult {

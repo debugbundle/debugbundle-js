@@ -10,6 +10,8 @@ import {
   type BrowserEventSource,
   type BrowserFetch,
   type BrowserHistorySource,
+  type BrowserHttpMethod,
+  type BrowserImmediateClientErrorPathRule,
   type BrowserLocationSource,
   type BrowserLogLevel,
   type BrowserNavigatorSource,
@@ -32,6 +34,7 @@ import {
 const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
 const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
 const DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES: number[] = [];
+const VALID_HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
 
 export interface ResolvedBrowserTransport {
   mode: BrowserTransportMode | "disabled";
@@ -630,6 +633,10 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
           .filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry) && entry >= 400 && entry <= 499)
           .sort((left, right) => left - right)
       : [];
+  const immediateClientErrorPathRules =
+    capturePolicy !== null
+      ? parseImmediateClientErrorPathRules(capturePolicy["immediate_client_error_path_rules"])
+      : [];
   const requestFailurePreset =
     capturePolicy !== null && isBrowserCapturePreset(capturePolicy["preset"])
       ? capturePolicy["preset"]
@@ -653,8 +660,56 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
     immediateClientErrorStatuses:
       immediateClientErrorStatuses.length === 0
         ? [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES]
-        : Array.from(new Set(immediateClientErrorStatuses))
+        : Array.from(new Set(immediateClientErrorStatuses)),
+    immediateClientErrorPathRules
   };
+}
+
+function parseImmediateClientErrorPathRules(value: unknown): BrowserImmediateClientErrorPathRule[] {
+  if (!Array.isArray(value) || value.length > 25) {
+    return [];
+  }
+
+  const rules: BrowserImmediateClientErrorPathRule[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    const statusCode = record?.["status_code"];
+    const pathPattern = record?.["path_pattern"];
+    const rawMethods = Array.isArray(record?.["methods"]) ? record["methods"] : [];
+    if (
+      typeof statusCode !== "number" ||
+      !Number.isInteger(statusCode) ||
+      statusCode < 400 ||
+      statusCode > 499 ||
+      typeof pathPattern !== "string" ||
+      !isValidPathPattern(pathPattern) ||
+      rawMethods.length > 7
+    ) {
+      return [];
+    }
+
+    const methods: BrowserHttpMethod[] = [];
+    for (const rawMethod of rawMethods) {
+      const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : "";
+      if (!VALID_HTTP_METHODS.has(method)) {
+        return [];
+      }
+      if (!methods.includes(method as BrowserHttpMethod)) {
+        methods.push(method as BrowserHttpMethod);
+      }
+    }
+    rules.push({ statusCode, pathPattern, methods });
+  }
+
+  return rules;
+}
+
+function isValidPathPattern(value: string): boolean {
+  if (value.length === 0 || value.length > 256 || !value.startsWith("/") || value.includes("?") || value.includes("#")) {
+    return false;
+  }
+  const wildcardIndex = value.indexOf("*");
+  return wildcardIndex === -1 || wildcardIndex === value.length - 1;
 }
 
 function isBrowserCapturePreset(value: unknown): value is BrowserCapturePreset {

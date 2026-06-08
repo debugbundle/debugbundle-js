@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-08
+
+### Added
+- Browser and Node remote capture-policy handling now supports path-scoped immediate client-error incident rules so explicitly configured `4xx` routes promote to standalone `request_event` incident signals without widening the status globally.
+
+### Changed
+- Unpromoted `4xx` browser and backend request telemetry now remains context-only even under repeated traffic, while `5xx` handling and explicitly promoted client-error behavior are preserved.
+- Aligned the published shared-package dependencies to `@debugbundle/shared-types@1.1.0` and `@debugbundle/redaction@1.1.0`.
+
 ## [1.0.1] - 2026-06-03
 
 ### Added

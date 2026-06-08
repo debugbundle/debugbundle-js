@@ -31,6 +31,12 @@ export type BreadcrumbType = "route_change" | "click" | "form_submit" | "console
 export type BrowserPattern = string;
 export type BrowserCapturePreset = "minimal" | "balanced" | "investigative";
 export type BrowserCaptureRequestEvents = "off" | "failures_only" | "filtered" | "all";
+export type BrowserHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+export interface BrowserImmediateClientErrorPathRule {
+  statusCode: number;
+  pathPattern: string;
+  methods: BrowserHttpMethod[];
+}
 export type BrowserCaptureRuleAction = "demote" | "sample" | "drop";
 export type BrowserCaptureRuleSampleEventClass = "preserve" | "context";
 export type BrowserCaptureRuleEventType = EventEnvelope["event_type"];
@@ -256,6 +262,7 @@ export interface BrowserRemoteProbeState {
   requestFailurePreset: BrowserCapturePreset;
   requestCaptureEvents: BrowserCaptureRequestEvents;
   immediateClientErrorStatuses: number[];
+  immediateClientErrorPathRules: BrowserImmediateClientErrorPathRule[];
 }
 
 export interface DebugBundleBrowserTransportRequest {

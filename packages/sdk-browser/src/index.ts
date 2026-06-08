@@ -52,6 +52,7 @@ import {
   type BrowserDeviceInfo,
   type BrowserFetch,
   type BrowserLogLevel,
+  type BrowserHttpMethod,
   type BrowserProbeBufferItem,
   type BrowserCaptureRuleEvaluationResult,
   type BrowserRemoteProbeDirective,
@@ -74,7 +75,8 @@ function createInitialRemoteProbeState(): BrowserRemoteProbeState {
     triggerTokenKey: null,
     requestFailurePreset: DEFAULT_REQUEST_FAILURE_PRESET,
     requestCaptureEvents: DEFAULT_REQUEST_CAPTURE_EVENTS,
-    immediateClientErrorStatuses: [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES]
+    immediateClientErrorStatuses: [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES],
+    immediateClientErrorPathRules: []
   };
 }
 
@@ -90,14 +92,13 @@ export type {
 
 const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
 const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
-const BALANCED_STANDARD_ANOMALY_STATUSES = new Set([401, 403, 404, 409, 422]);
-const BALANCED_HIGH_VOLUME_ANOMALY_STATUSES = new Set([400, 410]);
-const INVESTIGATIVE_ANOMALY_STATUSES = new Set([...BALANCED_STANDARD_ANOMALY_STATUSES, ...BALANCED_HIGH_VOLUME_ANOMALY_STATUSES]);
-
 function isImmediateRequestIncidentStatus(
   statusCode: number,
   preset: BrowserCapturePreset,
-  immediateClientErrorStatuses: readonly number[] = []
+  immediateClientErrorStatuses: readonly number[] = [],
+  requestPath?: string,
+  httpMethod?: string,
+  immediateClientErrorPathRules: BrowserRemoteProbeState["immediateClientErrorPathRules"] = []
 ): boolean {
   if (!Number.isFinite(statusCode)) {
     return false;
@@ -108,6 +109,9 @@ function isImmediateRequestIncidentStatus(
   }
 
   if (immediateClientErrorStatuses.includes(statusCode)) {
+    return true;
+  }
+  if (matchesImmediateClientErrorPathRule(statusCode, requestPath, httpMethod, immediateClientErrorPathRules)) {
     return true;
   }
 
@@ -122,29 +126,54 @@ function isImmediateRequestIncidentStatus(
   return false;
 }
 
-function isRequestAnomalyCandidateStatus(statusCode: number, preset: BrowserCapturePreset): boolean {
-  if (!Number.isFinite(statusCode) || statusCode < 400 || statusCode >= 500) {
+function matchesImmediateClientErrorPathRule(
+  statusCode: number,
+  requestPath: string | undefined,
+  httpMethod: string | undefined,
+  rules: BrowserRemoteProbeState["immediateClientErrorPathRules"]
+): boolean {
+  if (statusCode < 400 || statusCode > 499 || requestPath === undefined) {
     return false;
   }
+  const normalizedPath = normalizeRequestPath(requestPath);
+  const normalizedMethod = typeof httpMethod === "string" ? httpMethod.toUpperCase() : null;
+  return rules.some((rule) => {
+    if (rule.statusCode !== statusCode) {
+      return false;
+    }
+    if (rule.methods.length > 0 && (normalizedMethod === null || !rule.methods.includes(normalizedMethod as BrowserHttpMethod))) {
+      return false;
+    }
+    if (rule.pathPattern.endsWith("*")) {
+      return normalizedPath.startsWith(rule.pathPattern.slice(0, -1));
+    }
+    return normalizedPath === rule.pathPattern;
+  });
+}
 
-  if (preset === "investigative") {
-    return INVESTIGATIVE_ANOMALY_STATUSES.has(statusCode);
+function normalizeRequestPath(value: string): string {
+  try {
+    return new URL(value, getLocationSource()?.href ?? "https://debugbundle.local").pathname || "/";
+  } catch {
+    const queryIndex = value.indexOf("?");
+    const fragmentIndex = value.indexOf("#");
+    const end =
+      queryIndex === -1 ? (fragmentIndex === -1 ? value.length : fragmentIndex) : fragmentIndex === -1 ? queryIndex : Math.min(queryIndex, fragmentIndex);
+    const path = value.slice(0, end);
+    return path.startsWith("/") && path.length > 0 ? path : "/";
   }
-
-  if (preset === "balanced") {
-    return BALANCED_STANDARD_ANOMALY_STATUSES.has(statusCode) || BALANCED_HIGH_VOLUME_ANOMALY_STATUSES.has(statusCode);
-  }
-
-  return false;
 }
 
 function shouldCaptureRequestStatus(
   statusCode: number,
   preset: BrowserCapturePreset,
   policy: BrowserCaptureRequestEvents,
-  immediateClientErrorStatuses: readonly number[] = []
+  immediateClientErrorStatuses: readonly number[] = [],
+  requestPath?: string,
+  httpMethod?: string,
+  immediateClientErrorPathRules: BrowserRemoteProbeState["immediateClientErrorPathRules"] = []
 ): boolean {
-  if (isImmediateRequestIncidentStatus(statusCode, preset, immediateClientErrorStatuses)) {
+  if (isImmediateRequestIncidentStatus(statusCode, preset, immediateClientErrorStatuses, requestPath, httpMethod, immediateClientErrorPathRules)) {
     return true;
   }
 
@@ -153,7 +182,7 @@ function shouldCaptureRequestStatus(
   }
 
   if (policy === "failures_only") {
-    return isRequestAnomalyCandidateStatus(statusCode, preset);
+    return statusCode >= 500;
   }
 
   return false;
@@ -872,7 +901,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         statusCode,
         this.remoteProbeState.requestFailurePreset,
         this.remoteProbeState.requestCaptureEvents,
-        this.remoteProbeState.immediateClientErrorStatuses
+        this.remoteProbeState.immediateClientErrorStatuses,
+        typeof data["url"] === "string" ? data["url"] : undefined,
+        typeof data["method"] === "string" ? data["method"] : undefined,
+        this.remoteProbeState.immediateClientErrorPathRules
       )
     ) {
       return;
@@ -1118,7 +1150,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         isImmediateRequestIncidentStatus(
           event.payload.response_status,
           this.remoteProbeState.requestFailurePreset,
-          this.remoteProbeState.immediateClientErrorStatuses
+          this.remoteProbeState.immediateClientErrorStatuses,
+          event.payload.path,
+          event.payload.method,
+          this.remoteProbeState.immediateClientErrorPathRules
         )
       )
     ) {

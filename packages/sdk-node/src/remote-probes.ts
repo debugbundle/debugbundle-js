@@ -2,6 +2,8 @@ import {
   BALANCED_CAPTURE_POLICY,
   DEFAULT_PROBES_POLL_INTERVAL_MS,
   type CapturePolicy,
+  type HttpMethod,
+  type ImmediateClientErrorPathRule,
   type RemoteProbeConfigSnapshot,
   type RemoteProbeDirective
 } from "./types.js";
@@ -11,6 +13,7 @@ const VALID_CAPTURE_LOGS = new Set(["off", "error", "warning", "info"]);
 const VALID_CAPTURE_REQUEST_EVENTS = new Set(["off", "failures_only", "filtered", "all"]);
 const VALID_CAPTURE_BREADCRUMBS = new Set(["local_only", "exception_only", "standalone"]);
 const VALID_CAPTURE_PROBE_EVENTS = new Set(["buffer_only", "standalone_when_activated"]);
+const VALID_HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -42,6 +45,61 @@ function parseImmediateClientErrorStatuses(value: unknown): number[] | null {
   }
 
   return Array.from(new Set(statuses));
+}
+
+function parseImmediateClientErrorPathRules(value: unknown): ImmediateClientErrorPathRule[] | null {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (!Array.isArray(value) || value.length > 25) {
+    return null;
+  }
+
+  const rules: ImmediateClientErrorPathRule[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    if (record === null) {
+      return null;
+    }
+    const statusCode = record["status_code"];
+    const pathPattern = record["path_pattern"];
+    const rawMethods = Array.isArray(record["methods"]) ? record["methods"] : [];
+    if (
+      typeof statusCode !== "number" ||
+      !Number.isInteger(statusCode) ||
+      statusCode < 400 ||
+      statusCode > 499 ||
+      typeof pathPattern !== "string" ||
+      !isValidPathPattern(pathPattern) ||
+      rawMethods.length > 7
+    ) {
+      return null;
+    }
+
+    const methods: HttpMethod[] = [];
+    for (const rawMethod of rawMethods) {
+      const method = typeof rawMethod === "string" ? rawMethod.toUpperCase() : "";
+      if (!VALID_HTTP_METHODS.has(method)) {
+        return null;
+      }
+      if (!methods.includes(method as HttpMethod)) {
+        methods.push(method as HttpMethod);
+      }
+    }
+
+    rules.push({ statusCode, pathPattern, methods });
+  }
+
+  return rules;
+}
+
+function isValidPathPattern(value: string): boolean {
+  if (value.length === 0 || value.length > 256 || !value.startsWith("/") || value.includes("?") || value.includes("#")) {
+    return false;
+  }
+  const wildcardIndex = value.indexOf("*");
+  return wildcardIndex === -1 || wildcardIndex === value.length - 1;
 }
 
 function parseDirective(value: unknown): RemoteProbeDirective | null {
@@ -89,6 +147,7 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
   const captureBreadcrumbs = asString(record["capture_breadcrumbs"]);
   const captureProbeEvents = asString(record["capture_probe_events"]);
   const immediateClientErrorStatuses = parseImmediateClientErrorStatuses(record["immediate_client_error_statuses"]);
+  const immediateClientErrorPathRules = parseImmediateClientErrorPathRules(record["immediate_client_error_path_rules"]);
 
   if (captureLogs === null || !VALID_CAPTURE_LOGS.has(captureLogs)) {
     return null;
@@ -102,7 +161,7 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
   if (captureProbeEvents === null || !VALID_CAPTURE_PROBE_EVENTS.has(captureProbeEvents)) {
     return null;
   }
-  if (immediateClientErrorStatuses === null) {
+  if (immediateClientErrorStatuses === null || immediateClientErrorPathRules === null) {
     return null;
   }
 
@@ -112,7 +171,8 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
     captureRequestEvents: captureRequestEvents as CapturePolicy["captureRequestEvents"],
     captureBreadcrumbs: captureBreadcrumbs as CapturePolicy["captureBreadcrumbs"],
     captureProbeEvents: captureProbeEvents as CapturePolicy["captureProbeEvents"],
-    immediateClientErrorStatuses
+    immediateClientErrorStatuses,
+    immediateClientErrorPathRules
   };
 }
 

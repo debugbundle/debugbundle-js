@@ -207,7 +207,8 @@ describe("sdk-node capture policy parsing", () => {
       captureRequestEvents: "off",
       captureBreadcrumbs: "local_only",
       captureProbeEvents: "buffer_only",
-      immediateClientErrorStatuses: [401, 403]
+      immediateClientErrorStatuses: [401, 403],
+      immediateClientErrorPathRules: []
     });
   });
 
