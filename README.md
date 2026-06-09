@@ -23,7 +23,7 @@ This repository publishes the DebugBundle JavaScript SDK packages used to captur
 `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` ship as one versioned SDK family. Keep the package versions aligned in every public snippet and real application install.
 
 ```bash
-npm install @debugbundle/sdk-node@1.1.0 @debugbundle/sdk-browser@1.1.0
+npm install @debugbundle/sdk-node@1.2.0 @debugbundle/sdk-browser@1.2.0
 ```
 
 If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, keep them on the same version as the SDK packages. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
@@ -35,7 +35,7 @@ npm install @debugbundle/sdk-node
 npm install @debugbundle/sdk-browser
 ```
 
-The Node.js SDK requires Node.js 22 or newer. Repository development uses Node.js 24 and pnpm 10.
+The Node.js SDK requires Node.js 22 or newer. Repository development is tested on Node.js 24 LTS and Node.js 26 current with pnpm 11.3.0.
 
 ## Runtime support labels
 
@@ -46,7 +46,7 @@ The Node.js SDK requires Node.js 22 or newer. Repository development uses Node.j
 | Minimum compatibility version | Node.js 22 |
 | Recommended production version | Node.js 24 |
 | Installed-base compatibility lane | Node.js 22 while it remains an active deployed baseline |
-| Rolling CI lanes | Node.js 24 for lint, typecheck, tests, build, and packed-install smoke; Node.js 22 for runtime compatibility coverage |
+| Rolling CI lanes | Node.js 24 and 26 for lint, typecheck, tests, build, and packed-install smoke; Node.js 22 for runtime compatibility coverage |
 | Out of scope | Node.js 20 and older |
 
 ### `@debugbundle/sdk-browser`
@@ -66,6 +66,8 @@ The package READMEs contain the full option tables. The short rule for this repo
 1. Explicit `init(...)` fields win.
 2. Runtime-derived defaults fill in omitted values such as environment or service fallback.
 3. capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
+
+`beforeSend` is available in both JS SDKs for app-owned local filtering or final redaction before an event is buffered. Return the event to continue shipping it, or return `null` to drop it locally. Project capture rules remain the preferred operational noise-control surface because they are centralized and auditable.
 
 For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure `transportMode: "relay"`, a relay endpoint, plus service and environment names. Same-origin relay paths are inferred for compatibility; absolute backend relay URLs need explicit relay mode. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
 
@@ -226,7 +228,7 @@ pnpm smoke:packed
 After publish, the release workflow runs the same application-level verification against the npm registry:
 
 ```bash
-DEBUGBUNDLE_SMOKE_VERSION=1.1.0 pnpm smoke:registry
+DEBUGBUNDLE_SMOKE_VERSION=1.2.0 pnpm smoke:registry
 ```
 
 ## Safety Defaults

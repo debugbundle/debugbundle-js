@@ -310,6 +310,47 @@ describe("sdk-browser", () => {
     expect(typeof sdk.dispose).toBe("function");
   });
 
+  it("should allow beforeSend to mutate or drop browser events before transport", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({
+      beforeSend: (event) => {
+        if (event.event_type === "log_event" && event.payload.message === "drop me") {
+          return null;
+        }
+
+        if (event.event_type === "log_event") {
+          return {
+            ...event,
+            payload: {
+              ...event.payload,
+              message: `filtered:${event.payload.message}`
+            }
+          };
+        }
+
+        return event;
+      }
+    });
+
+    sdk.captureMessage("drop me", "error");
+    sdk.captureMessage("keep me", "error");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map(getEventMessage)).toEqual(["filtered:keep me"]);
+  });
+
+  it("should keep the original browser event when beforeSend fails", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({
+      beforeSend: () => {
+        throw new Error("hook failed");
+      }
+    });
+
+    sdk.captureMessage("keep original", "error");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map(getEventMessage)).toEqual(["keep original"]);
+  });
+
   it("should fetch sdk config exactly once on init without periodic polling", async (): Promise<void> => {
     vi.useFakeTimers();
 
@@ -566,6 +607,28 @@ describe("sdk-browser", () => {
     });
   });
 
+  it("captures structured unhandled rejection reasons", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk();
+
+    globals.windowTarget.dispatch("unhandledrejection", {
+      reason: {
+        name: "AnalyticsRejected",
+        message: "Google Analytics request failed"
+      }
+    });
+
+    await sdk.flush();
+
+    const event = getFrontendExceptionEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.message).toBe("Google Analytics request failed");
+    expect((event.payload as Record<string, unknown>)["rejection_reason"]).toEqual({
+      kind: "object",
+      name: "AnalyticsRejected",
+      message: "Google Analytics request failed",
+      preview: "Object"
+    });
+  });
+
   it("captures resource load error targets from the window error hook", async (): Promise<void> => {
     const { sdk, transport, globals } = createSdk();
 
@@ -674,6 +737,80 @@ describe("sdk-browser", () => {
       source: "capture_rule_demoted_exception",
       browser_event_kind: "resource_error",
       source_url: "https://cdn.example/app.js"
+    });
+  });
+
+  it("demotes matching bot-scoped unhandled rejections after sdk config loads", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    vi.stubGlobal(
+      "navigator",
+      {
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/148.0.0.0 Mobile Safari/537.36 Googlebot/2.1",
+        language: "en-US",
+        maxTouchPoints: 1,
+        sendBeacon: globals.sendBeacon
+      } as unknown
+    );
+    globals.fetchMock.mockResolvedValueOnce({
+      status: 200,
+      json: async () => ({
+        probes_enabled: false,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_rules: [
+          {
+            id: "00000000-0000-4000-8000-000000000103",
+            project_id: "proj_123",
+            name: "Demote Googlebot rejection noise",
+            description: null,
+            enabled: true,
+            action: "demote",
+            matcher: {
+              event_types: ["frontend_exception"],
+              client_kind: "bot",
+              bot_family: "Googlebot",
+              message_equals: "Unhandled promise rejection"
+            },
+            sample_rate: null,
+            sample_event_class: null,
+            created_by_user_id: null,
+            created_from_incident_id: null,
+            created_from_event_id: null,
+            expires_at: null,
+            hit_count: 0,
+            last_matched_at: null,
+            created_at: "2026-05-26T10:00:00.000Z",
+            updated_at: "2026-05-26T10:00:00.000Z"
+          }
+        ]
+      })
+    });
+
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      breadcrumbsOnErrorOnly: false,
+      transport
+    });
+
+    await settleAsyncInit();
+    globals.windowTarget.dispatch("unhandledrejection", {
+      reason: new Error("Unhandled promise rejection")
+    });
+
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["frontend_breadcrumb"]);
+    const event = getFrontendBreadcrumbEvent(createTransportEvents(transport, 0)[0]);
+    expect(event.payload.data).toMatchObject({
+      source: "capture_rule_demoted_exception",
+      capture_rule_outcome: "demote"
     });
   });
 

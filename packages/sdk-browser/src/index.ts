@@ -1,5 +1,6 @@
 import { redact, type JsonValue } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { applyBrowserBeforeSend } from "./before-send.js";
 import { evaluateBrowserCaptureRulesForEvent, parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
 import { EventSuppressionTracker } from "./suppression.js";
@@ -55,6 +56,7 @@ import {
   type BrowserHttpMethod,
   type BrowserProbeBufferItem,
   type BrowserCaptureRuleEvaluationResult,
+  type BrowserRejectionReasonContext,
   type BrowserRemoteProbeDirective,
   type BrowserRemoteProbeState,
   type BrowserXmlHttpRequestConstructor,
@@ -66,6 +68,7 @@ import {
 const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
 const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
 const DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES: number[] = [];
+const MAX_REJECTION_REASON_PREVIEW_LENGTH = 500;
 
 function createInitialRemoteProbeState(): BrowserRemoteProbeState {
   return {
@@ -89,6 +92,77 @@ export type {
   DebugBundleBrowserTransportRequest,
   DebugBundleBrowserTransportResponse
 } from "./types.js";
+export type { BrowserBeforeSendHook } from "./before-send.js";
+
+function truncateRejectionReasonPreview(value: string): string {
+  return value.length > MAX_REJECTION_REASON_PREVIEW_LENGTH
+    ? `${value.slice(0, MAX_REJECTION_REASON_PREVIEW_LENGTH)}[truncated]`
+    : value;
+}
+
+function readReasonStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0
+    ? truncateRejectionReasonPreview(value.trim())
+    : undefined;
+}
+
+function normalizeUnhandledRejectionReason(reason: unknown): {
+  error: unknown;
+  rejectionReason: BrowserRejectionReasonContext;
+} {
+  if (reason instanceof Error) {
+    return {
+      error: reason,
+      rejectionReason: {
+        kind: "error",
+        name: reason.name || "Error",
+        message: truncateRejectionReasonPreview(reason.message || "Unknown rejection error")
+      }
+    };
+  }
+
+  if (typeof reason === "string") {
+    const preview = truncateRejectionReasonPreview(reason.length > 0 ? reason : "[empty string]");
+    return {
+      error: new Error(reason.length > 0 ? reason : "Unhandled promise rejection"),
+      rejectionReason: { kind: "string", preview }
+    };
+  }
+
+  if (reason === null) {
+    return {
+      error: new Error("Unhandled promise rejection: null"),
+      rejectionReason: { kind: "null", preview: "null" }
+    };
+  }
+
+  if (reason === undefined) {
+    return {
+      error: new Error("Unhandled promise rejection: undefined"),
+      rejectionReason: { kind: "undefined", preview: "undefined" }
+    };
+  }
+
+  const record = normalizeUnknownRecord(reason);
+  const name = readReasonStringField(record, "name");
+  const message = readReasonStringField(record, "message");
+  const constructorName =
+    typeof reason === "object" && reason !== null && "constructor" in reason
+      ? (reason as { constructor?: { name?: unknown } }).constructor?.name
+      : undefined;
+  const preview = typeof constructorName === "string" && constructorName.length > 0 ? constructorName : "object";
+
+  return {
+    error: new Error(message ?? "Unhandled promise rejection"),
+    rejectionReason: {
+      kind: "object",
+      ...(name === undefined ? {} : { name }),
+      ...(message === undefined ? {} : { message }),
+      preview
+    }
+  };
+}
 
 const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
 const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
@@ -281,7 +355,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       captureRules: [],
       fetchImpl: getFetchSource(),
       transport: config.transport ?? createFetchTransport(),
-      transportMode: resolvedTransport.mode
+      transportMode: resolvedTransport.mode,
+      ...(config.beforeSend === undefined ? {} : { beforeSend: config.beforeSend })
     };
 
     this.authRejected = false;
@@ -356,6 +431,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
       if (context.browser_event !== undefined) {
         (event.payload as Record<string, unknown>)["browser_event"] = context.browser_event;
+      }
+      if (context.rejection_reason !== undefined) {
+        (event.payload as Record<string, unknown>)["rejection_reason"] = context.rejection_reason;
       }
 
       this.removeEmptyProjectToken(event, config);
@@ -662,7 +740,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       };
       const onUnhandledRejection = (event: unknown): void => {
         const maybeError = normalizeUnknownRecord(event);
-        this.captureException(maybeError["reason"] ?? new Error("Unhandled promise rejection"));
+        const rejection = normalizeUnhandledRejectionReason(maybeError["reason"]);
+        this.captureException(rejection.error, {
+          rejection_reason: rejection.rejectionReason
+        });
       };
 
       windowSource.addEventListener("pagehide", onPageHide);
@@ -975,7 +1056,12 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private enqueueEvent(event: EventEnvelope, countTowardSession = true): void {
-    const resolvedEvent = this.applyCaptureRulesToEvent(event);
+    const beforeSendEvent = applyBrowserBeforeSend(event, this.config?.beforeSend);
+    if (beforeSendEvent === null) {
+      return;
+    }
+
+    const resolvedEvent = this.applyCaptureRulesToEvent(beforeSendEvent);
     if (resolvedEvent === null) {
       return;
     }
@@ -990,7 +1076,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
-    this.enqueueInternalEvent(resolvedEvent, countTowardSession);
+    this.enqueueInternalEvent(resolvedEvent, countTowardSession, false);
   }
 
   private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
@@ -1081,10 +1167,19 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     };
   }
 
-  private enqueueInternalEvent(event: EventEnvelope, countTowardSession = true): void {
+  private enqueueInternalEvent(event: EventEnvelope, countTowardSession = true, applyBeforeSend = true): void {
     const config = this.config;
     if (config === null || this.authRejected) {
       return;
+    }
+
+    if (applyBeforeSend) {
+      const beforeSendEvent = applyBrowserBeforeSend(event, config.beforeSend);
+      if (beforeSendEvent === null) {
+        return;
+      }
+
+      event = beforeSendEvent;
     }
 
     this.bufferedEvents.push(event);

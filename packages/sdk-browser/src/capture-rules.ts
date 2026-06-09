@@ -25,6 +25,9 @@ type BrowserCaptureRuleEvaluationContext = {
   error_name?: string;
   message?: string;
   browser_event_kind?: "window_error" | "resource_error";
+  browser_event_opaque?: boolean;
+  client_kind?: "human" | "bot" | "unknown";
+  bot_family?: string;
   resource_url?: BrowserCaptureRuleEvaluationUrl;
   request_url?: BrowserCaptureRuleEvaluationUrl;
   status_code?: number;
@@ -206,6 +209,12 @@ function parseMatcher(value: unknown): BrowserCaptureRuleMatcher | null {
   const errorName = asString(record["error_name"]);
   const messageContains = asString(record["message_contains"]);
   const messageEquals = asString(record["message_equals"]);
+  const browserEventOpaque = asBoolean(record["browser_event_opaque"]);
+  const clientKind =
+    record["client_kind"] === "human" || record["client_kind"] === "bot" || record["client_kind"] === "unknown"
+      ? record["client_kind"]
+      : null;
+  const botFamily = asString(record["bot_family"]);
   const resourceUrl = parseUrlMatcher(record["resource_url"]);
   const requestUrl = parseUrlMatcher(record["request_url"]);
   const statusCodes = parseNumberArray(record["status_codes"]);
@@ -223,6 +232,9 @@ function parseMatcher(value: unknown): BrowserCaptureRuleMatcher | null {
     ...(record["browser_event_kind"] === "window_error" || record["browser_event_kind"] === "resource_error"
       ? { browser_event_kind: record["browser_event_kind"] }
       : {}),
+    ...(browserEventOpaque === null ? {} : { browser_event_opaque: browserEventOpaque }),
+    ...(clientKind === null ? {} : { client_kind: clientKind }),
+    ...(botFamily === null ? {} : { bot_family: botFamily }),
     ...(resourceUrl === undefined ? {} : { resource_url: resourceUrl }),
     ...(requestUrl === undefined ? {} : { request_url: requestUrl }),
     ...(statusCodes === undefined ? {} : { status_codes: statusCodes }),
@@ -248,6 +260,9 @@ function parseMatcher(value: unknown): BrowserCaptureRuleMatcher | null {
     matcher.message_contains,
     matcher.message_equals,
     matcher.browser_event_kind,
+    matcher.browser_event_opaque,
+    matcher.client_kind,
+    matcher.bot_family,
     matcher.resource_url,
     matcher.request_url,
     matcher.status_codes,
@@ -268,6 +283,44 @@ function parseMatcher(value: unknown): BrowserCaptureRuleMatcher | null {
   }
 
   return matcher;
+}
+
+function classifyClientFromUserAgent(userAgent: string | null): {
+  client_kind: "human" | "bot" | "unknown";
+  bot_family?: string;
+} {
+  if (userAgent === null) {
+    return { client_kind: "unknown" };
+  }
+
+  const lower = userAgent.toLowerCase();
+  const knownBots: Array<{ family: string; markers: readonly string[] }> = [
+    { family: "Googlebot", markers: ["googlebot", "adsbot-google", "google-inspectiontool"] },
+    { family: "Bingbot", markers: ["bingbot", "msnbot"] },
+    { family: "DuckDuckBot", markers: ["duckduckbot"] },
+    { family: "Applebot", markers: ["applebot"] },
+    { family: "YandexBot", markers: ["yandexbot"] },
+    { family: "Baiduspider", markers: ["baiduspider"] },
+    { family: "FacebookBot", markers: ["facebookexternalhit", "facebot"] },
+    { family: "LinkedInBot", markers: ["linkedinbot"] },
+    { family: "TwitterBot", markers: ["twitterbot"] },
+    { family: "Slackbot", markers: ["slackbot"] }
+  ];
+  const knownBot = knownBots.find((entry) => entry.markers.some((marker) => lower.includes(marker)));
+  if (knownBot !== undefined) {
+    return { client_kind: "bot", bot_family: knownBot.family };
+  }
+  if (/\b(bot|crawler|spider|slurp)\b/.test(lower)) {
+    return { client_kind: "bot", bot_family: "OtherBot" };
+  }
+
+  return { client_kind: "human" };
+}
+
+function readDeviceUserAgent(payload: unknown): string | null {
+  const record = asRecord(payload);
+  const device = asRecord(record?.["device"]);
+  return asString(device?.["user_agent"]);
 }
 
 function parseCaptureRule(value: unknown): BrowserCaptureRule | null {
@@ -350,6 +403,11 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
     environment: event.service.environment,
     runtime: normalizeRuntime(event.service.runtime)
   };
+  const client = classifyClientFromUserAgent(readDeviceUserAgent(event.payload));
+  const baseWithClient: BrowserCaptureRuleEvaluationContext = {
+    ...base,
+    ...client
+  };
 
   if (event.event_type === "frontend_exception") {
     const payload = event.payload as Record<string, unknown>;
@@ -373,11 +431,12 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
         : undefined;
     const resourceUrl = normalizeEvaluationUrl(sourceUrl);
     return {
-      ...base,
+      ...baseWithClient,
       ...(resourceUrl.first_party === undefined ? {} : { first_party: resourceUrl.first_party }),
       error_name: event.payload.name,
       message: event.payload.message,
       ...(browserEventKind === undefined ? {} : { browser_event_kind: browserEventKind }),
+      ...(typeof browserEvent?.["opaque"] === "boolean" ? { browser_event_opaque: browserEvent["opaque"] } : {}),
       ...(resourceUrl.url === undefined ? {} : { resource_url: resourceUrl.url })
     };
   }
@@ -385,7 +444,7 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
   if (event.event_type === "request_event") {
     const requestUrl = normalizeEvaluationUrl(event.payload.path);
     return {
-      ...base,
+      ...baseWithClient,
       first_party: requestUrl.first_party ?? true,
       ...(requestUrl.url === undefined ? {} : { request_url: requestUrl.url }),
       status_code: event.payload.response_status
@@ -397,7 +456,7 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
     const requestUrl = normalizeEvaluationUrl(rawUrl);
     const statusCode = typeof event.payload.data["status_code"] === "number" ? event.payload.data["status_code"] : undefined;
     return {
-      ...base,
+      ...baseWithClient,
       ...(requestUrl.first_party === undefined ? {} : { first_party: requestUrl.first_party }),
       ...(requestUrl.url === undefined ? {} : { request_url: requestUrl.url }),
       ...(statusCode === undefined ? {} : { status_code: statusCode })
@@ -406,12 +465,12 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
 
   if (event.event_type === "log_event") {
     return {
-      ...base,
+      ...baseWithClient,
       message: event.payload.message
     };
   }
 
-  return base;
+  return baseWithClient;
 }
 
 function matchesUrlMatcher(
@@ -475,6 +534,15 @@ function matchesRule(rule: BrowserCaptureRule, context: BrowserCaptureRuleEvalua
   if (matcher.browser_event_kind !== undefined && matcher.browser_event_kind !== context.browser_event_kind) {
     return false;
   }
+  if (matcher.browser_event_opaque !== undefined && matcher.browser_event_opaque !== context.browser_event_opaque) {
+    return false;
+  }
+  if (matcher.client_kind !== undefined && matcher.client_kind !== context.client_kind) {
+    return false;
+  }
+  if (matcher.bot_family !== undefined && matcher.bot_family !== context.bot_family) {
+    return false;
+  }
   if (!matchesUrlMatcher(matcher.resource_url, context.resource_url)) {
     return false;
   }
@@ -532,6 +600,9 @@ function getSpecificityScore(rule: BrowserCaptureRule): number {
   if (matcher.browser_event_kind !== undefined) {
     score += 100;
   }
+  if (matcher.browser_event_opaque !== undefined) {
+    score += 100;
+  }
   if (matcher.resource_url?.host_suffix !== undefined || matcher.request_url?.host_suffix !== undefined) {
     score += 90;
   }
@@ -547,8 +618,14 @@ function getSpecificityScore(rule: BrowserCaptureRule): number {
   if (matcher.message_contains !== undefined) {
     score += 50;
   }
+  if (matcher.bot_family !== undefined) {
+    score += 45;
+  }
   if (matcher.first_party !== undefined) {
     score += 40;
+  }
+  if (matcher.client_kind !== undefined) {
+    score += 35;
   }
   if (matcher.services !== undefined) {
     score += 30;

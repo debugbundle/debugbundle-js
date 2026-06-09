@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-09
+
+### Added
+- Added synchronous `beforeSend` hooks to `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` for app-owned local event filtering or final redaction before buffering.
+- Browser unhandled-rejection capture now preserves a bounded `rejection_reason` summary when the browser exposes the original rejection value.
+
+### Changed
+- Widened the standalone JS SDK repository tooling engine range to Node.js 24 through Node.js 26 and added Node.js 26 to CI.
+- Aligned the published shared-package dependencies to `@debugbundle/shared-types@1.2.0` and `@debugbundle/redaction@1.2.0`.
+
 ## [1.1.0] - 2026-06-08
 
 ### Added

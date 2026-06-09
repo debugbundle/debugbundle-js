@@ -25,3 +25,4 @@ export {
   type NextWrappedHandler,
   type ProbeOptions
 } from "./types.js";
+export type { NodeBeforeSendHook } from "./before-send.js";

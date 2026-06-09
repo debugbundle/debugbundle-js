@@ -1,5 +1,6 @@
 import packageJson from "../package.json" with { type: "json" };
 import type { EventEnvelope } from "@debugbundle/shared-types";
+import type { BrowserBeforeSendHook } from "./before-send.js";
 export type { EventEnvelope };
 
 export const SDK_NAME = "@debugbundle/sdk-browser";
@@ -65,6 +66,9 @@ export interface BrowserCaptureRuleMatcher {
   message_contains?: string;
   message_equals?: string;
   browser_event_kind?: "window_error" | "resource_error";
+  browser_event_opaque?: boolean;
+  client_kind?: "human" | "bot" | "unknown";
+  bot_family?: string;
   resource_url?: BrowserCaptureRuleUrlMatcher;
   request_url?: BrowserCaptureRuleUrlMatcher;
   status_codes?: readonly number[];
@@ -310,6 +314,7 @@ export interface DebugBundleBrowserInitConfig {
   probeFlushOnError?: boolean;
   requestTimeoutMs?: number;
   transport?: DebugBundleBrowserTransport;
+  beforeSend?: BrowserBeforeSendHook;
 }
 
 export interface CaptureBrowserExceptionContext {
@@ -318,6 +323,14 @@ export interface CaptureBrowserExceptionContext {
     outerHTML?: string;
   };
   browser_event?: BrowserExceptionEventContext;
+  rejection_reason?: BrowserRejectionReasonContext;
+}
+
+export interface BrowserRejectionReasonContext {
+  kind: "error" | "string" | "object" | "null" | "undefined" | "unknown";
+  name?: string;
+  message?: string;
+  preview?: string;
 }
 
 export interface BrowserExceptionEventContext {
@@ -393,4 +406,5 @@ export interface ActiveConfig {
   fetchImpl: BrowserFetch | null;
   transport: DebugBundleBrowserTransport;
   transportMode: BrowserTransportMode;
+  beforeSend?: BrowserBeforeSendHook;
 }

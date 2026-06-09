@@ -150,6 +150,9 @@ describe("sdk-browser runtime helpers", () => {
             matcher: {
               event_types: ["frontend_exception"],
               browser_event_kind: "resource_error",
+              browser_event_opaque: true,
+              client_kind: "bot",
+              bot_family: "Googlebot",
               resource_url: { host: "analytics.example.com" }
             },
             sample_rate: null,
@@ -180,6 +183,9 @@ describe("sdk-browser runtime helpers", () => {
         matcher: {
           event_types: ["frontend_exception"],
           browser_event_kind: "resource_error",
+          browser_event_opaque: true,
+          client_kind: "bot",
+          bot_family: "Googlebot",
           resource_url: { host: "analytics.example.com" }
         },
         sample_rate: null,

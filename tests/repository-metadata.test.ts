@@ -56,6 +56,9 @@ describe("debugbundle-js repository metadata", () => {
 
     const ciWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
     expect(ciWorkflow).toContain("sdk-node-runtime:");
+    expect(ciWorkflow).toContain('node-version:');
+    expect(ciWorkflow).toContain('"24"');
+    expect(ciWorkflow).toContain('"26"');
     expect(ciWorkflow).toContain('node-version: "22"');
     expect(ciWorkflow).toContain("pnpm install --config.engine-strict=false --frozen-lockfile");
     expect(ciWorkflow).toContain("pnpm --filter @debugbundle/sdk-node build");
@@ -81,7 +84,7 @@ describe("debugbundle-js repository metadata", () => {
     }>("packages/sdk-browser/package.json");
 
     expect(rootPackage.repository.url).toContain("debugbundle/debugbundle-js");
-    expect(rootPackage.engines.node).toBe(">=24 <25");
+    expect(rootPackage.engines.node).toBe(">=24 <27");
     expect(rootPackage.scripts).toMatchObject({
       lint: expect.any(String),
       typecheck: expect.any(String),

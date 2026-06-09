@@ -69,6 +69,7 @@ await debugbundle.flush();
 | `logger` | none | Optional logger instance to attach during initialization. |
 | `transport` | auto-selected | Custom transport function for tests or advanced routing. |
 | `fetchImpl` | global `fetch` | Custom Fetch implementation. |
+| `beforeSend` | none | Synchronous hook that receives a fully built event before buffering; return an event to keep it or `null` to drop it locally. |
 | `resolveModule` | Node resolution | Custom module resolver for logger auto-detection. |
 | `onDiagnostic` | none | Callback for SDK internal diagnostics. |
 
@@ -79,6 +80,27 @@ await debugbundle.flush();
 3. Capture-policy fields and project capture rules are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
 
 Use process environment, framework config, or your own typed startup config to supply `projectToken`, `service`, and `environment` before calling `init(...)`.
+
+### Local beforeSend hook
+
+Use `beforeSend` for app-owned local policy such as final redaction or tenant-specific suppression before an event enters the SDK buffer. The hook runs after the SDK builds and redacts the event and before project capture rules, sampling, suppression, and transport.
+
+```ts
+debugbundle.init({
+  projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
+  service: "checkout-api",
+  environment: "production",
+  beforeSend(event) {
+    if (event.event_type === "log_event" && event.payload.message.includes("expected healthcheck")) {
+      return null;
+    }
+
+    return event;
+  }
+});
+```
+
+If the hook throws or returns an invalid event, the SDK keeps the original event and emits an internal diagnostic. Use project capture rules first for operational noise because they are centralized and enforced by ingestion and worker backstops.
 
 ## Remote capture rules
 

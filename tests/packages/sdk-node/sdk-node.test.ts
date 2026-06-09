@@ -195,6 +195,59 @@ describe("sdk-node", () => {
     expect(getTransportEvents(transport, 0).map(getEventMessage)).toEqual(["second", "third"]);
   });
 
+  it("should allow beforeSend to mutate or drop events before transport", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({
+      beforeSend: (event) => {
+        if (event.event_type === "log_event" && event.payload.message === "drop me") {
+          return null;
+        }
+
+        if (event.event_type === "log_event") {
+          return {
+            ...event,
+            payload: {
+              ...event.payload,
+              message: `filtered:${event.payload.message}`
+            }
+          };
+        }
+
+        return event;
+      }
+    });
+
+    sdk.captureMessage("drop me", "error");
+    sdk.captureMessage("keep me", "error");
+    await sdk.flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(getTransportEvents(transport, 0).map(getEventMessage)).toEqual(["filtered:keep me"]);
+  });
+
+  it("should keep the original event and emit diagnostics when beforeSend fails", async (): Promise<void> => {
+    const diagnostics: Array<{ code: string; message: string }> = [];
+    const { sdk, transport } = createSdk({
+      beforeSend: () => {
+        throw new Error("hook failed");
+      },
+      onDiagnostic: (diagnostic) => {
+        diagnostics.push({
+          code: diagnostic.code,
+          message: diagnostic.message
+        });
+      }
+    });
+
+    sdk.captureMessage("keep original", "error");
+    await sdk.flush();
+
+    expect(getTransportEvents(transport, 0).map(getEventMessage)).toEqual(["keep original"]);
+    expect(diagnostics).toContainEqual({
+      code: "before_send_failed",
+      message: "sdk-node beforeSend hook failed"
+    });
+  });
+
   it("should redact sensitive request fields before transport", async (): Promise<void> => {
     const { sdk, transport } = createSdk();
 

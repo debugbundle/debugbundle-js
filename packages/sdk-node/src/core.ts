@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { applyNodeBeforeSend } from "./before-send.js";
 import { evaluateNodeCaptureRulesForEvent } from "./capture-rules.js";
 import { resolveDefaultNodeTransport } from "./file-transport.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
@@ -246,6 +247,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       captureRules: [],
       fetchImpl,
       transport: resolvedTransport.transport,
+      ...(config.beforeSend === undefined ? {} : { beforeSend: config.beforeSend }),
       autoDetectLoggers: config.autoDetectLoggers ?? true,
       ...(config.resolveModule === undefined ? {} : { resolveModule: config.resolveModule }),
       ...(config.onDiagnostic === undefined ? {} : { onDiagnostic: config.onDiagnostic })
@@ -858,7 +860,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private enqueueEvent(event: EventEnvelope): void {
-    const resolvedEvent = this.applyCaptureRulesToEvent(event);
+    const beforeSendEvent = this.applyBeforeSendToEvent(event);
+    if (beforeSendEvent === null) {
+      return;
+    }
+
+    const resolvedEvent = this.applyCaptureRulesToEvent(beforeSendEvent);
     if (resolvedEvent === null) {
       return;
     }
@@ -870,7 +877,16 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    this.enqueueInternalEvent(event);
+    this.enqueueInternalEvent(event, false);
+  }
+
+  private applyBeforeSendToEvent(event: EventEnvelope): EventEnvelope | null {
+    const config = this.config;
+    return applyNodeBeforeSend(
+      event,
+      config?.beforeSend,
+      (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
+    );
   }
 
   private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
@@ -907,10 +923,19 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     return event;
   }
 
-  private enqueueInternalEvent(event: EventEnvelope): void {
+  private enqueueInternalEvent(event: EventEnvelope, applyBeforeSend = true): void {
     const config = this.config;
     if (config === null) {
       return;
+    }
+
+    if (applyBeforeSend) {
+      const beforeSendEvent = this.applyBeforeSendToEvent(event);
+      if (beforeSendEvent === null) {
+        return;
+      }
+
+      event = beforeSendEvent;
     }
 
     this.buffer.push(event);

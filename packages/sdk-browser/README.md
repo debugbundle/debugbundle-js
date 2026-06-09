@@ -62,6 +62,10 @@ Breadcrumbs are kept in memory and attached to frontend exceptions by default. T
 
 Browser-native `window.error` and resource-load failures include sanitized `browser_event` metadata when the browser exposes it: event kind, message/file/line/column, opaque-error flag, technical resource target details, and page lifecycle state. URLs are stripped to origin plus path for absolute URLs or path only for relative URLs.
 
+Global `unhandledrejection` captures include a bounded `rejection_reason` summary when the browser exposes the original reason. Error reasons preserve name/message, string reasons preserve a truncated preview, object reasons may preserve sanitized name/message plus type preview, and null/undefined reasons are represented explicitly.
+
+The Browser SDK exposes a synchronous `beforeSend` hook for app-owned final redaction or local suppression before an event is buffered. Use project capture rules first for known operational noise because they are centralized and auditable, and use `networkFilter` for network breadcrumb/request capture choices.
+
 ## Configuration
 
 | Option | Default | Purpose |
@@ -92,6 +96,29 @@ Browser-native `window.error` and resource-load failures include sanitized `brow
 | `probeFlushOnError` | `true` | Attach buffered probe data to captured exceptions. |
 | `requestTimeoutMs` | `5000` | Transport timeout in milliseconds. |
 | `transport` | fetch transport | Custom transport function for tests or advanced routing. |
+| `beforeSend` | none | Synchronous hook that receives a fully built event before buffering; return an event to keep it or `null` to drop it locally. |
+
+### Local beforeSend hook
+
+Use `beforeSend` for app-owned local policy such as final redaction, tenant-specific suppression, or filtering a browser signal that should never leave the page. The hook runs after the SDK builds the event and before project capture rules, sampling, suppression, and transport.
+
+```ts
+debugbundle.init({
+  transportMode: "relay",
+  endpoint: "/debugbundle/browser",
+  service: "web",
+  environment: "production",
+  beforeSend(event) {
+    if (event.event_type === "frontend_exception" && event.payload.message === "Expected local-only error") {
+      return null;
+    }
+
+    return event;
+  }
+});
+```
+
+If the hook throws or returns an invalid event, the SDK keeps the original event. Browser SDK failures are swallowed so host pages keep running.
 
 ## Service naming guidance
 

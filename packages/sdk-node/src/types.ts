@@ -1,6 +1,7 @@
 import packageJson from "../package.json" with { type: "json" };
 import type { JsonObject, JsonValue } from "@debugbundle/redaction";
 import type { EventEnvelope } from "@debugbundle/shared-types";
+import type { NodeBeforeSendHook } from "./before-send.js";
 
 export const SDK_NAME = "@debugbundle/sdk-node";
 export const SDK_VERSION = packageJson.version;
@@ -222,6 +223,7 @@ export interface DebugBundleNodeInitConfig {
   requestTimeoutMs?: number;
   transport?: DebugBundleTransport;
   fetchImpl?: typeof fetch;
+  beforeSend?: NodeBeforeSendHook;
   onDiagnostic?: (diagnostic: DebugBundleDiagnostic) => void;
   logger?: unknown;
   resolveModule?: ModuleResolver;
@@ -249,6 +251,7 @@ export interface ActiveConfig {
   captureRules: NodeCaptureRule[];
   fetchImpl: typeof fetch;
   transport: DebugBundleTransport;
+  beforeSend?: NodeBeforeSendHook;
   autoDetectLoggers: boolean;
   resolveModule?: ModuleResolver;
   onDiagnostic?: (diagnostic: DebugBundleDiagnostic) => void;
