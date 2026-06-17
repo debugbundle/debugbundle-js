@@ -65,6 +65,24 @@ function getNetworkHookResult(value: unknown): {
   };
 }
 
+function getHeaderValue(headers: HeadersInit | undefined, name: string): string | undefined {
+  if (headers === undefined) return undefined;
+
+  const normalizedName = name.toLowerCase();
+  if (headers instanceof Headers) {
+    return headers.get(name) ?? undefined;
+  }
+
+  const entries = Array.isArray(headers) ? headers : Object.entries(headers);
+  for (const [entryName, value] of entries) {
+    if (entryName.toLowerCase() === normalizedName) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 function createConfig(overrides: Partial<ActiveConfig> = {}): ActiveConfig {
   return {
     projectToken: "dbundle_proj_browser",
@@ -212,10 +230,10 @@ describe("sdk-browser hooks direct", () => {
       2,
       "https://third-party.example/widget.js",
       expect.objectContaining({
-        method: "GET",
-        headers: {}
+        method: "GET"
       })
     );
+    expect(fetchSource.mock.calls[1]?.[1]).not.toHaveProperty("headers");
     expect(breadcrumbs).toHaveLength(1);
     expect(breadcrumbs[0]?.breadcrumb_type).toBe("network_request");
     expect(breadcrumbs[0]?.route).toBe("/checkout");
@@ -272,6 +290,65 @@ describe("sdk-browser hooks direct", () => {
         }
       })
     );
+  });
+
+  it("should preserve valid fetch header shapes when wrapping fetch", async (): Promise<void> => {
+    vi.stubGlobal("location", { href: "https://example.com/checkout", pathname: "/checkout", search: "" } as unknown);
+    vi.stubGlobal("crypto", { randomUUID: vi.fn().mockReturnValue("trace-id") } as unknown);
+    vi.stubGlobal("XMLHttpRequest", null as unknown);
+
+    const fetchSource = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValue(createFetchResponse(202));
+    vi.stubGlobal("fetch", fetchSource as unknown);
+
+    installNetworkHook(
+      createConfig(),
+      vi.fn(),
+      vi.fn(),
+      () => false,
+      () => true,
+      () => "/checkout"
+    );
+
+    await globalThis.fetch("https://example.com/files/headers-instance", {
+      headers: new Headers([["authorization", "Bearer instance"]])
+    });
+    await globalThis.fetch("https://example.com/files/headers-tuples", {
+      headers: [["authorization", "Bearer tuples"]]
+    });
+    await globalThis.fetch("https://example.com/files/headers-record", {
+      headers: { Authorization: "Bearer record" }
+    });
+    await globalThis.fetch(new Request("https://example.com/files/request-headers", {
+      headers: new Headers([["authorization", "Bearer request"]])
+    }));
+    await globalThis.fetch(new Request("https://example.com/files/request-overridden", {
+      headers: new Headers([["authorization", "Bearer request"]])
+    }), {
+      headers: new Headers([["x-init-header", "init"]])
+    });
+
+    const firstHeaders = fetchSource.mock.calls[0]?.[1]?.headers;
+    expect(getHeaderValue(firstHeaders, "authorization")).toBe("Bearer instance");
+    expect(getHeaderValue(firstHeaders, "X-DebugBundle-Trace-Id")).toBe("trace-id");
+
+    const secondHeaders = fetchSource.mock.calls[1]?.[1]?.headers;
+    expect(getHeaderValue(secondHeaders, "authorization")).toBe("Bearer tuples");
+    expect(getHeaderValue(secondHeaders, "X-DebugBundle-Trace-Id")).toBe("trace-id");
+
+    const thirdHeaders = fetchSource.mock.calls[2]?.[1]?.headers;
+    expect(getHeaderValue(thirdHeaders, "authorization")).toBe("Bearer record");
+    expect(getHeaderValue(thirdHeaders, "X-DebugBundle-Trace-Id")).toBe("trace-id");
+
+    const fourthHeaders = fetchSource.mock.calls[3]?.[1]?.headers;
+    expect(getHeaderValue(fourthHeaders, "authorization")).toBe("Bearer request");
+    expect(getHeaderValue(fourthHeaders, "X-DebugBundle-Trace-Id")).toBe("trace-id");
+
+    const fifthHeaders = fetchSource.mock.calls[4]?.[1]?.headers;
+    expect(getHeaderValue(fifthHeaders, "authorization")).toBeUndefined();
+    expect(getHeaderValue(fifthHeaders, "x-init-header")).toBe("init");
+    expect(getHeaderValue(fifthHeaders, "X-DebugBundle-Trace-Id")).toBe("trace-id");
   });
 
   it("should preserve request metadata on fetch breadcrumbs without forwarding it to fetch", async (): Promise<void> => {

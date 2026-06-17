@@ -20,6 +20,7 @@ import type {
   BrowserBreadcrumb,
   BrowserDeviceInfo,
   BrowserFetch,
+  BrowserFetchInput,
   BrowserFetchInit,
   BrowserFetchResponse,
   BrowserRequestMetadata,
@@ -88,6 +89,82 @@ function captureRequestBody(init: BrowserFetchInit & Record<string, unknown>): u
   if (!MUTATING_METHODS.has(method)) return undefined;
   if (typeof init.body !== "string" || init.body.length === 0) return undefined;
   return tryParseJsonBody(truncateBody(init.body));
+}
+
+function isRequestInput(input: BrowserFetchInput): input is Request {
+  return (
+    typeof input === "object" &&
+    input !== null &&
+    typeof (input as Request).url === "string" &&
+    typeof (input as Request).method === "string" &&
+    typeof (input as Request).headers === "object"
+  );
+}
+
+function getFetchInputUrl(input: BrowserFetchInput): string {
+  if (typeof input === "string") return input;
+  if (typeof URL !== "undefined" && input instanceof URL) return input.href;
+  if (isRequestInput(input)) return input.url;
+
+  const href = (input as { href?: unknown }).href;
+  return typeof href === "string" ? href : String(input);
+}
+
+function getFetchMethod(input: BrowserFetchInput, init: BrowserFetchInit & Record<string, unknown>): string {
+  if (typeof init.method === "string") return init.method.toUpperCase();
+  if (isRequestInput(input)) return input.method.toUpperCase();
+  return "GET";
+}
+
+function getRequestInputHeaders(input: BrowserFetchInput): HeadersInit | undefined {
+  return isRequestInput(input) ? input.headers : undefined;
+}
+
+function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> | null {
+  if (headers === undefined) return {};
+
+  if (typeof Headers === "function") {
+    try {
+      const normalized = new Headers(headers);
+      const output: Record<string, string> = {};
+      normalized.forEach((value, key) => {
+        output[key] = value;
+      });
+      return output;
+    } catch {
+      return null;
+    }
+  }
+
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+
+  if (typeof headers === "object" && headers !== null) {
+    return { ...(headers as Record<string, string>) };
+  }
+
+  return null;
+}
+
+function buildForwardedHeaders(
+  input: BrowserFetchInput,
+  requestHeaders: HeadersInit | undefined,
+  traceId: string | null
+): HeadersInit | undefined {
+  const effectiveHeaders = requestHeaders ?? getRequestInputHeaders(input);
+  if (effectiveHeaders === undefined && traceId === null) return undefined;
+
+  const normalizedHeaders = normalizeHeaders(effectiveHeaders);
+  if (normalizedHeaders === null) {
+    return effectiveHeaders;
+  }
+
+  if (traceId !== null) {
+    normalizedHeaders["X-DebugBundle-Trace-Id"] = traceId;
+  }
+
+  return normalizedHeaders;
 }
 
 function buildNetworkBreadcrumbData(
@@ -243,30 +320,30 @@ export function installNetworkHook(
 
   if (fetchSource !== null) {
     (globalThis as Record<string, unknown>)["fetch"] = async (
-      input: string,
+      input: BrowserFetchInput,
       init?: BrowserFetchInit
     ): Promise<BrowserFetchResponse> => {
       const inputInit = (init ?? {}) as BrowserFetchInit & Record<string, unknown>;
       const { debugbundle: requestMetadata, headers: requestHeaders, ...forwardedInit } = inputInit;
+      const requestUrl = getFetchInputUrl(input);
+      const requestMethod = getFetchMethod(input, inputInit);
       const callerTrace = captureCallerTrace(1, 5);
-      const injectTraceHeader = shouldInjectTraceHeader(input, config.tracePropagationTargets);
+      const injectTraceHeader = shouldInjectTraceHeader(requestUrl, config.tracePropagationTargets);
       const traceId = injectTraceHeader ? createBrowserTraceId() : null;
+      const forwardedHeaders = buildForwardedHeaders(input, requestHeaders, traceId);
       const startedAt = Date.now();
       try {
         const response = await fetchSource(input, {
           ...forwardedInit,
-          headers: {
-            ...(requestHeaders ?? {}),
-            ...(traceId === null ? {} : { "X-DebugBundle-Trace-Id": traceId })
-          }
+          ...(forwardedHeaders === undefined ? {} : { headers: forwardedHeaders })
         });
         const durationMs = Date.now() - startedAt;
 
         const shouldCaptureNetworkBreadcrumb =
           config.captureNetwork === true &&
-          input !== config.endpoint &&
-          input !== configEndpoint &&
-          shouldCaptureNetworkRequest(input, response.status, durationMs);
+          requestUrl !== config.endpoint &&
+          requestUrl !== configEndpoint &&
+          shouldCaptureNetworkRequest(requestUrl, response.status, durationMs);
 
         const requestBody = captureRequestBody(inputInit);
         if (shouldCaptureNetworkBreadcrumb || (injectTraceHeader && response.status >= 400)) {
@@ -282,8 +359,8 @@ export function installNetworkHook(
             breadcrumb_type: "network_request",
             route: getCurrentRoute(),
             data: buildNetworkBreadcrumbData(
-              input,
-              typeof inputInit.method === "string" ? inputInit.method : "GET",
+              requestUrl,
+              requestMethod,
               response.status,
               durationMs,
               callerTrace,
@@ -310,9 +387,9 @@ export function installNetworkHook(
         const durationMs = Date.now() - startedAt;
         const shouldCaptureFailedNetworkBreadcrumb =
           config.captureNetwork === true &&
-          input !== config.endpoint &&
-          input !== configEndpoint &&
-          shouldCaptureNetworkFailure(input, durationMs);
+          requestUrl !== config.endpoint &&
+          requestUrl !== configEndpoint &&
+          shouldCaptureNetworkFailure(requestUrl, durationMs);
 
         if (shouldCaptureFailedNetworkBreadcrumb) {
           addBreadcrumb({
@@ -320,8 +397,8 @@ export function installNetworkHook(
             breadcrumb_type: "network_request",
             route: getCurrentRoute(),
             data: buildNetworkBreadcrumbData(
-              input,
-              typeof inputInit.method === "string" ? inputInit.method : "GET",
+              requestUrl,
+              requestMethod,
               0,
               durationMs,
               callerTrace,

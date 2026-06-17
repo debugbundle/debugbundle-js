@@ -66,6 +66,8 @@ Global `unhandledrejection` captures include a bounded `rejection_reason` summar
 
 The Browser SDK exposes a synchronous `beforeSend` hook for app-owned final redaction or local suppression before an event is buffered. Use project capture rules first for known operational noise because they are centralized and auditable, and use `networkFilter` for network breadcrumb/request capture choices.
 
+Network wrapping is designed to preserve normal browser behavior. The SDK supports `fetch()` calls with `string`, `URL`, and `Request` inputs, and preserves caller headers provided as `Headers`, header tuple arrays, or records. When trace propagation is enabled for a request, the SDK adds `X-DebugBundle-Trace-Id` to the effective header set without dropping existing headers such as `Authorization`.
+
 ## Configuration
 
 | Option | Default | Purpose |
@@ -97,6 +99,10 @@ The Browser SDK exposes a synchronous `beforeSend` hook for app-owned final reda
 | `requestTimeoutMs` | `5000` | Transport timeout in milliseconds. |
 | `transport` | fetch transport | Custom transport function for tests or advanced routing. |
 | `beforeSend` | none | Synchronous hook that receives a fully built event before buffering; return an event to keep it or `null` to drop it locally. |
+
+`tracePropagationTargets` is separate from the relay `endpoint`. Same-origin application requests receive trace headers by default. For split frontend/backend deployments, add the backend API origin, such as `https://api.example.com`, when cross-origin first-party requests should receive `X-DebugBundle-Trace-Id` and be eligible for policy-driven request-failure promotion. Third-party absolute URLs are not traced by default.
+
+Handled HTTP responses do not need to throw an exception to become request incidents. A failed response can emit a standalone `request_event` when it is first-party for trace propagation and matches the active capture preset, `immediate_client_error_statuses`, or an `immediate_client_error_path_rules` entry. Unpromoted `4xx` responses remain breadcrumbs/context.
 
 ### Local beforeSend hook
 

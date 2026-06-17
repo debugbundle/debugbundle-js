@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-17
+
+### Fixed
+- Browser SDK fetch wrapping now preserves native `Headers`, header tuple arrays, record headers, and `Request` object headers when adding DebugBundle trace headers.
+
 ## [1.2.0] - 2026-06-09
 
 ### Added

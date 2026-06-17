@@ -107,11 +107,10 @@ export interface BrowserCaptureRuleEvaluationResult {
   sample_event_class: BrowserCaptureRuleSampleEventClass | null;
 }
 
-export type BrowserFetchInit = {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  keepalive?: boolean;
+export type BrowserFetchInput = string | URL | Request;
+
+export type BrowserFetchInit = Omit<RequestInit, "headers"> & {
+  headers?: HeadersInit;
   debugbundle?: BrowserRequestMetadata;
 };
 
@@ -186,7 +185,7 @@ export interface BrowserFetchResponse {
   clone?: () => BrowserFetchResponse;
 }
 
-export type BrowserFetch = (input: string, init?: BrowserFetchInit) => Promise<BrowserFetchResponse>;
+export type BrowserFetch = (input: BrowserFetchInput, init?: BrowserFetchInit) => Promise<BrowserFetchResponse>;
 
 export interface BrowserCryptoSource {
   randomUUID?: () => string;
