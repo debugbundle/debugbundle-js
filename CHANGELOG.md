@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-19
+
+### Fixed
+- Normalized canonical event-envelope emission across the broader SDK release train by aligning the published JS SDK family to `@debugbundle/shared-types@1.3.1` and `@debugbundle/redaction@1.3.1`.
+
 ## [1.3.0] - 2026-06-17
 
 ### Fixed

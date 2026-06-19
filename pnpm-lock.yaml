@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@debugbundle/shared-types':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.1
+        version: 1.3.1
       '@types/node':
         specifier: ^24.0.0
         version: 24.12.2
@@ -36,31 +36,31 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.1
+        version: 1.3.1
       '@debugbundle/shared-types':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.1
+        version: 1.3.1
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.1
+        version: 1.3.1
       '@debugbundle/shared-types':
-        specifier: 1.2.0
-        version: 1.2.0
+        specifier: 1.3.1
+        version: 1.3.1
       zod:
         specifier: ^3.24.2
         version: 3.25.76
 
 packages:
 
-  '@debugbundle/redaction@1.2.0':
-    resolution: {integrity: sha512-G/G4wb7pfNGUp/oclntfg9svM7NEXqwXAGklIP1kh246Kiq+ay7U69pU8LLIrFE6quirI19CmIHmm2PQwFbppw==}
+  '@debugbundle/redaction@1.3.1':
+    resolution: {integrity: sha512-OAufUzqVn1zAJKMfENFCa1az+KMzwljXLdWtQSWfGSRCDUoPXp1sSg/b6Btwe0utV/9KfTGpsNzqXA9eL4PB9g==}
 
-  '@debugbundle/shared-types@1.2.0':
-    resolution: {integrity: sha512-UaOtr0o2Wz9ZMlGiTzmPDBaB7Q+U37YUDfo1Y0NPtfK/COpHYRJPdKxWFSmyyiYr6ZiQsjS0y4JcvJHNiLaNBQ==}
+  '@debugbundle/shared-types@1.3.1':
+    resolution: {integrity: sha512-nX6jMJjxkh/D++49rYTSQYF2KQv43ft779Z81V6y0+sqVwbpdZ4v4RCAJmFu7QguNlU8cN7OGg78cBOpYePUfw==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -924,9 +924,9 @@ packages:
 
 snapshots:
 
-  '@debugbundle/redaction@1.2.0': {}
+  '@debugbundle/redaction@1.3.1': {}
 
-  '@debugbundle/shared-types@1.2.0':
+  '@debugbundle/shared-types@1.3.1':
     dependencies:
       zod: 3.25.76
 
