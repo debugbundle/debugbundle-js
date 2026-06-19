@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-20
+
+### Changed
+
+- Aligned the published JS SDK family to `@debugbundle/shared-types@1.4.0` and `@debugbundle/redaction@1.4.0` so the released Node and Browser SDK packages consume the latest capture-rule suggestion contract and bundle metadata updates from core.
+
 ## [1.3.1] - 2026-06-19
 
 ### Fixed
