@@ -26,8 +26,8 @@ import {
   DEFAULT_ENDPOINT,
   DEFAULT_RELAY_ENDPOINT,
   type DebugBundleBrowserTransport,
+  type DebugBundleBrowserTransportEvent,
   type DebugBundleBrowserTransportResponse,
-  type EventEnvelope,
   type NormalizedBrowserNetworkFilter
 } from "./types.js";
 
@@ -392,7 +392,7 @@ export function createFetchTransport(): DebugBundleBrowserTransport {
   };
 }
 
-export function buildBrowserTransportRequestBody(transportMode: BrowserTransportMode, events: EventEnvelope[]): string {
+export function buildBrowserTransportRequestBody(transportMode: BrowserTransportMode, events: DebugBundleBrowserTransportEvent[]): string {
   if (transportMode === "direct") {
     return JSON.stringify({ events });
   }

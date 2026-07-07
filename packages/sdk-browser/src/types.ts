@@ -28,6 +28,16 @@ export const DEFAULT_LOG_LEVEL: BrowserLogLevel = "warning";
 
 export type BrowserLogLevel = (typeof LOG_LEVELS)[number];
 export type BrowserTransportMode = "direct" | "relay";
+export type BrowserAnalyticsPrivacyMode = "strict" | "standard" | "custom";
+export type BrowserAnalyticsEventKind =
+  | "session_start"
+  | "page_view"
+  | "route_change"
+  | "action"
+  | "funnel_step"
+  | "conversion"
+  | "journey_marker"
+  | "session_summary";
 export type BreadcrumbType = "route_change" | "click" | "form_submit" | "console_log" | "network_request";
 export type BrowserPattern = string;
 export type BrowserCapturePreset = "minimal" | "balanced" | "investigative";
@@ -141,6 +151,71 @@ export interface BrowserCorrelationFields {
   session_id: string | null;
   user_id_hash: string | null;
 }
+
+export interface BrowserAnalyticsCorrelationFields {
+  session_id: string;
+  visitor_id_hash: string | null;
+  user_id_hash: string | null;
+  trace_id: string | null;
+  deploy_id: string | null;
+}
+
+export interface BrowserAnalyticsDimensions {
+  auth_state: "anonymous" | "authenticated" | "unknown";
+  device_type: "desktop" | "mobile" | "tablet" | "unknown";
+  browser_family: string | null;
+  browser_major: number | null;
+  os_family: string | null;
+  os_major: number | null;
+  language: string | null;
+  locale: string | null;
+  viewport_bucket: "small" | "medium" | "large" | "unknown";
+  referrer_domain: string | null;
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  country_code: string | null;
+  region_code: string | null;
+}
+
+export type BrowserAnalyticsCustomDimensionValue = string | number | boolean | null;
+export type BrowserAnalyticsCustomDimensions = Record<string, BrowserAnalyticsCustomDimensionValue>;
+
+export interface BrowserAnalyticsEventEnvelope {
+  schema_version: "2026-07-analytics-01";
+  event_id: string;
+  event_type: "analytics_event";
+  project_token?: string;
+  occurred_at: string;
+  sdk_name: string;
+  sdk_version: string;
+  service: {
+    name: string;
+    runtime: "browser";
+    framework: string | null;
+    environment: string;
+  };
+  correlation: BrowserAnalyticsCorrelationFields;
+  payload: {
+    kind: BrowserAnalyticsEventKind;
+    signal: {
+      action_key: string | null;
+      funnel_key: string | null;
+      step_key: string | null;
+      conversion_key: string | null;
+      marker_key: string | null;
+    };
+    route: {
+      path: string;
+      normalized_path: string;
+      title: string | null;
+    } | null;
+    dimensions: BrowserAnalyticsDimensions;
+    custom_dimensions: BrowserAnalyticsCustomDimensions;
+  };
+}
+
+export type DebugBundleBrowserTransportEvent = EventEnvelope | BrowserAnalyticsEventEnvelope;
 
 export interface BrowserBreadcrumb {
   ts: string;
@@ -271,7 +346,7 @@ export interface BrowserRemoteProbeState {
 export interface DebugBundleBrowserTransportRequest {
   endpoint: string;
   headers: Record<string, string>;
-  events: EventEnvelope[];
+  events: DebugBundleBrowserTransportEvent[];
   transportMode: BrowserTransportMode;
   timeout_ms: number;
 }
@@ -314,6 +389,36 @@ export interface DebugBundleBrowserInitConfig {
   requestTimeoutMs?: number;
   transport?: DebugBundleBrowserTransport;
   beforeSend?: BrowserBeforeSendHook;
+  analytics?: DebugBundleBrowserAnalyticsConfig;
+}
+
+export interface DebugBundleBrowserAnalyticsConfig {
+  enabled?: boolean;
+  privacyMode?: BrowserAnalyticsPrivacyMode;
+  consentRequired?: boolean;
+  trackPageViews?: boolean;
+  trackRouteChanges?: boolean;
+  trackSessions?: boolean;
+  trackReferrers?: boolean;
+  trackActions?: boolean;
+  trackFrictionSignals?: boolean;
+  sampleRate?: number;
+  journeySampleRate?: number;
+}
+
+export interface DebugBundleBrowserAnalyticsPageViewInput {
+  path?: string;
+  title?: string | null;
+}
+
+export interface DebugBundleBrowserAnalytics {
+  setConsent(value: boolean): void;
+  pageView(input?: DebugBundleBrowserAnalyticsPageViewInput): void;
+  track(name: string, dimensions?: Record<string, unknown>): void;
+  funnel(name: string, step: string, dimensions?: Record<string, unknown>): void;
+  convert(name: string, dimensions?: Record<string, unknown>): void;
+  setContext(dimensions: Record<string, unknown>): void;
+  setUserHash(hash: string | null): void;
 }
 
 export interface CaptureBrowserExceptionContext {
@@ -364,6 +469,7 @@ export interface BrowserExceptionEventContext {
 export interface DebugBundleBrowserSdk {
   readonly status: "healthy" | "degraded" | "disconnected";
   readonly lastEventAt: number | null;
+  readonly analytics: DebugBundleBrowserAnalytics;
   init(config: DebugBundleBrowserInitConfig): void;
   captureException(error: unknown, context?: CaptureBrowserExceptionContext): void;
   captureError(error: unknown, context?: CaptureBrowserExceptionContext): void;

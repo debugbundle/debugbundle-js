@@ -31,7 +31,7 @@ const activeSdks: DebugBundleBrowserSdk[] = [];
 
 function createTransportEvents(transport: TransportMock, callIndex: number): EventEnvelope[] {
   const calls = transport.mock.calls as Array<[DebugBundleBrowserTransportRequest]>;
-  return calls[callIndex]?.[0].events ?? [];
+  return (calls[callIndex]?.[0].events ?? []).filter((event): event is EventEnvelope => event.event_type !== "analytics_event");
 }
 
 function getRequestEvent(event: EventEnvelope | undefined): RequestEvent {

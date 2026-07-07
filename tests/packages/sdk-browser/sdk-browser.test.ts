@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveProbeTriggerTokenKey, generateProbeTriggerToken } from "../../helpers/probe-trigger-token.js";
 import {
   createDebugBundleBrowserSdk,
+  type DebugBundleBrowserTransportEvent,
   type DebugBundleBrowserSdk,
   type DebugBundleBrowserTransportRequest
 } from "../../../packages/sdk-browser/src/index.js";
@@ -16,6 +17,7 @@ type FrontendExceptionEvent = Extract<EventEnvelope, { event_type: "frontend_exc
 type FrontendBreadcrumbEvent = Extract<EventEnvelope, { event_type: "frontend_breadcrumb" }>;
 type RequestEvent = Extract<EventEnvelope, { event_type: "request_event" }>;
 type ProbeEvent = Extract<EventEnvelope, { event_type: "probe_event" }>;
+type AnalyticsEvent = Extract<DebugBundleBrowserTransportEvent, { event_type: "analytics_event" }>;
 const originalProbeTriggerSecret = process.env["DEBUGBUNDLE_PROBE_TRIGGER_SECRET"];
 
 class FakeEventTarget {
@@ -73,9 +75,17 @@ interface InstalledBrowserGlobals {
 
 const activeSdks: DebugBundleBrowserSdk[] = [];
 
-function createTransportEvents(transport: TransportMock, callIndex: number): EventEnvelope[] {
+function createRawTransportEvents(transport: TransportMock, callIndex: number): DebugBundleBrowserTransportEvent[] {
   const calls = transport.mock.calls as Array<[DebugBundleBrowserTransportRequest]>;
   return calls[callIndex]?.[0].events ?? [];
+}
+
+function createTransportEvents(transport: TransportMock, callIndex: number): EventEnvelope[] {
+  return createRawTransportEvents(transport, callIndex).filter((event): event is EventEnvelope => event.event_type !== "analytics_event");
+}
+
+function getAnalyticsEvents(transport: TransportMock, callIndex = 0): AnalyticsEvent[] {
+  return createRawTransportEvents(transport, callIndex).filter((event): event is AnalyticsEvent => event.event_type === "analytics_event");
 }
 
 function getFrontendExceptionEvent(event: EventEnvelope | undefined): FrontendExceptionEvent {
@@ -305,9 +315,127 @@ describe("sdk-browser", () => {
     expect(typeof sdk.captureRequest).toBe("function");
     expect(typeof sdk.captureMessage).toBe("function");
     expect(typeof sdk.setContext).toBe("function");
+    expect(typeof sdk.analytics.setConsent).toBe("function");
+    expect(typeof sdk.analytics.pageView).toBe("function");
+    expect(typeof sdk.analytics.track).toBe("function");
+    expect(typeof sdk.analytics.funnel).toBe("function");
+    expect(typeof sdk.analytics.convert).toBe("function");
+    expect(typeof sdk.analytics.setContext).toBe("function");
+    expect(typeof sdk.analytics.setUserHash).toBe("function");
     expect(typeof sdk.probe).toBe("function");
     expect(typeof sdk.flush).toBe("function");
     expect(typeof sdk.dispose).toBe("function");
+  });
+
+  it("keeps analytics disabled by default without changing debug capture", async (): Promise<void> => {
+    const { sdk, transport } = createSdk();
+
+    sdk.analytics.pageView({ path: "/pricing?token=secret", title: "Pricing" });
+    sdk.analytics.track("feature.used", { feature: "billing_portal" });
+    sdk.analytics.funnel("checkout", "payment_submitted");
+    sdk.analytics.convert("subscription_started");
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+
+    sdk.captureMessage("debug still works", "error");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["log_event"]);
+  });
+
+  it("emits opt-in analytics session, page, route, action, funnel, and conversion events", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({
+      analytics: {
+        enabled: true
+      }
+    });
+
+    sdk.analytics.setContext({
+      auth_state: "authenticated",
+      account_tier: "team",
+      unsafe_email: "owner@example.com"
+    });
+    sdk.analytics.setUserHash("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/checkout/payment?token=secret");
+    sdk.analytics.track("feature.used", { feature: "billing_portal", order_id: "ord_123" });
+    sdk.analytics.funnel("checkout", "payment_submitted", { plan_selected: "team" });
+    sdk.analytics.convert("subscription_started", { plan_selected: "team" });
+    sdk.analytics.pageView({ path: "/pricing?token=secret#plans", title: "Pricing" });
+    await sdk.flush();
+
+    const events = getAnalyticsEvents(transport);
+    expect(events.map((event) => event.payload.kind)).toEqual([
+      "session_start",
+      "page_view",
+      "route_change",
+      "action",
+      "funnel_step",
+      "conversion",
+      "page_view"
+    ]);
+    expect(events.every((event) => event.event_type === "analytics_event")).toBe(true);
+    expect(events.every((event) => event.correlation.session_id.length > 0)).toBe(true);
+    expect(events[0]?.correlation.user_id_hash).toBeNull();
+    expect(events.slice(2).every((event) => event.correlation.user_id_hash === "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")).toBe(true);
+    expect(events[1]?.payload.route).toEqual({
+      path: "/checkout",
+      normalized_path: "/checkout",
+      title: null
+    });
+    expect(events[2]?.payload.route).toEqual({
+      path: "/checkout/payment",
+      normalized_path: "/checkout/payment",
+      title: null
+    });
+    expect(events[6]?.payload.route).toEqual({
+      path: "/pricing",
+      normalized_path: "/pricing",
+      title: "Pricing"
+    });
+    expect(events[3]?.payload.signal).toMatchObject({ action_key: "feature.used" });
+    expect(events[3]?.payload.custom_dimensions).toMatchObject({
+      account_tier: "team",
+      feature: "billing_portal"
+    });
+    expect(events[3]?.payload.custom_dimensions).not.toHaveProperty("unsafe_email");
+    expect(events[3]?.payload.custom_dimensions).not.toHaveProperty("order_id");
+    expect(events[4]?.payload.signal).toMatchObject({ funnel_key: "checkout", step_key: "payment_submitted" });
+    expect(events[5]?.payload.signal).toMatchObject({ conversion_key: "subscription_started" });
+    expect(events[0]?.payload.dimensions).toMatchObject({
+      auth_state: "anonymous",
+      device_type: "desktop",
+      browser_family: "Chrome",
+      os_family: "macOS",
+      language: "en-US",
+      locale: "en-US",
+      viewport_bucket: "large",
+      referrer_domain: "example.com"
+    });
+    expect(events[3]?.payload.dimensions.auth_state).toBe("authenticated");
+  });
+
+  it("gates analytics capture on consent without affecting debug events", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({
+      analytics: {
+        enabled: true,
+        consentRequired: true
+      }
+    });
+
+    sdk.analytics.pageView({ path: "/blocked" });
+    sdk.captureMessage("debug while analytics blocked", "error");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["log_event"]);
+
+    sdk.analytics.setConsent(true);
+    sdk.analytics.pageView({ path: "/allowed" });
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport, 1).map((event) => event.payload.kind)).toEqual(["page_view"]);
   });
 
   it("should allow beforeSend to mutate or drop browser events before transport", async (): Promise<void> => {

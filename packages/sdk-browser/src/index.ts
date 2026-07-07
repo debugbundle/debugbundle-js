@@ -1,5 +1,6 @@
 import { redact, type JsonValue } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { BrowserAnalyticsController } from "./analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
 import { evaluateBrowserCaptureRulesForEvent, parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
@@ -51,6 +52,7 @@ import {
   type BrowserCapturePreset,
   type BrowserCorrelationFields,
   type BrowserDeviceInfo,
+  type BrowserAnalyticsEventEnvelope,
   type BrowserFetch,
   type BrowserLogLevel,
   type BrowserHttpMethod,
@@ -62,7 +64,8 @@ import {
   type BrowserXmlHttpRequestConstructor,
   type CaptureBrowserExceptionContext,
   type DebugBundleBrowserInitConfig,
-  type DebugBundleBrowserSdk
+  type DebugBundleBrowserSdk,
+  type DebugBundleBrowserTransportEvent
 } from "./types.js";
 
 const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
@@ -87,6 +90,9 @@ export type {
   CaptureBrowserExceptionContext,
   DebugBundleBrowserInitConfig,
   DebugBundleBrowserSdk,
+  DebugBundleBrowserAnalytics,
+  DebugBundleBrowserAnalyticsConfig,
+  DebugBundleBrowserTransportEvent,
   BrowserRequestMetadata,
   DebugBundleBrowserTransport,
   DebugBundleBrowserTransportRequest,
@@ -264,7 +270,7 @@ function shouldCaptureRequestStatus(
 
 export class BrowserSdk implements DebugBundleBrowserSdk {
   private config: ActiveConfig | null = null;
-  private bufferedEvents: EventEnvelope[] = [];
+  private bufferedEvents: DebugBundleBrowserTransportEvent[] = [];
   private breadcrumbs: BrowserBreadcrumb[] = [];
   private persistentContext: Record<string, unknown> = {};
   private deviceInfo: BrowserDeviceInfo | null = null;
@@ -288,6 +294,14 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private remoteProbeState: BrowserRemoteProbeState = createInitialRemoteProbeState();
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
+  private readonly analyticsController = new BrowserAnalyticsController({
+    getConfig: () => this.config,
+    getDeviceInfo: () => this.deviceInfo,
+    getCurrentRoute: () => this.getCurrentRoute(),
+    enqueue: (event) => this.enqueueAnalyticsEvent(event)
+  });
+
+  public readonly analytics = this.analyticsController.api;
 
   public get status(): "healthy" | "degraded" | "disconnected" {
     if (this.config === null) {
@@ -363,9 +377,12 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.sessionSampledIn = this.config.sessionSampleRate >= 1 || Math.random() < this.config.sessionSampleRate;
     this.sessionEventCount = 0;
     this.deviceInfo = collectDeviceInfo();
+    this.analyticsController.configure(config.analytics);
     this.pendingTriggerToken = this.consumeTriggerTokenFromLocation();
     void this.refreshRemoteProbeConfig();
     this.installBrowserHooks();
+    this.analyticsController.captureSessionStart();
+    this.analyticsController.captureInitialPageView();
   }
 
   public captureException(error: unknown, context: CaptureBrowserExceptionContext = {}): void {
@@ -665,6 +682,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.remoteProbeState = createInitialRemoteProbeState();
     this.pendingTriggerToken = null;
     this.activeTriggerDirective = null;
+    this.analyticsController.reset();
 
     while (this.registeredListeners.length > 0) {
       this.registeredListeners.pop()?.();
@@ -939,6 +957,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         route
       }
     });
+    this.analyticsController.captureRouteChange(route);
   }
 
   private createBreadcrumbEvent(breadcrumb: BrowserBreadcrumb): EventEnvelope {
@@ -1079,6 +1098,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.enqueueInternalEvent(resolvedEvent, countTowardSession, false);
   }
 
+  private enqueueAnalyticsEvent(event: BrowserAnalyticsEventEnvelope): void {
+    this.enqueueInternalEvent(event, true, false);
+  }
+
   private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
     const config = this.config;
     if (config === null || config.captureRules.length === 0) {
@@ -1167,13 +1190,13 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     };
   }
 
-  private enqueueInternalEvent(event: EventEnvelope, countTowardSession = true, applyBeforeSend = true): void {
+  private enqueueInternalEvent(event: DebugBundleBrowserTransportEvent, countTowardSession = true, applyBeforeSend = true): void {
     const config = this.config;
     if (config === null || this.authRejected) {
       return;
     }
 
-    if (applyBeforeSend) {
+    if (applyBeforeSend && event.event_type !== "analytics_event") {
       const beforeSendEvent = applyBrowserBeforeSend(event, config.beforeSend);
       if (beforeSendEvent === null) {
         return;
@@ -1336,7 +1359,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     flushViaKeepalive();
   }
 
-  private sameLeadingEvents(events: EventEnvelope[]): boolean {
+  private sameLeadingEvents(events: DebugBundleBrowserTransportEvent[]): boolean {
     if (this.bufferedEvents.length < events.length) {
       return false;
     }
