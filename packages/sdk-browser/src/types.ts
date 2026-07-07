@@ -210,6 +210,11 @@ export interface BrowserAnalyticsEventEnvelope {
       normalized_path: string;
       title: string | null;
     } | null;
+    previous_route?: {
+      path: string;
+      normalized_path: string;
+      title: string | null;
+    } | null;
     dimensions: BrowserAnalyticsDimensions;
     custom_dimensions: BrowserAnalyticsCustomDimensions;
   };

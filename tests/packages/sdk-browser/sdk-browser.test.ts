@@ -390,6 +390,11 @@ describe("sdk-browser", () => {
       normalized_path: "/checkout/payment",
       title: null
     });
+    expect(events[2]?.payload.previous_route).toEqual({
+      path: "/checkout",
+      normalized_path: "/checkout",
+      title: null
+    });
     expect(events[6]?.payload.route).toEqual({
       path: "/pricing",
       normalized_path: "/pricing",

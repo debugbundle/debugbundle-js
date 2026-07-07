@@ -46,6 +46,7 @@ interface BrowserAnalyticsActiveConfig {
 
 export class BrowserAnalyticsController {
   private active: BrowserAnalyticsActiveConfig | null = null;
+  private lastRoute: BrowserAnalyticsEventEnvelope["payload"]["route"] = null;
 
   public constructor(
     private readonly host: {
@@ -89,12 +90,14 @@ export class BrowserAnalyticsController {
     const enabled = config?.enabled === true;
     if (!enabled) {
       this.active = null;
+      this.lastRoute = null;
       return;
     }
 
     const sampleRate = normalizeSampleRate(config?.sampleRate, 1);
     if (sampleRate <= 0 || Math.random() > sampleRate) {
       this.active = null;
+      this.lastRoute = null;
       return;
     }
 
@@ -114,10 +117,12 @@ export class BrowserAnalyticsController {
       userIdHash: null,
       context: {}
     };
+    this.lastRoute = null;
   }
 
   public reset(): void {
     this.active = null;
+    this.lastRoute = null;
   }
 
   public captureSessionStart(): void {
@@ -150,7 +155,10 @@ export class BrowserAnalyticsController {
       return;
     }
 
-    this.enqueue(kind, {}, route, {});
+    const previousRoute = kind === "route_change" ? this.lastRoute : null;
+    if (this.enqueue(kind, {}, route, {}, previousRoute)) {
+      this.lastRoute = route;
+    }
   }
 
   private captureSignal(
@@ -174,12 +182,13 @@ export class BrowserAnalyticsController {
     kind: BrowserAnalyticsEventKind,
     signal: Partial<BrowserAnalyticsEventEnvelope["payload"]["signal"]>,
     route: BrowserAnalyticsEventEnvelope["payload"]["route"],
-    dimensions: BrowserAnalyticsCustomDimensions
-  ): void {
+    dimensions: BrowserAnalyticsCustomDimensions,
+    previousRoute: BrowserAnalyticsEventEnvelope["payload"]["route"] = null
+  ): boolean {
     const sdkConfig = this.host.getConfig();
     const active = this.active;
     if (sdkConfig === null || active === null || !active.enabled || !active.consentGranted) {
-      return;
+      return false;
     }
 
     const mergedDimensions = {
@@ -211,12 +220,14 @@ export class BrowserAnalyticsController {
         kind,
         signal: normalizeSignal(signal),
         route,
+        ...(previousRoute !== null ? { previous_route: previousRoute } : {}),
         dimensions: buildDimensions(this.host.getDeviceInfo(), active, mergedDimensions),
         custom_dimensions: mergedDimensions
       }
     };
 
     this.host.enqueue(event);
+    return true;
   }
 
   private setContext(dimensions: Record<string, unknown>): void {
