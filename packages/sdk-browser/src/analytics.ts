@@ -28,6 +28,23 @@ const SIGNAL_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]*$/;
 const CUSTOM_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/i;
 const SENSITIVE_KEY_PATTERN = /(password|passwd|secret|token|authorization|cookie|email|phone|address|card|credit|ssn|user.?id|order.?id|ticket.?id|workspace.?id)/i;
+const STRUCTURAL_ACTION_KEYS_BY_TAG: Record<string, string> = {
+  a: "click.link",
+  button: "click.button",
+  input: "click.input",
+  select: "click.select",
+  summary: "click.summary"
+};
+const STRUCTURAL_ACTION_KEYS_BY_ROLE: Record<string, string> = {
+  button: "click.button",
+  checkbox: "click.checkbox",
+  link: "click.link",
+  menuitem: "click.menuitem",
+  radio: "click.radio",
+  switch: "click.switch",
+  tab: "click.tab"
+};
+const STRUCTURAL_INPUT_TYPES = new Set(["button", "checkbox", "radio", "reset", "submit"]);
 
 interface BrowserAnalyticsActiveConfig {
   enabled: boolean;
@@ -38,6 +55,7 @@ interface BrowserAnalyticsActiveConfig {
   trackRouteChanges: boolean;
   trackSessions: boolean;
   trackReferrers: boolean;
+  trackActions: boolean;
   sampleRate: number;
   sessionId: string;
   userIdHash: string | null;
@@ -117,6 +135,7 @@ export class BrowserAnalyticsController {
       trackRouteChanges: config?.trackRouteChanges !== false,
       trackSessions: config?.trackSessions !== false,
       trackReferrers: config?.trackReferrers !== false,
+      trackActions: config?.trackActions === true,
       sampleRate,
       sessionId: createBrowserTraceId(),
       userIdHash: null,
@@ -163,6 +182,23 @@ export class BrowserAnalyticsController {
     }
 
     this.capturePageView({ path }, "route_change");
+  }
+
+  public shouldCaptureStructuralActions(): boolean {
+    return this.active?.trackActions === true && this.active.consentGranted;
+  }
+
+  public captureStructuralAction(target: Record<string, unknown>): void {
+    if (!this.shouldCaptureStructuralActions()) {
+      return;
+    }
+
+    const actionKey = getStructuralActionKey(target);
+    if (actionKey === null) {
+      return;
+    }
+
+    this.enqueue("action", { action_key: actionKey }, this.lastRoute, {});
   }
 
   private capturePageView(input: DebugBundleBrowserAnalyticsPageViewInput, kind: "page_view" | "route_change"): void {
@@ -298,6 +334,36 @@ function normalizeSignalKey(value: unknown): string | null {
 
   const trimmed = value.trim();
   return SIGNAL_KEY_PATTERN.test(trimmed) && trimmed.length <= 120 ? trimmed : null;
+}
+
+function getStructuralActionKey(target: Record<string, unknown>): string | null {
+  const role = normalizeStructuralActionValue(target["role"]);
+  if (role !== null && STRUCTURAL_ACTION_KEYS_BY_ROLE[role] !== undefined) {
+    return STRUCTURAL_ACTION_KEYS_BY_ROLE[role];
+  }
+
+  const tagName = normalizeStructuralActionValue(target["tagName"]);
+  if (tagName === null) {
+    return null;
+  }
+
+  if (tagName === "input") {
+    const inputType = normalizeStructuralActionValue(target["type"]);
+    if (inputType !== null && STRUCTURAL_INPUT_TYPES.has(inputType)) {
+      return `click.input.${inputType}`;
+    }
+  }
+
+  return STRUCTURAL_ACTION_KEYS_BY_TAG[tagName] ?? null;
+}
+
+function normalizeStructuralActionValue(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 && normalized.length <= 32 ? normalized : null;
 }
 
 function normalizeRoute(path: string | null | undefined, title: string | null): BrowserAnalyticsEventEnvelope["payload"]["route"] {

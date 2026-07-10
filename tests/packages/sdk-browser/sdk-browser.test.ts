@@ -424,6 +424,95 @@ describe("sdk-browser", () => {
     expect(events[3]?.payload.dimensions.auth_state).toBe("authenticated");
   });
 
+  it("captures opt-in structural actions independently from debug click breadcrumbs", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      captureClicks: false,
+      analytics: {
+        enabled: true,
+        trackActions: true
+      }
+    });
+
+    globals.documentTarget.dispatch("click", {
+      target: {
+        tagName: "BUTTON",
+        id: "pay-now",
+        textContent: "Upgrade to Team - $49/mo",
+        value: "private-button-value"
+      }
+    });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0)).toEqual([]);
+    const events = getAnalyticsEvents(transport);
+    expect(events.map((event) => event.payload.kind)).toEqual(["session_start", "page_view", "action"]);
+
+    const action = events[2];
+    expect(action?.payload.signal).toMatchObject({ action_key: "click.button" });
+    expect(action?.payload.route).toEqual({
+      path: "/checkout",
+      normalized_path: "/checkout",
+      title: null
+    });
+    expect(JSON.stringify(action)).not.toContain("pay-now");
+    expect(JSON.stringify(action)).not.toContain("Upgrade to Team - $49/mo");
+    expect(JSON.stringify(action)).not.toContain("private-button-value");
+  });
+
+  it("does not auto-capture structural actions unless trackActions is enabled", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      captureClicks: false,
+      analytics: {
+        enabled: true
+      }
+    });
+
+    globals.documentTarget.dispatch("click", {
+      target: {
+        tagName: "A",
+        href: "/upgrade",
+        textContent: "Upgrade"
+      }
+    });
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0)).toEqual([]);
+    expect(getAnalyticsEvents(transport).map((event) => event.payload.kind)).toEqual(["session_start", "page_view"]);
+  });
+
+  it("gates structural actions on analytics consent", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      captureClicks: false,
+      analytics: {
+        enabled: true,
+        consentRequired: true,
+        trackActions: true
+      }
+    });
+
+    globals.documentTarget.dispatch("click", {
+      target: {
+        tagName: "BUTTON",
+        textContent: "Blocked before consent"
+      }
+    });
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+
+    sdk.analytics.setConsent(true);
+    globals.documentTarget.dispatch("click", {
+      target: {
+        tagName: "BUTTON",
+        textContent: "Allowed after consent"
+      }
+    });
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport).map((event) => event.payload.kind)).toEqual(["action"]);
+    expect(getAnalyticsEvents(transport)[0]?.payload.signal).toMatchObject({ action_key: "click.button" });
+  });
+
   it("emits bounded journey markers and one unload-safe session summary", async (): Promise<void> => {
     const { sdk, transport, globals } = createSdk({
       analytics: {

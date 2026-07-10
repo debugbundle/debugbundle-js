@@ -779,23 +779,29 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     const documentSource = getDocumentSource();
     if (documentSource !== null) {
       const onClick = (event: unknown): void => {
-        if (this.config?.captureClicks !== true) {
+        const captureDebugClick = this.config?.captureClicks === true;
+        const captureAnalyticsAction = this.analyticsController.shouldCaptureStructuralActions();
+        if (!captureDebugClick && !captureAnalyticsAction) {
           return;
         }
 
         const target = normalizeUnknownRecord(normalizeUnknownRecord(event)["target"]);
-        const selector = buildSelector(target);
-        if (selector === null) {
-          return;
+        if (captureDebugClick) {
+          const selector = buildSelector(target);
+          if (selector !== null) {
+            this.addBreadcrumb({
+              ts: new Date().toISOString(),
+              breadcrumb_type: "click",
+              data: {
+                selector
+              }
+            });
+          }
         }
 
-        this.addBreadcrumb({
-          ts: new Date().toISOString(),
-          breadcrumb_type: "click",
-          data: {
-            selector
-          }
-        });
+        if (captureAnalyticsAction) {
+          this.analyticsController.captureStructuralAction(target);
+        }
       };
 
       const onSubmit = (event: unknown): void => {

@@ -112,7 +112,10 @@ debugbundle.init({
   endpoint: "/debugbundle/browser",
   service: "checkout-web",
   environment: "production",
-  analytics: { enabled: true }
+  analytics: {
+    enabled: true,
+    trackActions: true
+  }
 });
 
 debugbundle.analytics.marker("checkout.validation_failed", {
@@ -120,7 +123,7 @@ debugbundle.analytics.marker("checkout.validation_failed", {
 });
 ```
 
-`marker()` emits a bounded `journey_marker` with a privacy-safe marker key and optional low-cardinality dimensions. The SDK emits one `session_summary` before a non-persisted `pagehide` and reuses its existing beacon/keepalive flush path. It does not emit a summary when a page enters the back-forward cache, and it never captures raw click text, form values, or arbitrary payloads.
+`marker()` emits a bounded `journey_marker` with a privacy-safe marker key and optional low-cardinality dimensions. `trackActions: true` additionally emits generic structural action keys such as `click.button` and `click.link`; it is independent from debug `captureClicks` and never retains target text, selectors, IDs, URLs, attributes, or form values. The SDK emits one `session_summary` before a non-persisted `pagehide` and reuses its existing beacon/keepalive flush path. It does not emit a summary when a page enters the back-forward cache.
 
 Handled HTTP responses do not need to throw an exception to become request incidents. A failed response can emit a standalone `request_event` when it is first-party for trace propagation and matches the active capture preset, `immediate_client_error_statuses`, or an `immediate_client_error_path_rules` entry. Unpromoted `4xx` responses remain breadcrumbs/context.
 
