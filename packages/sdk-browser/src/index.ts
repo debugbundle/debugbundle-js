@@ -783,11 +783,13 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       const onClick = (event: unknown): void => {
         const captureDebugClick = this.config?.captureClicks === true;
         const captureAnalyticsAction = this.analyticsController.shouldCaptureStructuralActions();
-        if (!captureDebugClick && !captureAnalyticsAction) {
+        const captureAnalyticsFriction = this.analyticsController.shouldCaptureFrictionSignals();
+        if (!captureDebugClick && !captureAnalyticsAction && !captureAnalyticsFriction) {
           return;
         }
 
-        const target = normalizeUnknownRecord(normalizeUnknownRecord(event)["target"]);
+        const targetIdentity = normalizeUnknownRecord(event)["target"];
+        const target = normalizeUnknownRecord(targetIdentity);
         if (captureDebugClick) {
           const selector = buildSelector(target);
           if (selector !== null) {
@@ -803,6 +805,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
         if (captureAnalyticsAction) {
           this.analyticsController.captureStructuralAction(target);
+        }
+        if (captureAnalyticsFriction) {
+          this.analyticsController.captureFrictionClick(target, targetIdentity);
         }
       };
 

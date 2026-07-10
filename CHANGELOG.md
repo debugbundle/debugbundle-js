@@ -8,6 +8,7 @@
 - Added default-off `analytics.trackActions` structural browser action capture. It emits fixed generic action keys without target text, selectors, IDs, URLs, attributes, or input values, independently from debug click breadcrumbs.
 - Direct browser SDKs now hydrate bounded project analytics settings from the existing SDK-config response as a restrictive overlay that cannot enable analytics or widen local capture.
 - Direct browser `analytics.privacyMode: "standard"` now derives a project-scoped first-party anonymous visitor hash for returning-visitor metrics without persisting or emitting the project token or raw visitor value. It falls back safely to session-only capture when browser storage or Web Crypto is unavailable and removes the stored value when consent is withdrawn or settings force strict privacy.
+- Added bounded browser friction markers behind `analytics.trackFrictionSignals`: repeated clicks, eligible non-interactive dead clicks, and quick route reversals emit fixed marker keys only, with ephemeral in-memory timing/object identity and restrictive remote settings support.
 
 ## [1.4.0] - 2026-06-20
 

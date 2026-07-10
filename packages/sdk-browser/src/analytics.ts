@@ -6,6 +6,7 @@ import {
   getLocationSource,
   normalizeSampleRate
 } from "./runtime.js";
+import { BrowserAnalyticsFrictionTracker } from "./analytics-friction.js";
 import {
   SDK_NAME,
   SDK_VERSION,
@@ -50,6 +51,7 @@ const STRUCTURAL_ACTION_KEYS_BY_ROLE: Record<string, string> = {
 const STRUCTURAL_INPUT_TYPES = new Set(["button", "checkbox", "radio", "reset", "submit"]);
 const STANDARD_VISITOR_STORAGE_PREFIX = "debugbundle.analytics.visitor.v1";
 const MAX_PENDING_STANDARD_EVENTS = 16;
+const NON_FRICTION_CONTROL_TAGS = new Set(["input", "textarea", "select", "option", "label"]);
 
 interface BrowserAnalyticsActiveConfig {
   enabled: boolean;
@@ -63,6 +65,7 @@ interface BrowserAnalyticsActiveConfig {
   trackReferrers: boolean;
   captureActions: boolean;
   trackActions: boolean;
+  trackFrictionSignals: boolean;
   sampleRate: number;
   sessionId: string;
   visitorIdHash: string | null;
@@ -77,6 +80,7 @@ export class BrowserAnalyticsController {
   private active: BrowserAnalyticsActiveConfig | null = null;
   private lastRoute: BrowserAnalyticsEventEnvelope["payload"]["route"] = null;
   private sessionSummaryCaptured = false;
+  private readonly frictionTracker = new BrowserAnalyticsFrictionTracker();
 
   public constructor(
     private readonly host: {
@@ -155,6 +159,7 @@ export class BrowserAnalyticsController {
       trackReferrers: config?.trackReferrers !== false,
       captureActions: true,
       trackActions: config?.trackActions === true,
+      trackFrictionSignals: config?.trackFrictionSignals !== false,
       sampleRate,
       sessionId: createBrowserTraceId(),
       visitorIdHash: null,
@@ -165,6 +170,7 @@ export class BrowserAnalyticsController {
       context: {}
     };
     this.lastRoute = null;
+    this.frictionTracker.reset();
     void this.initializeStandardVisitor(this.active);
   }
 
@@ -172,6 +178,7 @@ export class BrowserAnalyticsController {
     this.active = null;
     this.lastRoute = null;
     this.sessionSummaryCaptured = false;
+    this.frictionTracker.reset();
   }
 
   public captureSessionStart(): void {
@@ -236,6 +243,7 @@ export class BrowserAnalyticsController {
     active.trackRouteChanges = active.trackRouteChanges && remote.captureRouteChanges;
     active.captureActions = active.captureActions && remote.captureActions;
     active.trackActions = active.trackActions && remote.captureActions;
+    active.trackFrictionSignals = active.trackFrictionSignals && remote.captureFrictionSignals;
     if (!active.enabled) {
       this.clearStandardVisitor(active);
     }
@@ -243,6 +251,10 @@ export class BrowserAnalyticsController {
 
   public shouldCaptureStructuralActions(): boolean {
     return this.active?.trackActions === true && this.active.captureActions && this.active.consentGranted;
+  }
+
+  public shouldCaptureFrictionSignals(): boolean {
+    return this.active?.enabled === true && this.active.trackFrictionSignals && this.active.consentGranted;
   }
 
   public captureStructuralAction(target: Record<string, unknown>): void {
@@ -258,6 +270,24 @@ export class BrowserAnalyticsController {
     this.enqueue("action", { action_key: actionKey }, this.lastRoute, {});
   }
 
+  public captureFrictionClick(target: Record<string, unknown>, targetIdentity: unknown): void {
+    if (!this.shouldCaptureFrictionSignals() || targetIdentity === null || typeof targetIdentity !== "object") {
+      return;
+    }
+
+    const markerKey = this.frictionTracker.recordClick(
+      targetIdentity,
+      getStructuralActionKey(target) !== null,
+      isDeadClickCandidate(target),
+      Date.now()
+    );
+    if (markerKey === null) {
+      return;
+    }
+
+    this.enqueue("journey_marker", { marker_key: markerKey }, this.lastRoute, {});
+  }
+
   private capturePageView(input: DebugBundleBrowserAnalyticsPageViewInput, kind: "page_view" | "route_change"): void {
     const route = normalizeRoute(input.path ?? this.host.getCurrentRoute(), input.title ?? null);
     if (route === null) {
@@ -267,6 +297,29 @@ export class BrowserAnalyticsController {
     const previousRoute = kind === "route_change" ? this.lastRoute : null;
     if (this.enqueue(kind, {}, route, {}, previousRoute)) {
       this.lastRoute = route;
+      if (kind === "route_change") {
+        this.captureBacktrackFriction(previousRoute, route);
+      }
+    }
+  }
+
+  private captureBacktrackFriction(
+    previousRoute: BrowserAnalyticsEventEnvelope["payload"]["route"],
+    route: BrowserAnalyticsEventEnvelope["payload"]["route"]
+  ): void {
+    if (!this.shouldCaptureFrictionSignals() || previousRoute === null || route === null) {
+      return;
+    }
+
+    const fromPath = previousRoute.normalized_path;
+    const toPath = route.normalized_path;
+    if (fromPath === null || toPath === null || fromPath === toPath) {
+      return;
+    }
+
+    const markerKey = this.frictionTracker.recordRouteTransition(fromPath, toPath, Date.now());
+    if (markerKey !== null) {
+      this.enqueue("journey_marker", { marker_key: markerKey }, route, {});
     }
   }
 
@@ -541,6 +594,11 @@ function getStructuralActionKey(target: Record<string, unknown>): string | null 
   }
 
   return STRUCTURAL_ACTION_KEYS_BY_TAG[tagName] ?? null;
+}
+
+function isDeadClickCandidate(target: Record<string, unknown>): boolean {
+  const tagName = normalizeStructuralActionValue(target["tagName"]);
+  return tagName !== null && !NON_FRICTION_CONTROL_TAGS.has(tagName);
 }
 
 function normalizeStructuralActionValue(value: unknown): string | null {

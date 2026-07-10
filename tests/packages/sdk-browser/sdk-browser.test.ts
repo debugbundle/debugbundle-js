@@ -499,6 +499,133 @@ describe("sdk-browser", () => {
     expect(getAnalyticsEvents(transport).map((event) => event.payload.kind)).toEqual(["session_start", "page_view"]);
   });
 
+  it("captures bounded privacy-safe repeated-click, dead-click, and backtrack friction markers", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      captureClicks: false,
+      analytics: {
+        enabled: true,
+        trackActions: false
+      }
+    });
+    const buttonTarget = {
+      tagName: "BUTTON",
+      id: "pay-now",
+      textContent: "Pay $49 now",
+      value: "private-button-value"
+    };
+    const nonInteractiveTarget = {
+      tagName: "DIV",
+      id: "looks-clickable",
+      textContent: "Upgrade to Team"
+    };
+
+    for (let index = 0; index < 4; index += 1) {
+      globals.documentTarget.dispatch("click", { target: buttonTarget });
+      globals.documentTarget.dispatch("click", { target: nonInteractiveTarget });
+    }
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/pricing");
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/checkout");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0)).toEqual([]);
+    const markers = getAnalyticsEvents(transport)
+      .filter((event) => event.payload.kind === "journey_marker")
+      .map((event) => event.payload.signal.marker_key);
+    expect(markers).toEqual(["friction.repeated_click", "friction.dead_click", "friction.backtrack"]);
+    const serialized = JSON.stringify(getAnalyticsEvents(transport));
+    expect(serialized).not.toContain("pay-now");
+    expect(serialized).not.toContain("Pay $49 now");
+    expect(serialized).not.toContain("private-button-value");
+    expect(serialized).not.toContain("looks-clickable");
+    expect(serialized).not.toContain("Upgrade to Team");
+  });
+
+  it("does not capture friction markers when the local setting disables them", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      captureClicks: false,
+      analytics: {
+        enabled: true,
+        trackFrictionSignals: false
+      }
+    });
+    const target = { tagName: "BUTTON" };
+
+    for (let index = 0; index < 3; index += 1) {
+      globals.documentTarget.dispatch("click", { target });
+    }
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/pricing");
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/checkout");
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport).filter((event) => event.payload.kind === "journey_marker")).toEqual([]);
+  });
+
+  it("applies restrictive remote friction settings without affecting debug capture", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        probes_enabled: true,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {},
+        capture_rules: [],
+        analytics: {
+          enabled: true,
+          privacy_mode: "strict",
+          consent_required: false,
+          capture_page_views: true,
+          capture_route_changes: true,
+          capture_actions: true,
+          capture_friction_signals: false
+        }
+      })
+    });
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport,
+      captureClicks: false,
+      analytics: {
+        enabled: true,
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await settleAsyncInit();
+
+    const target = { tagName: "BUTTON" };
+    for (let index = 0; index < 3; index += 1) {
+      globals.documentTarget.dispatch("click", { target });
+    }
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/pricing");
+    ((globalThis as Record<string, unknown>)["history"] as {
+      pushState: (state: unknown, title: string, url?: string | URL | null) => void;
+    }).pushState({}, "", "/checkout");
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport).filter((event) => event.payload.kind === "journey_marker")).toEqual([]);
+    sdk.captureMessage("debug still works", "error");
+    await sdk.flush();
+    expect(createTransportEvents(transport, 1).map((event) => event.event_type)).toEqual(["log_event"]);
+  });
+
   it("gates structural actions on analytics consent", async (): Promise<void> => {
     const { sdk, transport, globals } = createSdk({
       captureClicks: false,
