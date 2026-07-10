@@ -1,6 +1,8 @@
 import {
   createBrowserTraceId,
+  getCryptoSource,
   getDocumentSource,
+  getLocalStorageSource,
   getLocationSource,
   normalizeSampleRate
 } from "./runtime.js";
@@ -46,6 +48,8 @@ const STRUCTURAL_ACTION_KEYS_BY_ROLE: Record<string, string> = {
   tab: "click.tab"
 };
 const STRUCTURAL_INPUT_TYPES = new Set(["button", "checkbox", "radio", "reset", "submit"]);
+const STANDARD_VISITOR_STORAGE_PREFIX = "debugbundle.analytics.visitor.v1";
+const MAX_PENDING_STANDARD_EVENTS = 16;
 
 interface BrowserAnalyticsActiveConfig {
   enabled: boolean;
@@ -61,6 +65,10 @@ interface BrowserAnalyticsActiveConfig {
   trackActions: boolean;
   sampleRate: number;
   sessionId: string;
+  visitorIdHash: string | null;
+  visitorStorageKey: string | null;
+  visitorInitializationPending: boolean;
+  pendingEvents: BrowserAnalyticsEventEnvelope[];
   userIdHash: string | null;
   context: BrowserAnalyticsCustomDimensions;
 }
@@ -84,6 +92,11 @@ export class BrowserAnalyticsController {
       if (this.active !== null) {
         this.active.consentGranted = value;
         this.active.consentExplicitlySet = true;
+        if (!value) {
+          this.clearStandardVisitor(this.active);
+        } else {
+          void this.initializeStandardVisitor(this.active);
+        }
       }
     },
     pageView: (input = {}) => {
@@ -144,10 +157,15 @@ export class BrowserAnalyticsController {
       trackActions: config?.trackActions === true,
       sampleRate,
       sessionId: createBrowserTraceId(),
+      visitorIdHash: null,
+      visitorStorageKey: null,
+      visitorInitializationPending: false,
+      pendingEvents: [],
       userIdHash: null,
       context: {}
     };
     this.lastRoute = null;
+    void this.initializeStandardVisitor(this.active);
   }
 
   public reset(): void {
@@ -171,6 +189,14 @@ export class BrowserAnalyticsController {
 
     if (this.enqueue("session_summary", {}, this.lastRoute, {})) {
       this.sessionSummaryCaptured = true;
+    }
+  }
+
+  public prepareForUnload(): void {
+    const active = this.active;
+    if (active?.visitorInitializationPending === true) {
+      active.visitorInitializationPending = false;
+      this.flushPendingEvents(active);
     }
   }
 
@@ -199,15 +225,20 @@ export class BrowserAnalyticsController {
     active.enabled = active.enabled && remote.enabled;
     if (remote.privacyMode === "strict") {
       active.privacyMode = "strict";
+      this.clearStandardVisitor(active);
     }
     active.consentRequired = active.consentRequired || remote.consentRequired;
     if (active.consentRequired && !active.consentExplicitlySet) {
       active.consentGranted = false;
+      this.clearStandardVisitor(active);
     }
     active.trackPageViews = active.trackPageViews && remote.capturePageViews;
     active.trackRouteChanges = active.trackRouteChanges && remote.captureRouteChanges;
     active.captureActions = active.captureActions && remote.captureActions;
     active.trackActions = active.trackActions && remote.captureActions;
+    if (!active.enabled) {
+      this.clearStandardVisitor(active);
+    }
   }
 
   public shouldCaptureStructuralActions(): boolean {
@@ -299,7 +330,7 @@ export class BrowserAnalyticsController {
       occurred_at: new Date().toISOString(),
       correlation: {
         session_id: active.sessionId,
-        visitor_id_hash: null,
+        visitor_id_hash: active.visitorIdHash,
         user_id_hash: active.userIdHash,
         trace_id: null,
         deploy_id: null
@@ -314,8 +345,85 @@ export class BrowserAnalyticsController {
       }
     };
 
+    if (active.visitorInitializationPending) {
+      if (active.pendingEvents.length < MAX_PENDING_STANDARD_EVENTS) {
+        active.pendingEvents.push(event);
+      }
+      return true;
+    }
+
     this.host.enqueue(event);
     return true;
+  }
+
+  private async initializeStandardVisitor(active: BrowserAnalyticsActiveConfig): Promise<void> {
+    if (
+      active.privacyMode !== "standard" ||
+      !active.enabled ||
+      !active.consentGranted ||
+      active.visitorIdHash !== null ||
+      active.visitorInitializationPending
+    ) {
+      return;
+    }
+
+    const projectToken = this.host.getConfig()?.projectToken;
+    if (projectToken === null || projectToken === undefined) {
+      return;
+    }
+
+    active.visitorInitializationPending = true;
+    try {
+      const projectScopeHash = await hashAnalyticsValue(projectToken);
+      if (projectScopeHash === null) {
+        return;
+      }
+
+      const storageKey = `${STANDARD_VISITOR_STORAGE_PREFIX}.${projectScopeHash.slice("sha256:".length)}`;
+      active.visitorStorageKey = storageKey;
+      if (this.active !== active || active.privacyMode !== "standard" || !active.consentGranted) {
+        removeStoredVisitor(storageKey);
+        return;
+      }
+
+      const visitorId = getOrCreateStoredVisitor(storageKey);
+      if (visitorId === null) {
+        return;
+      }
+
+      const visitorIdHash = await hashAnalyticsValue(`${projectScopeHash}:${visitorId}`);
+      if (this.active === active && active.privacyMode === "standard" && active.consentGranted) {
+        active.visitorIdHash = visitorIdHash;
+      }
+    } catch {
+      // Browser storage and crypto APIs are optional; analytics falls back to session-only.
+    } finally {
+      if (this.active === active) {
+        active.visitorInitializationPending = false;
+        this.flushPendingEvents(active);
+      }
+    }
+  }
+
+  private clearStandardVisitor(active: BrowserAnalyticsActiveConfig): void {
+    if (active.visitorStorageKey !== null) {
+      removeStoredVisitor(active.visitorStorageKey);
+    }
+    active.visitorIdHash = null;
+    active.pendingEvents = [];
+  }
+
+  private flushPendingEvents(active: BrowserAnalyticsActiveConfig): void {
+    const pendingEvents = active.pendingEvents;
+    active.pendingEvents = [];
+    if (!active.enabled || !active.consentGranted) {
+      return;
+    }
+
+    for (const event of pendingEvents) {
+      event.correlation.visitor_id_hash = active.visitorIdHash;
+      this.host.enqueue(event);
+    }
   }
 
   private setContext(dimensions: Record<string, unknown>): void {
@@ -335,6 +443,54 @@ export class BrowserAnalyticsController {
       ...sanitized
     };
   }
+}
+
+function getOrCreateStoredVisitor(storageKey: string): string | null {
+  const storage = getLocalStorageSource();
+  if (storage === null) {
+    return null;
+  }
+
+  try {
+    const existing = storage.getItem(storageKey);
+    if (isStoredVisitorId(existing)) {
+      return existing;
+    }
+
+    const visitorId = createBrowserTraceId();
+    if (!isStoredVisitorId(visitorId)) {
+      return null;
+    }
+    storage.setItem(storageKey, visitorId);
+    return visitorId;
+  } catch {
+    return null;
+  }
+}
+
+function removeStoredVisitor(storageKey: string): void {
+  try {
+    getLocalStorageSource()?.removeItem(storageKey);
+  } catch {
+    // Storage access must never affect host application behavior.
+  }
+}
+
+function isStoredVisitorId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9-]{16,128}$/i.test(value);
+}
+
+async function hashAnalyticsValue(value: string): Promise<string | null> {
+  const cryptoSource = getCryptoSource();
+  const TextEncoderConstructor = (globalThis as Record<string, unknown>)["TextEncoder"] as
+    | (new () => { encode(input: string): Uint8Array })
+    | undefined;
+  if (typeof cryptoSource?.subtle?.digest !== "function" || TextEncoderConstructor === undefined) {
+    return null;
+  }
+
+  const digest = await cryptoSource.subtle.digest("SHA-256", new TextEncoderConstructor().encode(value));
+  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function normalizePrivacyMode(value: unknown): BrowserAnalyticsPrivacyMode {

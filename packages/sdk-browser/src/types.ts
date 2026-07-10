@@ -278,6 +278,15 @@ export type BrowserFetch = (input: BrowserFetchInput, init?: BrowserFetchInit) =
 
 export interface BrowserCryptoSource {
   randomUUID?: () => string;
+  subtle?: {
+    digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
+  };
+}
+
+export interface BrowserStorageSource {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 export interface BrowserEventSource {

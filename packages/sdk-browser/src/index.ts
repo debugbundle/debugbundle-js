@@ -1317,6 +1317,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private flushViaBeacon(): void {
+    this.analyticsController.prepareForUnload();
     const config = this.config;
     const navigatorSource = getNavigatorSource();
     if (config === null || this.bufferedEvents.length === 0 || navigatorSource === null) {

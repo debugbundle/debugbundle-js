@@ -71,6 +71,12 @@ interface InstalledBrowserGlobals {
     body: unknown;
   }>;
   xhrResponses: Array<{ status: number }>;
+  localStorage: {
+    entries(): Array<[string, string]>;
+    getItem(key: string): string | null;
+    removeItem(key: string): void;
+    setItem(key: string, value: string): void;
+  };
 }
 
 const activeSdks: DebugBundleBrowserSdk[] = [];
@@ -143,6 +149,17 @@ function installBrowserGlobals(): InstalledBrowserGlobals {
     body: unknown;
   }> = [];
   const xhrResponses: Array<{ status: number }> = [];
+  const localStorageValues = new Map<string, string>();
+  const localStorage = {
+    entries: (): Array<[string, string]> => Array.from(localStorageValues.entries()),
+    getItem: (key: string): string | null => localStorageValues.get(key) ?? null,
+    removeItem: (key: string): void => {
+      localStorageValues.delete(key);
+    },
+    setItem: (key: string, value: string): void => {
+      localStorageValues.set(key, value);
+    }
+  };
   let traceCounter = 0;
 
   class FakeXMLHttpRequest extends FakeEventTarget {
@@ -209,6 +226,7 @@ function installBrowserGlobals(): InstalledBrowserGlobals {
     })) as unknown
   );
   vi.stubGlobal("fetch", fetchMock as unknown);
+  vi.stubGlobal("localStorage", localStorage as unknown);
   vi.stubGlobal("XMLHttpRequest", FakeXMLHttpRequest as unknown);
   vi.stubGlobal(
     "crypto",
@@ -228,7 +246,8 @@ function installBrowserGlobals(): InstalledBrowserGlobals {
     sendBeacon,
     fetchMock,
     xhrRequests,
-    xhrResponses
+    xhrResponses,
+    localStorage
   };
 }
 
@@ -586,6 +605,106 @@ describe("sdk-browser", () => {
     expect(getAnalyticsEvents(transport, 1).map((event) => event.payload.kind)).toEqual(["page_view"]);
   });
 
+  it("uses a project-scoped anonymous visitor hash for standard analytics without persisting the project token", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    const firstTransport = vi.fn().mockResolvedValue({ status: 202 });
+    const firstSdk = createDebugBundleBrowserSdk();
+    activeSdks.push(firstSdk);
+    firstSdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport: firstTransport,
+      analytics: {
+        enabled: true,
+        privacyMode: "standard",
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    firstSdk.analytics.track("checkout.started");
+    await firstSdk.flush();
+
+    const firstVisitorHash = getAnalyticsEvents(firstTransport)[0]?.correlation.visitor_id_hash;
+    expect(firstVisitorHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(globals.localStorage.entries()).toHaveLength(1);
+    expect(JSON.stringify(globals.localStorage.entries())).not.toContain("dbundle_proj_browser");
+
+    const secondTransport = vi.fn().mockResolvedValue({ status: 202 });
+    const secondSdk = createDebugBundleBrowserSdk();
+    activeSdks.push(secondSdk);
+    secondSdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport: secondTransport,
+      analytics: {
+        enabled: true,
+        privacyMode: "standard",
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    secondSdk.analytics.track("checkout.completed");
+    await secondSdk.flush();
+
+    expect(getAnalyticsEvents(secondTransport)[0]?.correlation.visitor_id_hash).toBe(firstVisitorHash);
+  });
+
+  it("keeps strict analytics session-only and does not create persistent visitor storage", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      analytics: {
+        enabled: true,
+        privacyMode: "strict",
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+
+    sdk.analytics.track("checkout.started");
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport)[0]?.correlation.visitor_id_hash).toBeNull();
+    expect(globals.localStorage.entries()).toEqual([]);
+  });
+
+  it("removes the standard visitor value when analytics consent is withdrawn", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport,
+      analytics: {
+        enabled: true,
+        privacyMode: "standard",
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(globals.localStorage.entries()).toHaveLength(1);
+
+    sdk.analytics.setConsent(false);
+    sdk.analytics.track("checkout.after_consent_withdrawal");
+    await sdk.flush();
+
+    expect(globals.localStorage.entries()).toEqual([]);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("applies restrictive remote analytics settings without affecting debug capture", async (): Promise<void> => {
     const globals = installBrowserGlobals();
     globals.fetchMock.mockResolvedValueOnce({
@@ -620,12 +739,14 @@ describe("sdk-browser", () => {
       transport,
       analytics: {
         enabled: true,
+        privacyMode: "standard",
         trackActions: true,
         trackPageViews: false,
         trackSessions: false
       }
     });
     await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
       headers: {
@@ -633,6 +754,7 @@ describe("sdk-browser", () => {
         "x-debugbundle-analytics-config": "1"
       }
     });
+    expect(globals.localStorage.entries()).toEqual([]);
 
     sdk.analytics.track("checkout.started");
     globals.documentTarget.dispatch("click", {

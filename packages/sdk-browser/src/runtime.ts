@@ -21,6 +21,7 @@ import {
   type BrowserRemoteAnalyticsConfig,
   type BrowserRemoteProbeState,
   type BrowserScreenSource,
+  type BrowserStorageSource,
   type BrowserTransportMode,
   type BrowserWindowMetrics,
   type BrowserXmlHttpRequestConstructor,
@@ -123,6 +124,25 @@ export function getCryptoSource(): BrowserCryptoSource | null {
   }
 
   return candidate as BrowserCryptoSource;
+}
+
+export function getLocalStorageSource(): BrowserStorageSource | null {
+  try {
+    const candidate = (globalThis as Record<string, unknown>)["localStorage"];
+    if (
+      candidate === null ||
+      typeof candidate !== "object" ||
+      typeof (candidate as Record<string, unknown>)["getItem"] !== "function" ||
+      typeof (candidate as Record<string, unknown>)["setItem"] !== "function" ||
+      typeof (candidate as Record<string, unknown>)["removeItem"] !== "function"
+    ) {
+      return null;
+    }
+
+    return candidate as BrowserStorageSource;
+  } catch {
+    return null;
+  }
 }
 
 export function getXmlHttpRequestConstructor(): BrowserXmlHttpRequestConstructor | null {
