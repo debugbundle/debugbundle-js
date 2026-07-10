@@ -14,6 +14,7 @@ import {
   type BrowserAnalyticsEventEnvelope,
   type BrowserAnalyticsEventKind,
   type BrowserAnalyticsPrivacyMode,
+  type BrowserRemoteAnalyticsConfig,
   type BrowserDeviceInfo,
   type DebugBundleBrowserAnalytics,
   type DebugBundleBrowserAnalyticsConfig,
@@ -51,10 +52,12 @@ interface BrowserAnalyticsActiveConfig {
   privacyMode: BrowserAnalyticsPrivacyMode;
   consentRequired: boolean;
   consentGranted: boolean;
+  consentExplicitlySet: boolean;
   trackPageViews: boolean;
   trackRouteChanges: boolean;
   trackSessions: boolean;
   trackReferrers: boolean;
+  captureActions: boolean;
   trackActions: boolean;
   sampleRate: number;
   sessionId: string;
@@ -80,6 +83,7 @@ export class BrowserAnalyticsController {
     setConsent: (value) => {
       if (this.active !== null) {
         this.active.consentGranted = value;
+        this.active.consentExplicitlySet = true;
       }
     },
     pageView: (input = {}) => {
@@ -131,10 +135,12 @@ export class BrowserAnalyticsController {
       privacyMode,
       consentRequired,
       consentGranted: !consentRequired,
+      consentExplicitlySet: false,
       trackPageViews: config?.trackPageViews !== false,
       trackRouteChanges: config?.trackRouteChanges !== false,
       trackSessions: config?.trackSessions !== false,
       trackReferrers: config?.trackReferrers !== false,
+      captureActions: true,
       trackActions: config?.trackActions === true,
       sampleRate,
       sessionId: createBrowserTraceId(),
@@ -184,8 +190,28 @@ export class BrowserAnalyticsController {
     this.capturePageView({ path }, "route_change");
   }
 
+  public applyRemoteSettings(remote: BrowserRemoteAnalyticsConfig): void {
+    const active = this.active;
+    if (active === null) {
+      return;
+    }
+
+    active.enabled = active.enabled && remote.enabled;
+    if (remote.privacyMode === "strict") {
+      active.privacyMode = "strict";
+    }
+    active.consentRequired = active.consentRequired || remote.consentRequired;
+    if (active.consentRequired && !active.consentExplicitlySet) {
+      active.consentGranted = false;
+    }
+    active.trackPageViews = active.trackPageViews && remote.capturePageViews;
+    active.trackRouteChanges = active.trackRouteChanges && remote.captureRouteChanges;
+    active.captureActions = active.captureActions && remote.captureActions;
+    active.trackActions = active.trackActions && remote.captureActions;
+  }
+
   public shouldCaptureStructuralActions(): boolean {
-    return this.active?.trackActions === true && this.active.consentGranted;
+    return this.active?.trackActions === true && this.active.captureActions && this.active.consentGranted;
   }
 
   public captureStructuralAction(target: Record<string, unknown>): void {
@@ -218,6 +244,10 @@ export class BrowserAnalyticsController {
     signal: Partial<BrowserAnalyticsEventEnvelope["payload"]["signal"]>,
     dimensions: Record<string, unknown>
   ): void {
+    if (kind === "action" && this.active?.captureActions !== true) {
+      return;
+    }
+
     const normalizedSignal = normalizeSignal(signal);
     if (
       (kind === "action" && normalizedSignal.action_key === null) ||

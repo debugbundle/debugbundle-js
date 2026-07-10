@@ -30,6 +30,7 @@ import {
   normalizeTracePropagationTargets,
   normalizeUnknownRecord,
   parseIngestionProbeDirectives,
+  parseRemoteAnalyticsConfigPayload,
   parseRemoteProbeConfigPayload,
   stringifyConsoleArgs
 } from "../../../packages/sdk-browser/src/runtime.js";
@@ -343,6 +344,44 @@ describe("sdk-browser runtime helpers", () => {
       ],
       triggerTokenKey: "trigger-key"
     });
+  });
+
+  it("should parse complete remote analytics capture settings only", (): void => {
+    expect(parseRemoteAnalyticsConfigPayload({})).toBeNull();
+    expect(
+      parseRemoteAnalyticsConfigPayload({
+        analytics: {
+          enabled: true,
+          privacy_mode: "strict",
+          consent_required: true,
+          capture_page_views: true,
+          capture_route_changes: false,
+          capture_actions: true,
+          capture_friction_signals: false
+        }
+      })
+    ).toEqual({
+      enabled: true,
+      privacyMode: "strict",
+      consentRequired: true,
+      capturePageViews: true,
+      captureRouteChanges: false,
+      captureActions: true,
+      captureFrictionSignals: false
+    });
+    expect(
+      parseRemoteAnalyticsConfigPayload({
+        analytics: {
+          enabled: true,
+          privacy_mode: "unknown",
+          consent_required: false,
+          capture_page_views: true,
+          capture_route_changes: true,
+          capture_actions: true,
+          capture_friction_signals: true
+        }
+      })
+    ).toBeNull();
   });
 
   it("should parse ingestion probe directives only when the response shape is valid", (): void => {

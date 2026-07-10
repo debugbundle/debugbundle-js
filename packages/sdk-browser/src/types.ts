@@ -29,6 +29,15 @@ export const DEFAULT_LOG_LEVEL: BrowserLogLevel = "warning";
 export type BrowserLogLevel = (typeof LOG_LEVELS)[number];
 export type BrowserTransportMode = "direct" | "relay";
 export type BrowserAnalyticsPrivacyMode = "strict" | "standard" | "custom";
+export interface BrowserRemoteAnalyticsConfig {
+  enabled: boolean;
+  privacyMode: BrowserAnalyticsPrivacyMode;
+  consentRequired: boolean;
+  capturePageViews: boolean;
+  captureRouteChanges: boolean;
+  captureActions: boolean;
+  captureFrictionSignals: boolean;
+}
 export type BrowserAnalyticsEventKind =
   | "session_start"
   | "page_view"
@@ -513,6 +522,7 @@ export interface ActiveConfig {
   maxProbeEntriesPerLabel: number;
   probeFlushOnError: boolean;
   requestTimeoutMs: number;
+  requestsAnalyticsConfig: boolean;
   captureRules: BrowserCaptureRule[];
   fetchImpl: BrowserFetch | null;
   transport: DebugBundleBrowserTransport;

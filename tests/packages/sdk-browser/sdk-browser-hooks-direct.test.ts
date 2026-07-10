@@ -114,6 +114,7 @@ function createConfig(overrides: Partial<ActiveConfig> = {}): ActiveConfig {
     maxProbeEntriesPerLabel: 10,
     probeFlushOnError: true,
     requestTimeoutMs: 5_000,
+    requestsAnalyticsConfig: false,
     captureRules: [],
     fetchImpl: vi.fn() as typeof fetch,
     transport: vi.fn(),

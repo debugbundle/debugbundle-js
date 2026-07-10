@@ -18,6 +18,7 @@ import {
   type BrowserNetworkFilterConfig,
   type BrowserPattern,
   type BrowserRemoteProbeDirective,
+  type BrowserRemoteAnalyticsConfig,
   type BrowserRemoteProbeState,
   type BrowserScreenSource,
   type BrowserTransportMode,
@@ -582,6 +583,10 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 function parseRemoteProbeDirective(value: unknown, nowMs: number): BrowserRemoteProbeDirective | null {
   const record = asRecord(value);
   if (record === null) {
@@ -665,6 +670,41 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
   };
 }
 
+export function parseRemoteAnalyticsConfigPayload(payload: unknown): BrowserRemoteAnalyticsConfig | null {
+  const record = asRecord(payload);
+  const analytics = record === null ? null : asRecord(record["analytics"]);
+  if (analytics === null || !isBrowserAnalyticsPrivacyMode(analytics["privacy_mode"])) {
+    return null;
+  }
+
+  const enabled = asBoolean(analytics["enabled"]);
+  const consentRequired = asBoolean(analytics["consent_required"]);
+  const capturePageViews = asBoolean(analytics["capture_page_views"]);
+  const captureRouteChanges = asBoolean(analytics["capture_route_changes"]);
+  const captureActions = asBoolean(analytics["capture_actions"]);
+  const captureFrictionSignals = asBoolean(analytics["capture_friction_signals"]);
+  if (
+    enabled === null ||
+    consentRequired === null ||
+    capturePageViews === null ||
+    captureRouteChanges === null ||
+    captureActions === null ||
+    captureFrictionSignals === null
+  ) {
+    return null;
+  }
+
+  return {
+    enabled,
+    privacyMode: analytics["privacy_mode"],
+    consentRequired,
+    capturePageViews,
+    captureRouteChanges,
+    captureActions,
+    captureFrictionSignals
+  };
+}
+
 function parseImmediateClientErrorPathRules(value: unknown): BrowserImmediateClientErrorPathRule[] {
   if (!Array.isArray(value) || value.length > 25) {
     return [];
@@ -718,6 +758,10 @@ function isBrowserCapturePreset(value: unknown): value is BrowserCapturePreset {
 
 function isBrowserCaptureRequestEvents(value: unknown): value is BrowserCaptureRequestEvents {
   return value === "off" || value === "failures_only" || value === "filtered" || value === "all";
+}
+
+function isBrowserAnalyticsPrivacyMode(value: unknown): value is BrowserRemoteAnalyticsConfig["privacyMode"] {
+  return value === "strict" || value === "standard" || value === "custom";
 }
 
 export function parseIngestionProbeDirectives(payload: unknown, nowMs: number): BrowserRemoteProbeDirective[] | null {

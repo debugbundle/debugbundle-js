@@ -125,6 +125,8 @@ debugbundle.analytics.marker("checkout.validation_failed", {
 
 `marker()` emits a bounded `journey_marker` with a privacy-safe marker key and optional low-cardinality dimensions. `trackActions: true` additionally emits generic structural action keys such as `click.button` and `click.link`; it is independent from debug `captureClicks` and never retains target text, selectors, IDs, URLs, attributes, or form values. The SDK emits one `session_summary` before a non-persisted `pagehide` and reuses its existing beacon/keepalive flush path. It does not emit a summary when a page enters the back-forward cache.
 
+For direct-cloud installs, the SDK explicitly requests the project analytics capture block from `GET /v1/sdk/config` once during initialization. That server block can only restrict a local analytics opt-in: it can disable capture, turn off page/route/action capture, require explicit consent, or force strict privacy. It cannot enable analytics or broaden capture. Relay installs do not fetch it because the browser must not hold a project token; the relay/ingestion path still enforces project settings.
+
 Handled HTTP responses do not need to throw an exception to become request incidents. A failed response can emit a standalone `request_event` when it is first-party for trace propagation and matches the active capture preset, `immediate_client_error_statuses`, or an `immediate_client_error_path_rules` entry. Unpromoted `4xx` responses remain breadcrumbs/context.
 
 ### Local beforeSend hook

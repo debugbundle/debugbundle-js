@@ -6,6 +6,7 @@
 
 - Added `debugbundle.analytics.marker(name, dimensions?)` for bounded, privacy-sanitized semantic journey markers and one unload-safe `session_summary` analytics event on a non-persisted page exit.
 - Added default-off `analytics.trackActions` structural browser action capture. It emits fixed generic action keys without target text, selectors, IDs, URLs, attributes, or input values, independently from debug click breadcrumbs.
+- Direct browser SDKs now hydrate bounded project analytics settings from the existing SDK-config response as a restrictive overlay that cannot enable analytics or widen local capture.
 
 ## [1.4.0] - 2026-06-20
 

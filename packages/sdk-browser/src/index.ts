@@ -29,6 +29,7 @@ import {
   normalizeSampleRate,
   normalizeTracePropagationTargets,
   normalizeUnknownRecord,
+  parseRemoteAnalyticsConfigPayload,
   parseIngestionProbeDirectives,
   parseRemoteProbeConfigPayload,
   resolveBrowserTransport,
@@ -366,6 +367,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       maxProbeEntriesPerLabel: normalizePositiveNumber(config.maxProbeEntriesPerLabel, 10),
       probeFlushOnError: normalizeBoolean(config.probeFlushOnError, true),
       requestTimeoutMs: normalizePositiveNumber(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
+      requestsAnalyticsConfig: config.analytics?.enabled === true,
       captureRules: [],
       fetchImpl: getFetchSource(),
       transport: config.transport ?? createFetchTransport(),
@@ -1532,7 +1534,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       const response = await config.fetchImpl(deriveSdkConfigEndpoint(config.endpoint), {
         method: "GET",
         headers: {
-          authorization: `Bearer ${config.projectToken}`
+          authorization: `Bearer ${config.projectToken}`,
+          ...(config.requestsAnalyticsConfig ? { "x-debugbundle-analytics-config": "1" } : {})
         }
       });
 
@@ -1541,6 +1544,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       }
 
       const payload = await response.json();
+      const analyticsConfig = parseRemoteAnalyticsConfigPayload(payload);
+      if (analyticsConfig !== null) {
+        this.analyticsController.applyRemoteSettings(analyticsConfig);
+      }
       const parsed = parseRemoteProbeConfigPayload(payload, Date.now());
       if (parsed !== null) {
         this.remoteProbeState = parsed;

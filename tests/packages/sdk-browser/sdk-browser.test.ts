@@ -586,6 +586,170 @@ describe("sdk-browser", () => {
     expect(getAnalyticsEvents(transport, 1).map((event) => event.payload.kind)).toEqual(["page_view"]);
   });
 
+  it("applies restrictive remote analytics settings without affecting debug capture", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        probes_enabled: true,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {},
+        capture_rules: [],
+        analytics: {
+          enabled: false,
+          privacy_mode: "strict",
+          consent_required: true,
+          capture_page_views: false,
+          capture_route_changes: false,
+          capture_actions: false,
+          capture_friction_signals: false
+        }
+      })
+    });
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport,
+      analytics: {
+        enabled: true,
+        trackActions: true,
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await settleAsyncInit();
+
+    expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: {
+        authorization: "Bearer dbundle_proj_browser",
+        "x-debugbundle-analytics-config": "1"
+      }
+    });
+
+    sdk.analytics.track("checkout.started");
+    globals.documentTarget.dispatch("click", {
+      target: { tagName: "BUTTON", textContent: "Pay now" }
+    });
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+
+    sdk.captureMessage("debug still works", "error");
+    await sdk.flush();
+
+    expect(createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["log_event"]);
+  });
+
+  it("does not request remote analytics settings for an analytics-disabled SDK", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        probes_enabled: true,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {},
+        capture_rules: [],
+        analytics: {
+          enabled: true,
+          privacy_mode: "standard",
+          consent_required: false,
+          capture_page_views: true,
+          capture_route_changes: true,
+          capture_actions: true,
+          capture_friction_signals: true
+        }
+      })
+    });
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport
+    });
+    await settleAsyncInit();
+
+    sdk.analytics.track("checkout.started");
+    await sdk.flush();
+
+    expect(transport).not.toHaveBeenCalled();
+    expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: {
+        authorization: "Bearer dbundle_proj_browser"
+      }
+    });
+    expect(globals.fetchMock.mock.calls[0]?.[1]).not.toMatchObject({
+      headers: {
+        "x-debugbundle-analytics-config": "1"
+      }
+    });
+  });
+
+  it("requires explicit consent when remote analytics settings tighten consent", async (): Promise<void> => {
+    const globals = installBrowserGlobals();
+    globals.fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        probes_enabled: true,
+        remote_probes_enabled: false,
+        active_probes: [],
+        capture_policy: {},
+        capture_rules: [],
+        analytics: {
+          enabled: true,
+          privacy_mode: "strict",
+          consent_required: true,
+          capture_page_views: true,
+          capture_route_changes: true,
+          capture_actions: true,
+          capture_friction_signals: true
+        }
+      })
+    });
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = createDebugBundleBrowserSdk();
+    activeSdks.push(sdk);
+
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: "checkout-web",
+      environment: "production",
+      flushInterval: 60_000,
+      transport,
+      analytics: {
+        enabled: true,
+        trackPageViews: false,
+        trackSessions: false
+      }
+    });
+    await settleAsyncInit();
+
+    sdk.analytics.track("checkout.started");
+    await sdk.flush();
+    expect(transport).not.toHaveBeenCalled();
+
+    sdk.analytics.setConsent(true);
+    sdk.analytics.track("checkout.started");
+    await sdk.flush();
+
+    expect(getAnalyticsEvents(transport).map((event) => event.payload.kind)).toEqual(["action"]);
+  });
+
   it("should allow beforeSend to mutate or drop browser events before transport", async (): Promise<void> => {
     const { sdk, transport } = createSdk({
       beforeSend: (event) => {
