@@ -745,7 +745,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private installBrowserHooks(): void {
     const windowSource = getWindowSource();
     if (windowSource !== null) {
-      const onPageHide = (): void => {
+      const onPageHide = (event: unknown): void => {
+        if (normalizeUnknownRecord(event)["persisted"] !== true) {
+          this.analyticsController.captureSessionSummary();
+        }
         this.flushViaBeacon();
       };
       const onError = (event: unknown): void => {

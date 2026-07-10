@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `debugbundle.analytics.marker(name, dimensions?)` for bounded, privacy-sanitized semantic journey markers and one unload-safe `session_summary` analytics event on a non-persisted page exit.
+
 ## [1.4.0] - 2026-06-20
 
 ### Changed

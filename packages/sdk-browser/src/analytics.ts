@@ -47,6 +47,7 @@ interface BrowserAnalyticsActiveConfig {
 export class BrowserAnalyticsController {
   private active: BrowserAnalyticsActiveConfig | null = null;
   private lastRoute: BrowserAnalyticsEventEnvelope["payload"]["route"] = null;
+  private sessionSummaryCaptured = false;
 
   public constructor(
     private readonly host: {
@@ -75,6 +76,9 @@ export class BrowserAnalyticsController {
     convert: (name, dimensions = {}) => {
       this.captureSignal("conversion", { conversion_key: name }, dimensions);
     },
+    marker: (name, dimensions = {}) => {
+      this.captureSignal("journey_marker", { marker_key: name }, dimensions);
+    },
     setContext: (dimensions) => {
       this.setContext(dimensions);
     },
@@ -87,6 +91,7 @@ export class BrowserAnalyticsController {
   };
 
   public configure(config: DebugBundleBrowserAnalyticsConfig | undefined): void {
+    this.sessionSummaryCaptured = false;
     const enabled = config?.enabled === true;
     if (!enabled) {
       this.active = null;
@@ -123,6 +128,7 @@ export class BrowserAnalyticsController {
   public reset(): void {
     this.active = null;
     this.lastRoute = null;
+    this.sessionSummaryCaptured = false;
   }
 
   public captureSessionStart(): void {
@@ -131,6 +137,16 @@ export class BrowserAnalyticsController {
     }
 
     this.enqueue("session_start", {}, null, {});
+  }
+
+  public captureSessionSummary(): void {
+    if (this.active?.trackSessions !== true || this.sessionSummaryCaptured) {
+      return;
+    }
+
+    if (this.enqueue("session_summary", {}, this.lastRoute, {})) {
+      this.sessionSummaryCaptured = true;
+    }
   }
 
   public captureInitialPageView(): void {
@@ -162,7 +178,7 @@ export class BrowserAnalyticsController {
   }
 
   private captureSignal(
-    kind: Extract<BrowserAnalyticsEventKind, "action" | "funnel_step" | "conversion">,
+    kind: Extract<BrowserAnalyticsEventKind, "action" | "funnel_step" | "conversion" | "journey_marker">,
     signal: Partial<BrowserAnalyticsEventEnvelope["payload"]["signal"]>,
     dimensions: Record<string, unknown>
   ): void {
@@ -170,12 +186,18 @@ export class BrowserAnalyticsController {
     if (
       (kind === "action" && normalizedSignal.action_key === null) ||
       (kind === "funnel_step" && (normalizedSignal.funnel_key === null || normalizedSignal.step_key === null)) ||
-      (kind === "conversion" && normalizedSignal.conversion_key === null)
+      (kind === "conversion" && normalizedSignal.conversion_key === null) ||
+      (kind === "journey_marker" && normalizedSignal.marker_key === null)
     ) {
       return;
     }
 
-    this.enqueue(kind, normalizedSignal, null, sanitizeCustomDimensions(dimensions));
+    this.enqueue(
+      kind,
+      normalizedSignal,
+      kind === "journey_marker" ? this.lastRoute : null,
+      sanitizeCustomDimensions(dimensions)
+    );
   }
 
   private enqueue(

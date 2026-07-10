@@ -422,6 +422,7 @@ export interface DebugBundleBrowserAnalytics {
   track(name: string, dimensions?: Record<string, unknown>): void;
   funnel(name: string, step: string, dimensions?: Record<string, unknown>): void;
   convert(name: string, dimensions?: Record<string, unknown>): void;
+  marker(name: string, dimensions?: Record<string, unknown>): void;
   setContext(dimensions: Record<string, unknown>): void;
   setUserHash(hash: string | null): void;
 }

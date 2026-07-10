@@ -320,6 +320,7 @@ describe("sdk-browser", () => {
     expect(typeof sdk.analytics.track).toBe("function");
     expect(typeof sdk.analytics.funnel).toBe("function");
     expect(typeof sdk.analytics.convert).toBe("function");
+    expect(typeof sdk.analytics.marker).toBe("function");
     expect(typeof sdk.analytics.setContext).toBe("function");
     expect(typeof sdk.analytics.setUserHash).toBe("function");
     expect(typeof sdk.probe).toBe("function");
@@ -334,6 +335,7 @@ describe("sdk-browser", () => {
     sdk.analytics.track("feature.used", { feature: "billing_portal" });
     sdk.analytics.funnel("checkout", "payment_submitted");
     sdk.analytics.convert("subscription_started");
+    sdk.analytics.marker("checkout.validation_failed");
     await sdk.flush();
 
     expect(transport).not.toHaveBeenCalled();
@@ -420,6 +422,58 @@ describe("sdk-browser", () => {
       referrer_domain: "example.com"
     });
     expect(events[3]?.payload.dimensions.auth_state).toBe("authenticated");
+  });
+
+  it("emits bounded journey markers and one unload-safe session summary", async (): Promise<void> => {
+    const { sdk, transport, globals } = createSdk({
+      analytics: {
+        enabled: true
+      }
+    });
+
+    sdk.analytics.marker("checkout.validation_failed", {
+      attempt_bucket: 3,
+      email: "owner@example.com"
+    });
+    await sdk.flush();
+
+    const marker = getAnalyticsEvents(transport).find((event) => event.payload.kind === "journey_marker");
+    expect(marker?.payload.signal).toMatchObject({ marker_key: "checkout.validation_failed" });
+    expect(marker?.payload.route).toEqual({
+      path: "/checkout",
+      normalized_path: "/checkout",
+      title: null
+    });
+    expect(marker?.payload.custom_dimensions).toEqual({ attempt_bucket: 3 });
+
+    await settleAsyncInit();
+    globals.fetchMock.mockClear();
+    globals.sendBeacon.mockReturnValue(false);
+    globals.windowTarget.dispatch("pagehide", { persisted: true });
+    await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(globals.fetchMock).not.toHaveBeenCalled();
+
+    globals.windowTarget.dispatch("pagehide", { persisted: false });
+    await settleAsyncInit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const request = globals.fetchMock.mock.calls[0]?.[1] as { body?: unknown } | undefined;
+    const body = JSON.parse(String(request?.body)) as { events: AnalyticsEvent[] };
+    expect(body.events.map((event) => event.payload.kind)).toEqual(["session_summary"]);
+    expect(body.events[0]?.payload.route).toEqual({
+      path: "/checkout",
+      normalized_path: "/checkout",
+      title: null
+    });
+    expect(body.events[0]?.payload.signal).toEqual({
+      action_key: null,
+      funnel_key: null,
+      step_key: null,
+      conversion_key: null,
+      marker_key: null
+    });
   });
 
   it("gates analytics capture on consent without affecting debug events", async (): Promise<void> => {
