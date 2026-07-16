@@ -2,24 +2,28 @@ import { redact, type JsonValue } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { BrowserAnalyticsController } from "./analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
-import { evaluateBrowserCaptureRulesForEvent, parseRemoteCaptureRulesPayload } from "./capture-rules.js";
+import {
+  isImmediateRequestIncidentStatus,
+  normalizeUnhandledRejectionReason,
+  shouldCaptureBrowserNetworkRequest,
+  shouldCaptureFailedBrowserNetworkRequest,
+  shouldCaptureRequestStatus
+} from "./capture-helpers.js";
+import { applyBrowserCaptureRules, buildBrowserSuppressionKey } from "./event-pipeline.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
 import { EventSuppressionTracker } from "./suppression.js";
-import { validateBrowserTriggerToken } from "./trigger-token.js";
+import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
+import { BrowserProbeController } from "./probes.js";
 import {
   buildSelector,
-  buildBrowserTransportRequestBody,
   createFetchTransport,
-  deriveSdkConfigEndpoint,
   getConsoleSource,
   getDocumentSource,
   getFetchSource,
   getHistorySource,
   getLocationSource,
-  getNavigatorSource,
   getWindowSource,
-  matchesBrowserPattern,
-  matchesStatusCodeFilter,
+  createBrowserTraceId,
   normalizeBrowserErrorEvent,
   normalizeBoolean,
   normalizeError,
@@ -29,9 +33,6 @@ import {
   normalizeSampleRate,
   normalizeTracePropagationTargets,
   normalizeUnknownRecord,
-  parseRemoteAnalyticsConfigPayload,
-  parseIngestionProbeDirectives,
-  parseRemoteProbeConfigPayload,
   resolveBrowserTransport,
 } from "./runtime.js";
 import {
@@ -49,17 +50,11 @@ import {
   SDK_VERSION,
   type ActiveConfig,
   type BrowserBreadcrumb,
-  type BrowserCaptureRequestEvents,
-  type BrowserCapturePreset,
   type BrowserCorrelationFields,
   type BrowserDeviceInfo,
   type BrowserAnalyticsEventEnvelope,
   type BrowserFetch,
   type BrowserLogLevel,
-  type BrowserHttpMethod,
-  type BrowserProbeBufferItem,
-  type BrowserCaptureRuleEvaluationResult,
-  type BrowserRejectionReasonContext,
   type BrowserRemoteProbeDirective,
   type BrowserRemoteProbeState,
   type BrowserXmlHttpRequestConstructor,
@@ -68,24 +63,6 @@ import {
   type DebugBundleBrowserSdk,
   type DebugBundleBrowserTransportEvent
 } from "./types.js";
-
-const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
-const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
-const DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES: number[] = [];
-const MAX_REJECTION_REASON_PREVIEW_LENGTH = 500;
-
-function createInitialRemoteProbeState(): BrowserRemoteProbeState {
-  return {
-    probesEnabled: false,
-    remoteProbesEnabled: false,
-    directives: [],
-    triggerTokenKey: null,
-    requestFailurePreset: DEFAULT_REQUEST_FAILURE_PRESET,
-    requestCaptureEvents: DEFAULT_REQUEST_CAPTURE_EVENTS,
-    immediateClientErrorStatuses: [...DEFAULT_IMMEDIATE_CLIENT_ERROR_STATUSES],
-    immediateClientErrorPathRules: []
-  };
-}
 
 export type {
   CaptureBrowserExceptionContext,
@@ -101,186 +78,13 @@ export type {
 } from "./types.js";
 export type { BrowserBeforeSendHook } from "./before-send.js";
 
-function truncateRejectionReasonPreview(value: string): string {
-  return value.length > MAX_REJECTION_REASON_PREVIEW_LENGTH
-    ? `${value.slice(0, MAX_REJECTION_REASON_PREVIEW_LENGTH)}[truncated]`
-    : value;
-}
-
-function readReasonStringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0
-    ? truncateRejectionReasonPreview(value.trim())
-    : undefined;
-}
-
-function normalizeUnhandledRejectionReason(reason: unknown): {
-  error: unknown;
-  rejectionReason: BrowserRejectionReasonContext;
-} {
-  if (reason instanceof Error) {
-    return {
-      error: reason,
-      rejectionReason: {
-        kind: "error",
-        name: reason.name || "Error",
-        message: truncateRejectionReasonPreview(reason.message || "Unknown rejection error")
-      }
-    };
-  }
-
-  if (typeof reason === "string") {
-    const preview = truncateRejectionReasonPreview(reason.length > 0 ? reason : "[empty string]");
-    return {
-      error: new Error(reason.length > 0 ? reason : "Unhandled promise rejection"),
-      rejectionReason: { kind: "string", preview }
-    };
-  }
-
-  if (reason === null) {
-    return {
-      error: new Error("Unhandled promise rejection: null"),
-      rejectionReason: { kind: "null", preview: "null" }
-    };
-  }
-
-  if (reason === undefined) {
-    return {
-      error: new Error("Unhandled promise rejection: undefined"),
-      rejectionReason: { kind: "undefined", preview: "undefined" }
-    };
-  }
-
-  const record = normalizeUnknownRecord(reason);
-  const name = readReasonStringField(record, "name");
-  const message = readReasonStringField(record, "message");
-  const constructorName =
-    typeof reason === "object" && reason !== null && "constructor" in reason
-      ? (reason as { constructor?: { name?: unknown } }).constructor?.name
-      : undefined;
-  const preview = typeof constructorName === "string" && constructorName.length > 0 ? constructorName : "object";
-
-  return {
-    error: new Error(message ?? "Unhandled promise rejection"),
-    rejectionReason: {
-      kind: "object",
-      ...(name === undefined ? {} : { name }),
-      ...(message === undefined ? {} : { message }),
-      preview
-    }
-  };
-}
-
-const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
-const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
-function isImmediateRequestIncidentStatus(
-  statusCode: number,
-  preset: BrowserCapturePreset,
-  immediateClientErrorStatuses: readonly number[] = [],
-  requestPath?: string,
-  httpMethod?: string,
-  immediateClientErrorPathRules: BrowserRemoteProbeState["immediateClientErrorPathRules"] = []
-): boolean {
-  if (!Number.isFinite(statusCode)) {
-    return false;
-  }
-
-  if (statusCode >= 500) {
-    return true;
-  }
-
-  if (immediateClientErrorStatuses.includes(statusCode)) {
-    return true;
-  }
-  if (matchesImmediateClientErrorPathRule(statusCode, requestPath, httpMethod, immediateClientErrorPathRules)) {
-    return true;
-  }
-
-  if (preset === "investigative") {
-    return INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
-  }
-
-  if (preset === "balanced") {
-    return BALANCED_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
-  }
-
-  return false;
-}
-
-function matchesImmediateClientErrorPathRule(
-  statusCode: number,
-  requestPath: string | undefined,
-  httpMethod: string | undefined,
-  rules: BrowserRemoteProbeState["immediateClientErrorPathRules"]
-): boolean {
-  if (statusCode < 400 || statusCode > 499 || requestPath === undefined) {
-    return false;
-  }
-  const normalizedPath = normalizeRequestPath(requestPath);
-  const normalizedMethod = typeof httpMethod === "string" ? httpMethod.toUpperCase() : null;
-  return rules.some((rule) => {
-    if (rule.statusCode !== statusCode) {
-      return false;
-    }
-    if (rule.methods.length > 0 && (normalizedMethod === null || !rule.methods.includes(normalizedMethod as BrowserHttpMethod))) {
-      return false;
-    }
-    if (rule.pathPattern.endsWith("*")) {
-      return normalizedPath.startsWith(rule.pathPattern.slice(0, -1));
-    }
-    return normalizedPath === rule.pathPattern;
-  });
-}
-
-function normalizeRequestPath(value: string): string {
-  try {
-    return new URL(value, getLocationSource()?.href ?? "https://debugbundle.local").pathname || "/";
-  } catch {
-    const queryIndex = value.indexOf("?");
-    const fragmentIndex = value.indexOf("#");
-    const end =
-      queryIndex === -1 ? (fragmentIndex === -1 ? value.length : fragmentIndex) : fragmentIndex === -1 ? queryIndex : Math.min(queryIndex, fragmentIndex);
-    const path = value.slice(0, end);
-    return path.startsWith("/") && path.length > 0 ? path : "/";
-  }
-}
-
-function shouldCaptureRequestStatus(
-  statusCode: number,
-  preset: BrowserCapturePreset,
-  policy: BrowserCaptureRequestEvents,
-  immediateClientErrorStatuses: readonly number[] = [],
-  requestPath?: string,
-  httpMethod?: string,
-  immediateClientErrorPathRules: BrowserRemoteProbeState["immediateClientErrorPathRules"] = []
-): boolean {
-  if (isImmediateRequestIncidentStatus(statusCode, preset, immediateClientErrorStatuses, requestPath, httpMethod, immediateClientErrorPathRules)) {
-    return true;
-  }
-
-  if (policy === "all") {
-    return Number.isFinite(statusCode) && statusCode >= 400;
-  }
-
-  if (policy === "failures_only") {
-    return statusCode >= 500;
-  }
-
-  return false;
-}
-
 export class BrowserSdk implements DebugBundleBrowserSdk {
   private config: ActiveConfig | null = null;
-  private bufferedEvents: DebugBundleBrowserTransportEvent[] = [];
   private breadcrumbs: BrowserBreadcrumb[] = [];
   private persistentContext: Record<string, unknown> = {};
   private deviceInfo: BrowserDeviceInfo | null = null;
-  private flushPromise: Promise<void> | null = null;
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  private nextRetryAt: number | null = null;
-  private _lastEventAt: number | null = null;
-  private _consecutiveFailures = 0;
-  private authRejected = false;
+  private browserSessionId: string | null = null;
+  private analyticsInitialization: Promise<void> | null = null;
   private registeredListeners: Array<() => void> = [];
   private originalPushState: ((state: unknown, title: string, url?: string | URL | null) => void) | null = null;
   private originalReplaceState: ((state: unknown, title: string, url?: string | URL | null) => void) | null = null;
@@ -290,42 +94,40 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
   private sessionSampledIn = true;
   private sessionEventCount = 0;
-  private probeBuffers = new Map<string, BrowserProbeBufferItem[]>();
   private readonly suppressionTracker = new EventSuppressionTracker();
-  private remoteProbeState: BrowserRemoteProbeState = createInitialRemoteProbeState();
-  private pendingTriggerToken: string | null = null;
-  private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
+  private readonly probeController = new BrowserProbeController({
+    getConfig: () => this.config,
+    isDebugRejected: () => this.eventTransport.debugRejected,
+    isSessionSampledIn: () => this.sessionSampledIn,
+    emitProbeEvent: ({ label, data, directive }) => this.emitProbeEvent(label, data, directive),
+    applyRemoteAnalytics: (config) => this.analyticsController.applyRemoteSettings(config)
+  });
+  private readonly eventTransport = new BrowserEventTransport({
+    onDebugResponse: (payload) => this.probeController.updateFromIngestionResponse(payload),
+    onUnauthorized: (lane, statusCode, endpoint, body) => {
+      this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
+    }
+  });
   private readonly analyticsController = new BrowserAnalyticsController({
     getConfig: () => this.config,
     getDeviceInfo: () => this.deviceInfo,
     getCurrentRoute: () => this.getCurrentRoute(),
+    getSessionId: () => this.browserSessionId ?? createBrowserTraceId(),
     enqueue: (event) => this.enqueueAnalyticsEvent(event)
   });
 
   public readonly analytics = this.analyticsController.api;
 
+  private get remoteProbeState(): BrowserRemoteProbeState {
+    return this.probeController.state;
+  }
+
   public get status(): "healthy" | "degraded" | "disconnected" {
-    if (this.config === null) {
-      return "disconnected";
-    }
-
-    if (this.authRejected) {
-      return "disconnected";
-    }
-
-    if (this._consecutiveFailures >= 3) {
-      return "disconnected";
-    }
-
-    if (this.nextRetryAt !== null) {
-      return "degraded";
-    }
-
-    return "healthy";
+    return this.eventTransport.status;
   }
 
   public get lastEventAt(): number | null {
-    return this._lastEventAt;
+    return this.eventTransport.lastEventAt;
   }
 
   public init(config: DebugBundleBrowserInitConfig): void {
@@ -375,16 +177,31 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       ...(config.beforeSend === undefined ? {} : { beforeSend: config.beforeSend })
     };
 
-    this.authRejected = false;
+    this.eventTransport.configure(this.config);
     this.sessionSampledIn = this.config.sessionSampleRate >= 1 || Math.random() < this.config.sessionSampleRate;
     this.sessionEventCount = 0;
+    this.browserSessionId = createBrowserTraceId();
     this.deviceInfo = collectDeviceInfo();
-    this.analyticsController.configure(config.analytics);
-    this.pendingTriggerToken = this.consumeTriggerTokenFromLocation();
-    void this.refreshRemoteProbeConfig();
+    const deferAnalyticsCapture =
+      this.config.requestsAnalyticsConfig &&
+      this.config.transportMode === "direct" &&
+      this.config.projectToken !== null &&
+      this.config.fetchImpl !== null;
+    this.analyticsController.configure(config.analytics, { deferCapture: deferAnalyticsCapture });
+    const remoteInitialization = this.probeController.initialize();
     this.installBrowserHooks();
-    this.analyticsController.captureSessionStart();
-    this.analyticsController.captureInitialPageView();
+    if (deferAnalyticsCapture) {
+      const activeConfig = this.config;
+      this.analyticsInitialization = remoteInitialization.finally(() => {
+        if (this.config !== activeConfig) {
+          return;
+        }
+        this.analyticsController.markCaptureReady();
+      });
+    } else {
+      this.analyticsController.captureSessionStart();
+      this.analyticsController.captureInitialPageView();
+    }
   }
 
   public captureException(error: unknown, context: CaptureBrowserExceptionContext = {}): void {
@@ -398,7 +215,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       const device = this.deviceInfo;
       const browser = device?.browser ?? { name: "Unknown", version: "0" };
       const breadcrumbs = this.consumeBreadcrumbs();
-      const probeData = config.probeFlushOnError ? this.consumeProbeData() : { version: 1 as const, items: [] };
+      const probeData = config.probeFlushOnError
+        ? this.probeController.consumeBufferedData()
+        : { version: 1 as const, items: [] };
       const domContext =
         typeof context.target?.outerHTML === "string" && context.target.outerHTML.length > 0
           ? {
@@ -540,150 +359,27 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   public probe(label: string, data: unknown): void {
-    const config = this.config;
-    const normalizedLabel = label.trim();
-    if (config === null || normalizedLabel.length === 0) {
-      return;
-    }
-
-    try {
-      const redacted = redact(this.normalizeProbeInput(data), {
-        sensitiveKeys: config.redactFields
-      }).redacted;
-      const probeData = normalizeUnknownRecord(redacted);
-
-      this.bufferProbe(normalizedLabel, probeData);
-
-      const matchingDirectives = this.getMatchingRemoteProbeDirectives(normalizedLabel, Date.now());
-      if (!this.sessionSampledIn || matchingDirectives.length === 0) {
-        return;
-      }
-
-      for (const directive of matchingDirectives) {
-        this.enqueueEvent(
-          this.createSdkEventEnvelope(config, {
-            schema_version: SDK_SCHEMA_VERSION,
-            event_type: "probe_event",
-            ...this.getProjectTokenFields(config),
-            sdk_name: SDK_NAME,
-            sdk_version: SDK_VERSION,
-            service: {
-              name: config.service,
-              runtime: "browser",
-              framework: null,
-              environment: config.environment
-            },
-            occurred_at: new Date().toISOString(),
-            correlation: this.createCorrelation(),
-            payload: {
-              label: normalizedLabel,
-              data: probeData,
-              activation_id: directive.activationId,
-              probe_label_pattern: directive.labelPattern
-            }
-          }),
-          false
-        );
-      }
-    } catch {
-      return;
-    }
+    this.probeController.capture(label, data);
   }
 
   public async flush(): Promise<void> {
-    const config = this.config;
-    if (config === null) {
-      return;
-    }
-
+    await this.analyticsInitialization;
     this.enqueueSuppressionAggregates();
-
-    if (this.bufferedEvents.length === 0) {
-      return;
-    }
-
-    if (this.flushPromise !== null) {
-      return this.flushPromise;
-    }
-
-    if (this.nextRetryAt !== null && Date.now() < this.nextRetryAt) {
-      return;
-    }
-
-    if (this.authRejected) {
-      return;
-    }
-
-    this.clearFlushTimer();
-
-    const events = [...this.bufferedEvents];
-    this.flushPromise = (async () => {
-      try {
-        const response = await config.transport({
-          endpoint: config.endpoint,
-          headers: this.getTransportHeaders(config),
-          events,
-          transportMode: config.transportMode,
-          timeout_ms: config.requestTimeoutMs
-        });
-
-        if (response.status >= 200 && response.status < 300) {
-          this.updateRemoteProbeStateFromIngestionResponse(response.body);
-          this.nextRetryAt = null;
-          this._lastEventAt = Date.now();
-          this._consecutiveFailures = 0;
-          if (this.bufferedEvents === events || this.sameLeadingEvents(events)) {
-            this.bufferedEvents.splice(0, events.length);
-          }
-          return;
-        }
-
-        this._consecutiveFailures++;
-        if (response.status === 401 || response.status === 403) {
-          this.authRejected = true;
-          this.nextRetryAt = null;
-          this.reportUnauthorizedTransportFailure(response.status, config.endpoint, response.body);
-          this.bufferedEvents = [];
-          return;
-        }
-
-        if (response.status === 429) {
-          this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
-        }
-      } catch {
-        this._consecutiveFailures++;
-        return;
-      } finally {
-        this.flushPromise = null;
-        if (this.bufferedEvents.length > 0) {
-          const retryDelay = this.nextRetryAt === null ? undefined : Math.max(0, this.nextRetryAt - Date.now());
-          this.scheduleFlush(retryDelay);
-        }
-      }
-    })();
-
-    return this.flushPromise;
+    await this.eventTransport.flush();
   }
 
   public dispose(): void {
-    this.clearFlushTimer();
-    this.flushPromise = null;
-    this.bufferedEvents = [];
+    this.eventTransport.reset();
     this.breadcrumbs = [];
-    this.probeBuffers = new Map<string, BrowserProbeBufferItem[]>();
     this.persistentContext = {};
     this.deviceInfo = null;
+    this.browserSessionId = null;
+    this.analyticsInitialization = null;
     this.config = null;
     this.sessionSampledIn = true;
     this.sessionEventCount = 0;
-    this.nextRetryAt = null;
-    this._lastEventAt = null;
-    this._consecutiveFailures = 0;
-    this.authRejected = false;
     this.suppressionTracker.reset();
-    this.remoteProbeState = createInitialRemoteProbeState();
-    this.pendingTriggerToken = null;
-    this.activeTriggerDirective = null;
+    this.probeController.reset();
     this.analyticsController.reset();
 
     while (this.registeredListeners.length > 0) {
@@ -723,7 +419,12 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
   }
 
-  private reportUnauthorizedTransportFailure(statusCode: 401 | 403, endpoint: string, body: unknown): void {
+  private reportUnauthorizedTransportFailure(
+    lane: BrowserTransportLaneName,
+    statusCode: 401 | 403,
+    endpoint: string,
+    body: unknown
+  ): void {
     const consoleSource = getConsoleSource();
     if (consoleSource === null) {
       return;
@@ -732,8 +433,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     const bodyRecord = normalizeUnknownRecord(body);
     const errorCode = typeof bodyRecord["error"] === "string" && bodyRecord["error"].length > 0 ? bodyRecord["error"] : null;
     const detail = errorCode === null ? "" : ` (${errorCode})`;
+    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
     const message =
-      `DebugBundle browser SDK disabled after ingestion returned ${statusCode} for ${endpoint}. ` +
+      `DebugBundle ${laneLabel} disabled after ingestion returned ${statusCode} for ${endpoint}. ` +
       `Check the project token or relay configuration${detail}.`;
 
     if (typeof consoleSource.error === "function") {
@@ -874,8 +576,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       (breadcrumb) => {
         this.captureNetworkRequestFailure(breadcrumb);
       },
-      (url, statusCode, durationMs) => this.shouldCaptureNetworkRequest(url, statusCode, durationMs),
-      (url, durationMs) => this.shouldCaptureFailedNetworkRequest(url, durationMs),
+      (url, statusCode, durationMs) => shouldCaptureBrowserNetworkRequest(this.config, url, statusCode, durationMs),
+      (url, durationMs) => shouldCaptureFailedBrowserNetworkRequest(this.config, url, durationMs),
       () => this.getCurrentRoute()
     );
     this.originalFetch = networkHooks.originalFetch;
@@ -886,14 +588,14 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     return {
       request_id: null,
       trace_id: null,
-      session_id: null,
+      session_id: this.browserSessionId,
       user_id_hash: null
     };
   }
 
   private addBreadcrumb(breadcrumb: BrowserBreadcrumb): void {
     const config = this.config;
-    if (config === null || this.authRejected || !this.shouldCaptureBreadcrumb()) {
+    if (config === null || this.eventTransport.debugRejected || !this.shouldCaptureBreadcrumb()) {
       return;
     }
 
@@ -907,40 +609,6 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     while (this.breadcrumbs.length > config.maxBreadcrumbs) {
       this.breadcrumbs.shift();
     }
-  }
-
-  private bufferProbe(label: string, data: Record<string, unknown>): void {
-    const config = this.config;
-    if (config === null || this.authRejected) {
-      return;
-    }
-
-    if (!this.probeBuffers.has(label) && this.probeBuffers.size >= config.maxProbeLabels) {
-      return;
-    }
-
-    const buffer = this.probeBuffers.get(label) ?? [];
-    buffer.push({
-      label,
-      data,
-      timestamp: new Date().toISOString(),
-      activation_id: null
-    });
-
-    while (buffer.length > config.maxProbeEntriesPerLabel) {
-      buffer.shift();
-    }
-
-    this.probeBuffers.set(label, buffer);
-  }
-
-  private consumeProbeData(): { version: 1; items: BrowserProbeBufferItem[] } {
-    const items = Array.from(this.probeBuffers.values()).flatMap((buffer) => buffer);
-    this.probeBuffers.clear();
-    return {
-      version: 1,
-      items
-    };
   }
 
   private consumeBreadcrumbs(): BrowserBreadcrumb[] {
@@ -1002,6 +670,41 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         data: breadcrumb.data
       }
     });
+  }
+
+  private emitProbeEvent(
+    label: string,
+    data: Record<string, unknown>,
+    directive: BrowserRemoteProbeDirective
+  ): void {
+    const config = this.config;
+    if (config === null) {
+      return;
+    }
+    this.enqueueEvent(
+      this.createSdkEventEnvelope(config, {
+        schema_version: SDK_SCHEMA_VERSION,
+        event_type: "probe_event",
+        ...this.getProjectTokenFields(config),
+        sdk_name: SDK_NAME,
+        sdk_version: SDK_VERSION,
+        service: {
+          name: config.service,
+          runtime: "browser",
+          framework: null,
+          environment: config.environment
+        },
+        occurred_at: new Date().toISOString(),
+        correlation: this.createCorrelation(),
+        payload: {
+          label,
+          data,
+          activation_id: directive.activationId,
+          probe_label_pattern: directive.labelPattern
+        }
+      }),
+      false
+    );
   }
 
   private captureNetworkRequestFailure(breadcrumb: BrowserBreadcrumb): void {
@@ -1096,7 +799,16 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
-    const resolvedEvent = this.applyCaptureRulesToEvent(beforeSendEvent);
+    const captureRuleResult = applyBrowserCaptureRules({
+      config: this.config,
+      event: beforeSendEvent,
+      currentRoute: this.getCurrentRoute(),
+      now: new Date().toISOString()
+    });
+    if (captureRuleResult.breadcrumb !== null) {
+      this.addBreadcrumb(captureRuleResult.breadcrumb);
+    }
+    const resolvedEvent = captureRuleResult.event;
     if (resolvedEvent === null) {
       return;
     }
@@ -1105,9 +817,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
-    const suppressionKey = this.buildSuppressionKey(resolvedEvent);
+    const suppressionKey = buildBrowserSuppressionKey(resolvedEvent);
     if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
-      this.scheduleFlush();
+      this.eventTransport.scheduleDebug();
       return;
     }
 
@@ -1115,100 +827,12 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private enqueueAnalyticsEvent(event: BrowserAnalyticsEventEnvelope): void {
-    this.enqueueInternalEvent(event, true, false);
-  }
-
-  private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
-    const config = this.config;
-    if (config === null || config.captureRules.length === 0) {
-      return event;
-    }
-
-    const projectId = config.captureRules[0]?.project_id;
-    if (typeof projectId !== "string" || projectId.length === 0) {
-      return event;
-    }
-
-    try {
-      const captureRule = evaluateBrowserCaptureRulesForEvent(
-        config.captureRules,
-        projectId,
-        event,
-        new Date().toISOString()
-      );
-
-      if (captureRule === null) {
-        return event;
-      }
-
-      if (captureRule.outcome === "drop" || captureRule.outcome === "sampled_out") {
-        return null;
-      }
-
-      if (
-        event.event_type === "frontend_exception" &&
-        (captureRule.outcome === "demote" || captureRule.sample_event_class === "context")
-      ) {
-        this.addBreadcrumb(this.createDemotedExceptionBreadcrumb(event, captureRule));
-        return null;
-      }
-
-      if (
-        event.event_type === "request_event" &&
-        (captureRule.outcome === "demote" || captureRule.sample_event_class === "context")
-      ) {
-        return null;
-      }
-    } catch {
-      return event;
-    }
-
-    return event;
-  }
-
-  private createDemotedExceptionBreadcrumb(
-    event: Extract<EventEnvelope, { event_type: "frontend_exception" }>,
-    captureRule: BrowserCaptureRuleEvaluationResult
-  ): BrowserBreadcrumb {
-    const payload = event.payload as Record<string, unknown>;
-    const browserEventRecord =
-      typeof payload["browser_event"] === "object" && payload["browser_event"] !== null
-        ? (payload["browser_event"] as Record<string, unknown>)
-        : null;
-    const targetRecord =
-      typeof browserEventRecord?.["target"] === "object" && browserEventRecord["target"] !== null
-        ? (browserEventRecord["target"] as Record<string, unknown>)
-        : null;
-    const browserEventKind =
-      browserEventRecord?.["kind"] === "window_error" || browserEventRecord?.["kind"] === "resource_error"
-        ? browserEventRecord["kind"]
-        : undefined;
-    const sourceUrl =
-      typeof targetRecord?.["source_url"] === "string"
-        ? targetRecord["source_url"]
-        : typeof browserEventRecord?.["file_name"] === "string"
-          ? browserEventRecord["file_name"]
-          : null;
-
-    return {
-      ts: event.occurred_at,
-      breadcrumb_type: "console_log",
-      route: event.payload.route ?? this.getCurrentRoute(),
-      data: {
-        level: "error",
-        message: `${event.payload.name}: ${event.payload.message}`,
-        source: "capture_rule_demoted_exception",
-        capture_rule_action: captureRule.action,
-        capture_rule_outcome: captureRule.outcome,
-        ...(browserEventKind === undefined ? {} : { browser_event_kind: browserEventKind }),
-        ...(sourceUrl === null ? {} : { source_url: sourceUrl })
-      }
-    };
+    this.eventTransport.enqueueAnalytics(event);
   }
 
   private enqueueInternalEvent(event: DebugBundleBrowserTransportEvent, countTowardSession = true, applyBeforeSend = true): void {
     const config = this.config;
-    if (config === null || this.authRejected) {
+    if (config === null || this.eventTransport.debugRejected) {
       return;
     }
 
@@ -1221,53 +845,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       event = beforeSendEvent;
     }
 
-    this.bufferedEvents.push(event);
+    this.eventTransport.enqueueDebug(event);
     if (countTowardSession && event.event_type !== "frontend_exception") {
       this.sessionEventCount += 1;
     }
 
-    if (this.bufferedEvents.length >= config.batchSize) {
-      queueMicrotask(() => {
-        void this.flush();
-      });
-      return;
-    }
-
-    this.scheduleFlush();
-  }
-
-  private buildSuppressionKey(event: EventEnvelope): string | null {
-    if (event.event_type === "frontend_exception") {
-      const stackFrame = event.payload.stack.split("\n")[1]?.trim() ?? null;
-
-      return JSON.stringify({
-        event_type: event.event_type,
-        name: event.payload.name,
-        message: event.payload.message,
-        stack_frame: stackFrame,
-        route: event.payload.route
-      });
-    }
-
-    if (event.event_type === "log_event") {
-      return JSON.stringify({
-        event_type: event.event_type,
-        level: event.payload.level,
-        message: event.payload.message,
-        attributes: event.payload.attributes
-      });
-    }
-
-    if (event.event_type === "request_event") {
-      return JSON.stringify({
-        event_type: event.event_type,
-        method: event.payload.method,
-        path: event.payload.path,
-        response_status: event.payload.response_status
-      });
-    }
-
-    return null;
   }
 
   private shouldCaptureBySampleRate(event: EventEnvelope): boolean {
@@ -1297,91 +879,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     return config.sampleRate >= 1 || Math.random() <= config.sampleRate;
   }
 
-  private scheduleFlush(delayMs?: number): void {
-    const config = this.config;
-    if (config === null) {
-      return;
-    }
-
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = null;
-      void this.flush();
-    }, delayMs ?? config.flushInterval);
-  }
-
-  private clearFlushTimer(): void {
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-  }
-
   private flushViaBeacon(): void {
     this.analyticsController.prepareForUnload();
-    const config = this.config;
-    const navigatorSource = getNavigatorSource();
-    if (config === null || this.bufferedEvents.length === 0 || navigatorSource === null) {
-      return;
-    }
-
-    const pendingEvents = [...this.bufferedEvents];
-    const body = buildBrowserTransportRequestBody(config.transportMode, pendingEvents);
-
-    const flushViaKeepalive = (): void => {
-      if (config.fetchImpl === null) {
-        void this.flush();
-        return;
-      }
-
-      void config
-        .fetchImpl(config.endpoint, {
-          method: "POST",
-          headers: this.getTransportHeaders(config),
-          body,
-          keepalive: true
-        })
-        .then(() => {
-          if (this.bufferedEvents === pendingEvents || this.sameLeadingEvents(pendingEvents)) {
-            this.bufferedEvents.splice(0, pendingEvents.length);
-          }
-          this.nextRetryAt = null;
-          this.clearFlushTimer();
-        })
-        .catch(() => {
-          return;
-        });
-    };
-
-    if (typeof navigatorSource.sendBeacon !== "function") {
-      flushViaKeepalive();
-      return;
-    }
-
-    const beaconBody = typeof Blob === "function"
-      ? new Blob([body], { type: "application/json" })
-      : body;
-    const accepted = navigatorSource.sendBeacon(config.endpoint, beaconBody);
-    if (accepted) {
-      this.bufferedEvents = [];
-      this.nextRetryAt = null;
-      this.clearFlushTimer();
-      return;
-    }
-
-    flushViaKeepalive();
-  }
-
-  private sameLeadingEvents(events: DebugBundleBrowserTransportEvent[]): boolean {
-    if (this.bufferedEvents.length < events.length) {
-      return false;
-    }
-
-    return events.every((event, index) => this.bufferedEvents[index]?.event_id === event.event_id);
+    this.eventTransport.flushViaBeacon();
   }
 
   private shouldCaptureNonExceptionEvent(): boolean {
@@ -1404,19 +904,6 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
     return {
       project_token: config.projectToken
-    };
-  }
-
-  private getTransportHeaders(config: ActiveConfig): Record<string, string> {
-    if (config.projectToken === null) {
-      return {
-        "content-type": "application/json"
-      };
-    }
-
-    return {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.projectToken}`
     };
   }
 
@@ -1471,198 +958,6 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
   }
 
-  private shouldCaptureNetworkRequest(url: string, statusCode: number, durationMs: number): boolean {
-    const config = this.config;
-    if (config === null) {
-      return false;
-    }
-
-    const filter = config.networkFilter;
-    if (filter.urlPatterns.length > 0 && !filter.urlPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
-      return false;
-    }
-
-    if (filter.urlDenyPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
-      return false;
-    }
-
-    if (filter.minResponseTime !== null && durationMs < filter.minResponseTime) {
-      return false;
-    }
-
-    return matchesStatusCodeFilter(statusCode, filter.statusCodes);
-  }
-
-  private shouldCaptureFailedNetworkRequest(url: string, durationMs: number): boolean {
-    const config = this.config;
-    if (config === null) {
-      return false;
-    }
-
-    const filter = config.networkFilter;
-    if (filter.urlPatterns.length > 0 && !filter.urlPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
-      return false;
-    }
-
-    if (filter.urlDenyPatterns.some((pattern) => matchesBrowserPattern(url, pattern))) {
-      return false;
-    }
-
-    if (filter.minResponseTime !== null && durationMs < filter.minResponseTime) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private pruneExpiredRemoteProbeDirectives(nowMs: number): void {
-    const directives = this.remoteProbeState.directives.filter((directive) => Date.parse(directive.expiresAt) > nowMs);
-    if (this.activeTriggerDirective !== null && Date.parse(this.activeTriggerDirective.expiresAt) <= nowMs) {
-      this.activeTriggerDirective = null;
-    }
-    if (directives.length === this.remoteProbeState.directives.length) {
-      return;
-    }
-
-    this.remoteProbeState = {
-      ...this.remoteProbeState,
-      directives
-    };
-  }
-
-  private async refreshRemoteProbeConfig(): Promise<void> {
-    const config = this.config;
-    if (config === null || config.fetchImpl === null || config.transportMode !== "direct" || config.projectToken === null) {
-      return;
-    }
-
-    try {
-      const response = await config.fetchImpl(deriveSdkConfigEndpoint(config.endpoint), {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${config.projectToken}`,
-          ...(config.requestsAnalyticsConfig ? { "x-debugbundle-analytics-config": "1" } : {})
-        }
-      });
-
-      if (response.status === 304 || typeof response.json !== "function") {
-        return;
-      }
-
-      const payload = await response.json();
-      const analyticsConfig = parseRemoteAnalyticsConfigPayload(payload);
-      if (analyticsConfig !== null) {
-        this.analyticsController.applyRemoteSettings(analyticsConfig);
-      }
-      const parsed = parseRemoteProbeConfigPayload(payload, Date.now());
-      if (parsed !== null) {
-        this.remoteProbeState = parsed;
-        this.pruneExpiredRemoteProbeDirectives(Date.now());
-        await this.activatePendingTriggerTokenIfPossible();
-      }
-      config.captureRules = parseRemoteCaptureRulesPayload(payload);
-    } catch {
-      return;
-    }
-  }
-
-  private updateRemoteProbeStateFromIngestionResponse(payload: unknown): void {
-    const directives = parseIngestionProbeDirectives(payload, Date.now());
-    if (directives === null) {
-      this.pruneExpiredRemoteProbeDirectives(Date.now());
-      return;
-    }
-
-    this.remoteProbeState = {
-      ...this.remoteProbeState,
-      directives
-    };
-    this.pruneExpiredRemoteProbeDirectives(Date.now());
-  }
-
-  private consumeTriggerTokenFromLocation(): string | null {
-    const locationSource = getLocationSource();
-    const historySource = getHistorySource();
-    const search = typeof locationSource?.search === "string" ? locationSource.search : "";
-    if (search.length === 0) {
-      return null;
-    }
-
-    const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
-    const token = params.get("_debug_probe");
-    if (token === null || token.length === 0) {
-      return null;
-    }
-
-    params.delete("_debug_probe");
-    const cleanedPath = `${locationSource?.pathname ?? ""}${params.toString().length > 0 ? `?${params.toString()}` : ""}`;
-    historySource?.replaceState({}, "", cleanedPath);
-    return token;
-  }
-
-  private async activatePendingTriggerTokenIfPossible(): Promise<void> {
-    if (this.pendingTriggerToken === null) {
-      return;
-    }
-
-    const directive = await validateBrowserTriggerToken({
-      token: this.pendingTriggerToken,
-      triggerTokenKey: this.remoteProbeState.triggerTokenKey,
-      nowMs: Date.now()
-    });
-
-    this.pendingTriggerToken = null;
-    this.activeTriggerDirective = directive;
-  }
-
-  private normalizeProbeInput(data: unknown): Record<string, JsonValue> {
-    if (data === null || typeof data !== "object" || Array.isArray(data)) {
-      return { value: data as JsonValue };
-    }
-
-    return data as Record<string, JsonValue>;
-  }
-
-  private getMatchingRemoteProbeDirectives(label: string, nowMs: number): BrowserRemoteProbeDirective[] {
-    const config = this.config;
-    if (
-      config === null ||
-      this.remoteProbeState.probesEnabled !== true ||
-      this.remoteProbeState.remoteProbesEnabled !== true
-    ) {
-      return [];
-    }
-
-    this.pruneExpiredRemoteProbeDirectives(nowMs);
-    const activeDirectives = this.activeTriggerDirective === null
-      ? this.remoteProbeState.directives
-      : [...this.remoteProbeState.directives, this.activeTriggerDirective];
-
-    return activeDirectives.filter((directive) => {
-      if (directive.service !== "*" && directive.service !== config.service) {
-        return false;
-      }
-
-      if (directive.environment !== "*" && directive.environment !== config.environment) {
-        return false;
-      }
-
-      return this.matchesProbeLabelPattern(directive.labelPattern, label);
-    });
-  }
-
-  private matchesProbeLabelPattern(pattern: string, label: string): boolean {
-    if (pattern === "*") {
-      return true;
-    }
-
-    if (pattern.endsWith(".*")) {
-      const prefix = pattern.slice(0, -2);
-      return label === prefix || label.startsWith(`${prefix}.`);
-    }
-
-    return pattern === label;
-  }
 }
 
 export function createDebugBundleBrowserSdk(): DebugBundleBrowserSdk {

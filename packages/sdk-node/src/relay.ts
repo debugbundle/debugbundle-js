@@ -19,11 +19,11 @@ const BROWSER_RELAY_EVENT_TYPES = [
   "error_suppressed",
   "frontend_breadcrumb",
   "request_event",
-  "probe_event"
+  "probe_event",
+  "analytics_event"
 ] as const;
 
 type BrowserRelayEventType = (typeof BROWSER_RELAY_EVENT_TYPES)[number];
-type BrowserRelayEvent = Extract<EventEnvelope, { event_type: BrowserRelayEventType }>;
 
 const ServiceSchema = z.object({
   name: z.string().min(1),
@@ -37,6 +37,52 @@ const CorrelationSchema = z.object({
   trace_id: z.string().nullable(),
   session_id: z.string().nullable(),
   user_id_hash: z.string().nullable()
+});
+
+const AnalyticsCorrelationSchema = z.object({
+  session_id: z.string().min(1).max(128),
+  visitor_id_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/i).nullable(),
+  user_id_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/i).nullable(),
+  trace_id: z.string().min(1).max(128).nullable(),
+  deploy_id: z.string().min(1).max(128).nullable()
+});
+
+const AnalyticsRouteSchema = z.object({
+  path: z.string().min(1).max(2048),
+  normalized_path: z.string().min(1).max(2048),
+  title: z.string().max(200).nullable()
+});
+
+const AnalyticsPayloadSchema = z.object({
+  kind: z.enum([
+    "session_start",
+    "page_view",
+    "route_change",
+    "action",
+    "funnel_step",
+    "conversion",
+    "journey_marker",
+    "session_summary"
+  ]),
+  privacy: z.object({
+    mode: z.enum(["strict", "standard", "custom"]),
+    consent_granted: z.boolean()
+  }),
+  session: z.object({
+    duration_ms: z.number().int().min(0).max(86_400_000),
+    pageviews: z.number().int().min(0).max(100_000)
+  }).optional(),
+  signal: z.object({
+    action_key: z.string().nullable(),
+    funnel_key: z.string().nullable(),
+    step_key: z.string().nullable(),
+    conversion_key: z.string().nullable(),
+    marker_key: z.string().nullable()
+  }).optional(),
+  route: AnalyticsRouteSchema.nullable().optional(),
+  previous_route: AnalyticsRouteSchema.nullable().optional(),
+  dimensions: z.record(z.string(), z.unknown()),
+  custom_dimensions: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
 });
 
 const FrontendBreadcrumbPayloadSchema = z.object({
@@ -192,8 +238,16 @@ const BrowserRelayEventSchema = z.discriminatedUnion("event_type", [
   BrowserRelayEnvelopeBaseSchema.extend({
     event_type: z.literal("probe_event"),
     payload: ProbeEventPayloadSchema
+  }),
+  BrowserRelayEnvelopeBaseSchema.extend({
+    event_type: z.literal("analytics_event"),
+    correlation: AnalyticsCorrelationSchema,
+    payload: AnalyticsPayloadSchema
   })
 ]);
+
+type BrowserRelayEvent = z.infer<typeof BrowserRelayEventSchema>;
+type BrowserRelayForwardEvent = BrowserRelayEvent & { project_token: string };
 
 const BrowserRelayRequestBodySchema = z.object({
   batch: z.array(z.unknown())
@@ -361,10 +415,14 @@ function getIssueMessage(error: z.ZodError): string {
   return error.issues[0]?.message ?? "Invalid browser relay event payload.";
 }
 
-function parseEventEnvelopeWithBrowserMetadata(candidate: unknown): EventEnvelope {
+function parseEventEnvelopeWithBrowserMetadata(candidate: unknown): BrowserRelayEvent {
   if (candidate !== null && typeof candidate === "object") {
     const record = candidate as Record<string, unknown>;
     const payload = record["payload"];
+
+    if (record["event_type"] === "analytics_event") {
+      return BrowserRelayEventSchema.parse(record);
+    }
 
     if (record["event_type"] === "frontend_exception" && payload !== null && typeof payload === "object") {
       const { browser_event: browserEvent, ...payloadWithoutBrowserEvent } = payload as Record<string, unknown>;
@@ -377,11 +435,11 @@ function parseEventEnvelopeWithBrowserMetadata(candidate: unknown): EventEnvelop
         (event.payload as Record<string, unknown>)["browser_event"] = browserEvent;
       }
 
-      return event;
+      return event as BrowserRelayEvent;
     }
   }
 
-  return EventEnvelopeSchema.parse(candidate);
+  return EventEnvelopeSchema.parse(candidate) as BrowserRelayEvent;
 }
 
 function toBrowserRelayEvent(
@@ -399,20 +457,15 @@ function toBrowserRelayEvent(
     }
   });
 
-  return normalizedEvent as BrowserRelayEvent;
+  return normalizedEvent;
 }
 
 function resolveDefaultRelaySpoolDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".debugbundle", "local", "browser-relay-spool");
 }
 
-function attachProjectToken(events: BrowserRelayEvent[], projectToken: string): EventEnvelope[] {
-  return events.map((event) =>
-    parseEventEnvelopeWithBrowserMetadata({
-      ...event,
-      project_token: projectToken
-    })
-  );
+function attachProjectToken(events: BrowserRelayEvent[], projectToken: string): BrowserRelayForwardEvent[] {
+  return events.map((event) => ({ ...event, project_token: projectToken }));
 }
 
 function markSpoolFileDelivered(writtenFilePath: string): void {
@@ -450,7 +503,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
     const forwardResult = await connectedCloudTransport({
       endpoint: options.endpoint,
       headers: {},
-      events: attachProjectToken(events, options.projectToken),
+      events: attachProjectToken(events, options.projectToken) as EventEnvelope[],
       timeout_ms: 5_000
     }).catch(() => null);
 
@@ -583,7 +636,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           const localWriteResult = await localTransport({
             endpoint: "local://browser-relay",
             headers: {},
-            events: acceptedEvents,
+            events: acceptedEvents as EventEnvelope[],
             timeout_ms: 0
           });
 
@@ -600,7 +653,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           const spoolWriteResult = await spoolTransport({
             endpoint: "local://browser-relay-spool",
             headers: {},
-            events: acceptedEvents,
+            events: acceptedEvents as EventEnvelope[],
             timeout_ms: 0
           });
 

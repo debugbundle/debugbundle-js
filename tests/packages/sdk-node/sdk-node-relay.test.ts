@@ -25,7 +25,7 @@ type RelayComplianceFixtureCase = {
     rejected?: number;
     errors?: string[];
   };
-  expectedEventFile?: EventEnvelope[];
+  expectedEventFile?: Array<Record<string, unknown>>;
 };
 
 const relayComplianceFixturePath = new URL("../../fixtures/relay-compliance.json", import.meta.url);
@@ -180,6 +180,20 @@ function createBrowserRelayRequestFromFixture(request: RelayComplianceFixtureReq
 }
 
 describe("createBrowserRelay", () => {
+  it("accepts analytics events and preserves their analytics correlation contract", async () => {
+    const fixture = getRelayComplianceFixture("valid-analytics-event");
+    const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();
+    const relay = createBrowserRelay({ onAccept });
+
+    const response = await relay(createBrowserRelayRequestFromFixture(fixture.request ?? { method: "POST", headers: {} }));
+
+    expect(response).toMatchObject({ status: 202, body: { accepted: 1, rejected: 0, errors: [] } });
+    const event = onAccept.mock.calls[0]?.[0].events[0];
+    expect(event).toEqual(fixture.expectedEventFile?.[0]);
+    expect(event?.event_type).toBe("analytics_event");
+    expect(event).not.toHaveProperty("project_token");
+  });
+
   it("accepts valid browser events and strips trust-sensitive fields before handing them off", async () => {
     const fixture = getRelayComplianceFixture("credential-smuggling-payload");
     const onAccept = vi.fn<(input: BrowserRelayAcceptedBatch) => Promise<void>>().mockResolvedValue();

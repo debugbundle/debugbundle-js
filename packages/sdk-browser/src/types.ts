@@ -207,6 +207,14 @@ export interface BrowserAnalyticsEventEnvelope {
   correlation: BrowserAnalyticsCorrelationFields;
   payload: {
     kind: BrowserAnalyticsEventKind;
+    privacy: {
+      mode: BrowserAnalyticsPrivacyMode;
+      consent_granted: boolean;
+    };
+    session?: {
+      duration_ms: number;
+      pageviews: number;
+    };
     signal: {
       action_key: string | null;
       funnel_key: string | null;

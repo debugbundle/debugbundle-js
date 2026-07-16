@@ -1,19 +1,26 @@
 import {
   createBrowserTraceId,
-  getCryptoSource,
-  getDocumentSource,
-  getLocalStorageSource,
-  getLocationSource,
   normalizeSampleRate
 } from "./runtime.js";
 import { BrowserAnalyticsFrictionTracker } from "./analytics-friction.js";
+import {
+  buildAnalyticsDimensions,
+  getAnalyticsProjectTokenFields,
+  getStructuralActionKey,
+  isDeadClickCandidate,
+  normalizeAnalyticsPrivacyMode,
+  normalizeAnalyticsRoute,
+  normalizeAnalyticsSignal,
+  omitBuiltInAnalyticsDimensions,
+  removeStoredAnalyticsVisitor,
+  resolveStandardAnalyticsVisitor,
+  sanitizeAnalyticsCustomDimensions
+} from "./analytics-normalization.js";
 import {
   SDK_NAME,
   SDK_VERSION,
   type ActiveConfig,
   type BrowserAnalyticsCustomDimensions,
-  type BrowserAnalyticsCustomDimensionValue,
-  type BrowserAnalyticsDimensions,
   type BrowserAnalyticsEventEnvelope,
   type BrowserAnalyticsEventKind,
   type BrowserAnalyticsPrivacyMode,
@@ -25,33 +32,8 @@ import {
 } from "./types.js";
 
 const ANALYTICS_EVENT_SCHEMA_VERSION = "2026-07-analytics-01";
-const MAX_CUSTOM_DIMENSIONS = 8;
-const MAX_CUSTOM_KEY_LENGTH = 64;
-const MAX_CUSTOM_STRING_LENGTH = 128;
-const SIGNAL_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]*$/;
-const CUSTOM_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/i;
-const SENSITIVE_KEY_PATTERN = /(password|passwd|secret|token|authorization|cookie|email|phone|address|card|credit|ssn|user.?id|order.?id|ticket.?id|workspace.?id)/i;
-const STRUCTURAL_ACTION_KEYS_BY_TAG: Record<string, string> = {
-  a: "click.link",
-  button: "click.button",
-  input: "click.input",
-  select: "click.select",
-  summary: "click.summary"
-};
-const STRUCTURAL_ACTION_KEYS_BY_ROLE: Record<string, string> = {
-  button: "click.button",
-  checkbox: "click.checkbox",
-  link: "click.link",
-  menuitem: "click.menuitem",
-  radio: "click.radio",
-  switch: "click.switch",
-  tab: "click.tab"
-};
-const STRUCTURAL_INPUT_TYPES = new Set(["button", "checkbox", "radio", "reset", "submit"]);
-const STANDARD_VISITOR_STORAGE_PREFIX = "debugbundle.analytics.visitor.v1";
 const MAX_PENDING_STANDARD_EVENTS = 16;
-const NON_FRICTION_CONTROL_TAGS = new Set(["input", "textarea", "select", "option", "label"]);
 
 interface BrowserAnalyticsActiveConfig {
   enabled: boolean;
@@ -68,6 +50,10 @@ interface BrowserAnalyticsActiveConfig {
   trackFrictionSignals: boolean;
   sampleRate: number;
   sessionId: string;
+  sessionStartedAtMs: number;
+  sessionPageviews: number;
+  captureReady: boolean;
+  pendingCaptures: Array<() => void>;
   visitorIdHash: string | null;
   visitorStorageKey: string | null;
   visitorInitializationPending: boolean;
@@ -87,6 +73,7 @@ export class BrowserAnalyticsController {
       getConfig(): ActiveConfig | null;
       getDeviceInfo(): BrowserDeviceInfo | null;
       getCurrentRoute(): string | null;
+      getSessionId(): string;
       enqueue(event: BrowserAnalyticsEventEnvelope): void;
     }
   ) {}
@@ -98,38 +85,46 @@ export class BrowserAnalyticsController {
         this.active.consentExplicitlySet = true;
         if (!value) {
           this.clearStandardVisitor(this.active);
-        } else {
+        } else if (this.active.captureReady) {
           void this.initializeStandardVisitor(this.active);
         }
       }
     },
     pageView: (input = {}) => {
-      this.capturePageView(input, "page_view");
+      this.captureWhenReady(() => this.capturePageView(input, "page_view"));
     },
     track: (name, dimensions = {}) => {
-      this.captureSignal("action", { action_key: name }, dimensions);
+      this.captureWhenReady(() => this.captureSignal("action", { action_key: name }, dimensions));
     },
     funnel: (name, step, dimensions = {}) => {
-      this.captureSignal("funnel_step", { funnel_key: name, step_key: step }, dimensions);
+      this.captureWhenReady(() => this.captureSignal("funnel_step", { funnel_key: name, step_key: step }, dimensions));
     },
     convert: (name, dimensions = {}) => {
-      this.captureSignal("conversion", { conversion_key: name }, dimensions);
+      this.captureWhenReady(() => this.captureSignal("conversion", { conversion_key: name }, dimensions));
     },
     marker: (name, dimensions = {}) => {
-      this.captureSignal("journey_marker", { marker_key: name }, dimensions);
+      this.captureWhenReady(() => this.captureSignal("journey_marker", { marker_key: name }, dimensions));
     },
     setContext: (dimensions) => {
-      this.setContext(dimensions);
+      this.captureWhenReady(() => this.setContext(dimensions));
     },
     setUserHash: (hash) => {
-      if (this.active === null) {
-        return;
-      }
-      this.active.userIdHash = typeof hash === "string" && HASH_PATTERN.test(hash) ? hash.toLowerCase() : null;
+      this.captureWhenReady(() => {
+        if (this.active === null) {
+          return;
+        }
+        this.active.userIdHash =
+          this.active.privacyMode !== "strict" && typeof hash === "string" && HASH_PATTERN.test(hash)
+            ? hash.toLowerCase()
+            : null;
+      });
     }
   };
 
-  public configure(config: DebugBundleBrowserAnalyticsConfig | undefined): void {
+  public configure(
+    config: DebugBundleBrowserAnalyticsConfig | undefined,
+    options: { deferCapture?: boolean } = {}
+  ): void {
     this.sessionSummaryCaptured = false;
     const enabled = config?.enabled === true;
     if (!enabled) {
@@ -145,7 +140,7 @@ export class BrowserAnalyticsController {
       return;
     }
 
-    const privacyMode = normalizePrivacyMode(config?.privacyMode);
+    const privacyMode = normalizeAnalyticsPrivacyMode(config?.privacyMode);
     const consentRequired = config?.consentRequired === true;
     this.active = {
       enabled,
@@ -161,7 +156,11 @@ export class BrowserAnalyticsController {
       trackActions: config?.trackActions === true,
       trackFrictionSignals: config?.trackFrictionSignals !== false,
       sampleRate,
-      sessionId: createBrowserTraceId(),
+      sessionId: this.host.getSessionId(),
+      sessionStartedAtMs: Date.now(),
+      sessionPageviews: 0,
+      captureReady: options.deferCapture !== true,
+      pendingCaptures: [],
       visitorIdHash: null,
       visitorStorageKey: null,
       visitorInitializationPending: false,
@@ -171,7 +170,25 @@ export class BrowserAnalyticsController {
     };
     this.lastRoute = null;
     this.frictionTracker.reset();
-    void this.initializeStandardVisitor(this.active);
+    if (this.active.captureReady) {
+      void this.initializeStandardVisitor(this.active);
+    }
+  }
+
+  public markCaptureReady(): void {
+    const active = this.active;
+    if (active === null || active.captureReady) {
+      return;
+    }
+    active.captureReady = true;
+    void this.initializeStandardVisitor(active);
+    const pendingCaptures = active.pendingCaptures;
+    active.pendingCaptures = [];
+    this.captureSessionStart();
+    this.captureInitialPageView();
+    for (const capture of pendingCaptures) {
+      capture();
+    }
   }
 
   public reset(): void {
@@ -216,11 +233,11 @@ export class BrowserAnalyticsController {
   }
 
   public captureRouteChange(path: string): void {
-    if (this.active?.trackRouteChanges !== true) {
-      return;
-    }
-
-    this.capturePageView({ path }, "route_change");
+    this.captureWhenReady(() => {
+      if (this.active?.trackRouteChanges === true) {
+        this.capturePageView({ path }, "route_change");
+      }
+    });
   }
 
   public applyRemoteSettings(remote: BrowserRemoteAnalyticsConfig): void {
@@ -232,6 +249,7 @@ export class BrowserAnalyticsController {
     active.enabled = active.enabled && remote.enabled;
     if (remote.privacyMode === "strict") {
       active.privacyMode = "strict";
+      active.userIdHash = null;
       this.clearStandardVisitor(active);
     }
     active.consentRequired = active.consentRequired || remote.consentRequired;
@@ -250,7 +268,7 @@ export class BrowserAnalyticsController {
   }
 
   public shouldCaptureStructuralActions(): boolean {
-    return this.active?.trackActions === true && this.active.captureActions && this.active.consentGranted;
+    return this.active?.enabled === true && this.active.trackActions && this.active.captureActions && this.active.consentGranted;
   }
 
   public shouldCaptureFrictionSignals(): boolean {
@@ -267,7 +285,11 @@ export class BrowserAnalyticsController {
       return;
     }
 
-    this.enqueue("action", { action_key: actionKey }, this.lastRoute, {});
+    this.captureWhenReady(() => {
+      if (this.shouldCaptureStructuralActions()) {
+        this.enqueue("action", { action_key: actionKey }, this.lastRoute, {});
+      }
+    });
   }
 
   public captureFrictionClick(target: Record<string, unknown>, targetIdentity: unknown): void {
@@ -275,21 +297,24 @@ export class BrowserAnalyticsController {
       return;
     }
 
-    const markerKey = this.frictionTracker.recordClick(
-      targetIdentity,
-      getStructuralActionKey(target) !== null,
-      isDeadClickCandidate(target),
-      Date.now()
-    );
-    if (markerKey === null) {
-      return;
-    }
-
-    this.enqueue("journey_marker", { marker_key: markerKey }, this.lastRoute, {});
+    this.captureWhenReady(() => {
+      if (!this.shouldCaptureFrictionSignals()) {
+        return;
+      }
+      const markerKey = this.frictionTracker.recordClick(
+        targetIdentity,
+        getStructuralActionKey(target) !== null,
+        isDeadClickCandidate(target),
+        Date.now()
+      );
+      if (markerKey !== null) {
+        this.enqueue("journey_marker", { marker_key: markerKey }, this.lastRoute, {});
+      }
+    });
   }
 
   private capturePageView(input: DebugBundleBrowserAnalyticsPageViewInput, kind: "page_view" | "route_change"): void {
-    const route = normalizeRoute(input.path ?? this.host.getCurrentRoute(), input.title ?? null);
+    const route = normalizeAnalyticsRoute(input.path ?? this.host.getCurrentRoute(), input.title ?? null);
     if (route === null) {
       return;
     }
@@ -297,6 +322,9 @@ export class BrowserAnalyticsController {
     const previousRoute = kind === "route_change" ? this.lastRoute : null;
     if (this.enqueue(kind, {}, route, {}, previousRoute)) {
       this.lastRoute = route;
+      if (this.active !== null) {
+        this.active.sessionPageviews += 1;
+      }
       if (kind === "route_change") {
         this.captureBacktrackFriction(previousRoute, route);
       }
@@ -332,7 +360,7 @@ export class BrowserAnalyticsController {
       return;
     }
 
-    const normalizedSignal = normalizeSignal(signal);
+    const normalizedSignal = normalizeAnalyticsSignal(signal);
     if (
       (kind === "action" && normalizedSignal.action_key === null) ||
       (kind === "funnel_step" && (normalizedSignal.funnel_key === null || normalizedSignal.step_key === null)) ||
@@ -346,7 +374,7 @@ export class BrowserAnalyticsController {
       kind,
       normalizedSignal,
       kind === "journey_marker" ? this.lastRoute : null,
-      sanitizeCustomDimensions(dimensions)
+      sanitizeAnalyticsCustomDimensions(dimensions)
     );
   }
 
@@ -371,7 +399,7 @@ export class BrowserAnalyticsController {
       schema_version: ANALYTICS_EVENT_SCHEMA_VERSION,
       event_id: createBrowserTraceId(),
       event_type: "analytics_event",
-      ...getProjectTokenFields(sdkConfig),
+      ...getAnalyticsProjectTokenFields(sdkConfig),
       sdk_name: SDK_NAME,
       sdk_version: SDK_VERSION,
       service: {
@@ -390,11 +418,23 @@ export class BrowserAnalyticsController {
       },
       payload: {
         kind,
-        signal: normalizeSignal(signal),
+        privacy: {
+          mode: active.privacyMode,
+          consent_granted: active.consentGranted
+        },
+        ...(kind === "session_summary"
+          ? {
+              session: {
+                duration_ms: Math.min(86_400_000, Math.max(0, Date.now() - active.sessionStartedAtMs)),
+                pageviews: active.sessionPageviews
+              }
+            }
+          : {}),
+        signal: normalizeAnalyticsSignal(signal),
         route,
         ...(previousRoute !== null ? { previous_route: previousRoute } : {}),
-        dimensions: buildDimensions(this.host.getDeviceInfo(), active, mergedDimensions),
-        custom_dimensions: mergedDimensions
+        dimensions: buildAnalyticsDimensions(this.host.getDeviceInfo(), active.trackReferrers, mergedDimensions),
+        custom_dimensions: omitBuiltInAnalyticsDimensions(mergedDimensions)
       }
     };
 
@@ -427,26 +467,17 @@ export class BrowserAnalyticsController {
 
     active.visitorInitializationPending = true;
     try {
-      const projectScopeHash = await hashAnalyticsValue(projectToken);
-      if (projectScopeHash === null) {
+      const visitor = await resolveStandardAnalyticsVisitor(projectToken);
+      if (visitor === null) {
         return;
       }
-
-      const storageKey = `${STANDARD_VISITOR_STORAGE_PREFIX}.${projectScopeHash.slice("sha256:".length)}`;
-      active.visitorStorageKey = storageKey;
+      active.visitorStorageKey = visitor.storageKey;
       if (this.active !== active || active.privacyMode !== "standard" || !active.consentGranted) {
-        removeStoredVisitor(storageKey);
+        removeStoredAnalyticsVisitor(visitor.storageKey);
         return;
       }
-
-      const visitorId = getOrCreateStoredVisitor(storageKey);
-      if (visitorId === null) {
-        return;
-      }
-
-      const visitorIdHash = await hashAnalyticsValue(`${projectScopeHash}:${visitorId}`);
       if (this.active === active && active.privacyMode === "standard" && active.consentGranted) {
-        active.visitorIdHash = visitorIdHash;
+        active.visitorIdHash = visitor.visitorIdHash;
       }
     } catch {
       // Browser storage and crypto APIs are optional; analytics falls back to session-only.
@@ -460,7 +491,7 @@ export class BrowserAnalyticsController {
 
   private clearStandardVisitor(active: BrowserAnalyticsActiveConfig): void {
     if (active.visitorStorageKey !== null) {
-      removeStoredVisitor(active.visitorStorageKey);
+      removeStoredAnalyticsVisitor(active.visitorStorageKey);
     }
     active.visitorIdHash = null;
     active.pendingEvents = [];
@@ -486,7 +517,7 @@ export class BrowserAnalyticsController {
     }
 
     const authState = dimensions["auth_state"];
-    const sanitized = sanitizeCustomDimensions(dimensions);
+    const sanitized = sanitizeAnalyticsCustomDimensions(dimensions);
     if (authState === "anonymous" || authState === "authenticated" || authState === "unknown") {
       sanitized["auth_state"] = authState;
     }
@@ -496,291 +527,18 @@ export class BrowserAnalyticsController {
       ...sanitized
     };
   }
-}
 
-function getOrCreateStoredVisitor(storageKey: string): string | null {
-  const storage = getLocalStorageSource();
-  if (storage === null) {
-    return null;
-  }
-
-  try {
-    const existing = storage.getItem(storageKey);
-    if (isStoredVisitorId(existing)) {
-      return existing;
+  private captureWhenReady(capture: () => void): void {
+    const active = this.active;
+    if (active === null) {
+      return;
     }
-
-    const visitorId = createBrowserTraceId();
-    if (!isStoredVisitorId(visitorId)) {
-      return null;
+    if (active.captureReady) {
+      capture();
+      return;
     }
-    storage.setItem(storageKey, visitorId);
-    return visitorId;
-  } catch {
-    return null;
-  }
-}
-
-function removeStoredVisitor(storageKey: string): void {
-  try {
-    getLocalStorageSource()?.removeItem(storageKey);
-  } catch {
-    // Storage access must never affect host application behavior.
-  }
-}
-
-function isStoredVisitorId(value: unknown): value is string {
-  return typeof value === "string" && /^[a-f0-9-]{16,128}$/i.test(value);
-}
-
-async function hashAnalyticsValue(value: string): Promise<string | null> {
-  const cryptoSource = getCryptoSource();
-  const TextEncoderConstructor = (globalThis as Record<string, unknown>)["TextEncoder"] as
-    | (new () => { encode(input: string): Uint8Array })
-    | undefined;
-  if (typeof cryptoSource?.subtle?.digest !== "function" || TextEncoderConstructor === undefined) {
-    return null;
-  }
-
-  const digest = await cryptoSource.subtle.digest("SHA-256", new TextEncoderConstructor().encode(value));
-  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function normalizePrivacyMode(value: unknown): BrowserAnalyticsPrivacyMode {
-  return value === "standard" || value === "custom" ? value : "strict";
-}
-
-function getProjectTokenFields(config: ActiveConfig): Record<string, string> {
-  return config.projectToken === null ? {} : { project_token: config.projectToken };
-}
-
-function normalizeSignal(
-  signal: Partial<BrowserAnalyticsEventEnvelope["payload"]["signal"]>
-): BrowserAnalyticsEventEnvelope["payload"]["signal"] {
-  return {
-    action_key: normalizeSignalKey(signal.action_key),
-    funnel_key: normalizeSignalKey(signal.funnel_key),
-    step_key: normalizeSignalKey(signal.step_key),
-    conversion_key: normalizeSignalKey(signal.conversion_key),
-    marker_key: normalizeSignalKey(signal.marker_key)
-  };
-}
-
-function normalizeSignalKey(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return SIGNAL_KEY_PATTERN.test(trimmed) && trimmed.length <= 120 ? trimmed : null;
-}
-
-function getStructuralActionKey(target: Record<string, unknown>): string | null {
-  const role = normalizeStructuralActionValue(target["role"]);
-  if (role !== null && STRUCTURAL_ACTION_KEYS_BY_ROLE[role] !== undefined) {
-    return STRUCTURAL_ACTION_KEYS_BY_ROLE[role];
-  }
-
-  const tagName = normalizeStructuralActionValue(target["tagName"]);
-  if (tagName === null) {
-    return null;
-  }
-
-  if (tagName === "input") {
-    const inputType = normalizeStructuralActionValue(target["type"]);
-    if (inputType !== null && STRUCTURAL_INPUT_TYPES.has(inputType)) {
-      return `click.input.${inputType}`;
+    if (active.pendingCaptures.length < MAX_PENDING_STANDARD_EVENTS) {
+      active.pendingCaptures.push(capture);
     }
-  }
-
-  return STRUCTURAL_ACTION_KEYS_BY_TAG[tagName] ?? null;
-}
-
-function isDeadClickCandidate(target: Record<string, unknown>): boolean {
-  const tagName = normalizeStructuralActionValue(target["tagName"]);
-  return tagName !== null && !NON_FRICTION_CONTROL_TAGS.has(tagName);
-}
-
-function normalizeStructuralActionValue(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 && normalized.length <= 32 ? normalized : null;
-}
-
-function normalizeRoute(path: string | null | undefined, title: string | null): BrowserAnalyticsEventEnvelope["payload"]["route"] {
-  if (typeof path !== "string" || path.trim().length === 0) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(path, getLocationSource()?.href ?? "https://debugbundle.local");
-    return {
-      path: parsed.pathname || "/",
-      normalized_path: parsed.pathname || "/",
-      title: normalizeTitle(title)
-    };
-  } catch {
-    const queryIndex = path.indexOf("?");
-    const fragmentIndex = path.indexOf("#");
-    const end =
-      queryIndex === -1
-        ? (fragmentIndex === -1 ? path.length : fragmentIndex)
-        : fragmentIndex === -1
-          ? queryIndex
-          : Math.min(queryIndex, fragmentIndex);
-    const normalized = path.slice(0, end).trim();
-    return normalized.length > 0
-      ? {
-          path: normalized.startsWith("/") ? normalized : `/${normalized}`,
-          normalized_path: normalized.startsWith("/") ? normalized : `/${normalized}`,
-          title: normalizeTitle(title)
-        }
-      : null;
-  }
-}
-
-function normalizeTitle(value: string | null): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, 200) : null;
-}
-
-function sanitizeCustomDimensions(input: Record<string, unknown>): BrowserAnalyticsCustomDimensions {
-  const output: BrowserAnalyticsCustomDimensions = {};
-  for (const [rawKey, rawValue] of Object.entries(input)) {
-    if (Object.keys(output).length >= MAX_CUSTOM_DIMENSIONS) {
-      break;
-    }
-
-    const key = normalizeCustomDimensionKey(rawKey);
-    if (key === null || key === "auth_state") {
-      continue;
-    }
-
-    const value = normalizeCustomDimensionValue(key, rawValue);
-    if (value !== undefined) {
-      output[key] = value;
-    }
-  }
-
-  return output;
-}
-
-function normalizeCustomDimensionKey(value: string): string | null {
-  const trimmed = value.trim();
-  if (
-    trimmed.length === 0 ||
-    trimmed.length > MAX_CUSTOM_KEY_LENGTH ||
-    !CUSTOM_KEY_PATTERN.test(trimmed) ||
-    SENSITIVE_KEY_PATTERN.test(trimmed)
-  ) {
-    return null;
-  }
-
-  return trimmed;
-}
-
-function normalizeCustomDimensionValue(key: string, value: unknown): BrowserAnalyticsCustomDimensionValue | undefined {
-  if (value === null || typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number" && Number.isFinite(value) && value >= -1_000_000 && value <= 1_000_000) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (
-      trimmed.length === 0 ||
-      trimmed.length > MAX_CUSTOM_STRING_LENGTH ||
-      SENSITIVE_KEY_PATTERN.test(trimmed) ||
-      SENSITIVE_KEY_PATTERN.test(key)
-    ) {
-      return undefined;
-    }
-    return trimmed;
-  }
-
-  return undefined;
-}
-
-function buildDimensions(
-  device: BrowserDeviceInfo | null,
-  active: BrowserAnalyticsActiveConfig,
-  customDimensions: BrowserAnalyticsCustomDimensions
-): BrowserAnalyticsDimensions {
-  const language = normalizeLocale(device?.language ?? null);
-  const locationSource = getLocationSource();
-  const params = new URLSearchParams(typeof locationSource?.search === "string" ? locationSource.search.replace(/^\?/, "") : "");
-  return {
-    auth_state: normalizeAuthState(customDimensions["auth_state"]),
-    device_type: device?.device_type ?? "unknown",
-    browser_family: normalizeDimensionText(device?.browser.name ?? null, 80),
-    browser_major: parseMajorVersion(device?.browser.version ?? null),
-    os_family: normalizeDimensionText(device?.os.name ?? null, 80),
-    os_major: parseMajorVersion(device?.os.version ?? null),
-    language,
-    locale: language,
-    viewport_bucket: getViewportBucket(device),
-    referrer_domain: active.trackReferrers ? getReferrerDomain() : null,
-    utm_source: normalizeDimensionText(params.get("utm_source"), 128),
-    utm_medium: normalizeDimensionText(params.get("utm_medium"), 128),
-    utm_campaign: normalizeDimensionText(params.get("utm_campaign"), 128),
-    country_code: null,
-    region_code: null
-  };
-}
-
-function normalizeAuthState(value: unknown): BrowserAnalyticsDimensions["auth_state"] {
-  return value === "authenticated" || value === "unknown" ? value : "anonymous";
-}
-
-function normalizeDimensionText(value: string | null, maxLength: number): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, maxLength) : null;
-}
-
-function normalizeLocale(value: string | null): string | null {
-  const normalized = normalizeDimensionText(value, 35);
-  return normalized !== null && /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(normalized) ? normalized : null;
-}
-
-function parseMajorVersion(value: string | null): number | null {
-  const major = typeof value === "string" ? Number.parseInt(value.split(".")[0] ?? "", 10) : Number.NaN;
-  return Number.isFinite(major) && major >= 0 ? major : null;
-}
-
-function getViewportBucket(device: BrowserDeviceInfo | null): BrowserAnalyticsDimensions["viewport_bucket"] {
-  const width = device?.viewport.width ?? 0;
-  if (width <= 0) {
-    return "unknown";
-  }
-  if (width < 640) {
-    return "small";
-  }
-  if (width < 1024) {
-    return "medium";
-  }
-  return "large";
-}
-
-function getReferrerDomain(): string | null {
-  const referrer = getDocumentSource()?.referrer;
-  if (typeof referrer !== "string" || referrer.trim().length === 0) {
-    return null;
-  }
-
-  try {
-    const hostname = new URL(referrer).hostname;
-    return hostname.length > 0 && hostname.length <= 255 ? hostname : null;
-  } catch {
-    return null;
   }
 }

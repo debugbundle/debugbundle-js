@@ -1,36 +1,42 @@
 import { describe, expect, it } from "vitest";
 
 import { BrowserSdk } from "../../../packages/sdk-browser/src/index.js";
+import {
+  BrowserProbeController,
+  matchesProbeLabelPattern,
+  normalizeProbeInput
+} from "../../../packages/sdk-browser/src/probes.js";
 import type { DebugBundleBrowserTransportRequest, DebugBundleBrowserTransportResponse } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser internals", () => {
   it("should normalize primitive probe inputs and preserve object inputs", (): void => {
-    const sdk = new BrowserSdk() as unknown as {
-      normalizeProbeInput: (data: unknown) => Record<string, unknown>;
-    };
-
-    expect(sdk.normalizeProbeInput(null)).toEqual({ value: null });
-    expect(sdk.normalizeProbeInput([1, 2])).toEqual({ value: [1, 2] });
-    expect(sdk.normalizeProbeInput("ok")).toEqual({ value: "ok" });
-    expect(sdk.normalizeProbeInput({ total: 42 })).toEqual({ total: 42 });
+    expect(normalizeProbeInput(null)).toEqual({ value: null });
+    expect(normalizeProbeInput([1, 2])).toEqual({ value: [1, 2] });
+    expect(normalizeProbeInput("ok")).toEqual({ value: "ok" });
+    expect(normalizeProbeInput({ total: 42 })).toEqual({ total: 42 });
   });
 
   it("should match wildcard, prefix, exact, and non-matching probe labels", (): void => {
-    const sdk = new BrowserSdk() as unknown as {
-      matchesProbeLabelPattern: (pattern: string, label: string) => boolean;
-    };
-
-    expect(sdk.matchesProbeLabelPattern("*", "checkout.ui.cart")).toBe(true);
-    expect(sdk.matchesProbeLabelPattern("checkout.ui.*", "checkout.ui")).toBe(true);
-    expect(sdk.matchesProbeLabelPattern("checkout.ui.*", "checkout.ui.cart")).toBe(true);
-    expect(sdk.matchesProbeLabelPattern("checkout.tax", "checkout.tax")).toBe(true);
-    expect(sdk.matchesProbeLabelPattern("checkout.tax", "checkout.total")).toBe(false);
+    expect(matchesProbeLabelPattern("*", "checkout.ui.cart")).toBe(true);
+    expect(matchesProbeLabelPattern("checkout.ui.*", "checkout.ui")).toBe(true);
+    expect(matchesProbeLabelPattern("checkout.ui.*", "checkout.ui.cart")).toBe(true);
+    expect(matchesProbeLabelPattern("checkout.tax", "checkout.tax")).toBe(true);
+    expect(matchesProbeLabelPattern("checkout.tax", "checkout.total")).toBe(false);
   });
 
   it("should filter matching remote directives by config, expiry, and active trigger directives", (): void => {
-    const sdk = new BrowserSdk() as unknown as {
-      config: { service: string; environment: string } | null;
-      remoteProbeState: {
+    const config = {
+      service: "checkout-web",
+      environment: "production"
+    };
+    const controller = new BrowserProbeController({
+      getConfig: () => config as never,
+      isDebugRejected: () => false,
+      isSessionSampledIn: () => true,
+      emitProbeEvent: () => undefined,
+      applyRemoteAnalytics: () => undefined
+    }) as unknown as {
+      remoteState: {
         probesEnabled: boolean;
         remoteProbesEnabled: boolean;
         directives: Array<{
@@ -51,14 +57,10 @@ describe("sdk-browser internals", () => {
         expiresAt: string;
         triggerExpiresAt: string | null;
       } | null;
-      getMatchingRemoteProbeDirectives: (label: string, nowMs: number) => Array<{ activationId: string }>;
+      getMatchingDirectives: (label: string, nowMs: number) => Array<{ activationId: string }>;
     };
 
-    sdk.config = {
-      service: "checkout-web",
-      environment: "production"
-    };
-    sdk.remoteProbeState = {
+    controller.remoteState = {
       probesEnabled: true,
       remoteProbesEnabled: true,
       directives: [
@@ -97,7 +99,7 @@ describe("sdk-browser internals", () => {
       ],
       triggerTokenKey: null
     };
-    sdk.activeTriggerDirective = {
+    controller.activeTriggerDirective = {
       activationId: "exact-match",
       labelPattern: "checkout.ui.tax",
       service: "checkout-web",
@@ -106,8 +108,8 @@ describe("sdk-browser internals", () => {
       triggerExpiresAt: null
     };
 
-    expect(sdk.getMatchingRemoteProbeDirectives("checkout.ui.tax", Date.parse("2026-03-14T00:00:00.000Z"))).toHaveLength(3);
-    expect(sdk.getMatchingRemoteProbeDirectives("checkout.ui.tax", Date.parse("2026-03-16T00:00:00.000Z"))).toEqual([
+    expect(controller.getMatchingDirectives("checkout.ui.tax", Date.parse("2026-03-14T00:00:00.000Z"))).toHaveLength(3);
+    expect(controller.getMatchingDirectives("checkout.ui.tax", Date.parse("2026-03-16T00:00:00.000Z"))).toEqual([
       expect.objectContaining({ activationId: "prefix-match" }),
       expect.objectContaining({ activationId: "exact-match" })
     ]);
