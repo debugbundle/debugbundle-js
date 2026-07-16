@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-16
+
 ### Added
 
 - Added `debugbundle.analytics.marker(name, dimensions?)` for bounded, privacy-sanitized semantic journey markers and one unload-safe `session_summary` analytics event on a non-persisted page exit.
@@ -9,6 +11,10 @@
 - Direct browser SDKs now hydrate bounded project analytics settings from the existing SDK-config response as a restrictive overlay that cannot enable analytics or widen local capture.
 - Direct browser `analytics.privacyMode: "standard"` now derives a project-scoped first-party anonymous visitor hash for returning-visitor metrics without persisting or emitting the project token or raw visitor value. It falls back safely to session-only capture when browser storage or Web Crypto is unavailable and removes the stored value when consent is withdrawn or settings force strict privacy.
 - Added bounded browser friction markers behind `analytics.trackFrictionSignals`: repeated clicks, eligible non-interactive dead clicks, and quick route reversals emit fixed marker keys only, with ephemeral in-memory timing/object identity and restrictive remote settings support.
+
+### Changed
+
+- Aligned the published JS SDK family to `@debugbundle/shared-types@1.4.1` and `@debugbundle/redaction@1.4.1` for the AnalyticsBundle release.
 
 ## [1.4.0] - 2026-06-20
 
