@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-17
+
+### Added
+
+- Corrected the semantic release line for the AnalyticsBundle browser capability: opt-in analytics event capture, journey markers, structural actions, visitor identity, restrictive remote settings, friction signals, and isolated analytics transport are available as a backward-compatible minor release.
+
 ## [1.4.1] - 2026-07-16
 
 ### Added
