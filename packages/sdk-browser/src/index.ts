@@ -94,6 +94,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
   private sessionSampledIn = true;
   private sessionEventCount = 0;
+  private reportedAcknowledgementDiagnostics = new Set<string>();
   private readonly suppressionTracker = new EventSuppressionTracker();
   private readonly probeController = new BrowserProbeController({
     getConfig: () => this.config,
@@ -106,6 +107,9 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     onDebugResponse: (payload) => this.probeController.updateFromIngestionResponse(payload),
     onUnauthorized: (lane, statusCode, endpoint, body) => {
       this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
+    },
+    onAcknowledgementDiagnostic: (lane, code, detail) => {
+      this.reportAcknowledgementDiagnostic(lane, code, detail);
     }
   });
   private readonly analyticsController = new BrowserAnalyticsController({
@@ -378,6 +382,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.config = null;
     this.sessionSampledIn = true;
     this.sessionEventCount = 0;
+    this.reportedAcknowledgementDiagnostics.clear();
     this.suppressionTracker.reset();
     this.probeController.reset();
     this.analyticsController.reset();
@@ -444,6 +449,25 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     consoleSource.warn?.(message);
+  }
+
+  private reportAcknowledgementDiagnostic(
+    lane: BrowserTransportLaneName,
+    code: "invalid" | "terminal_rejection",
+    detail: string
+  ): void {
+    const key = `${lane}:${code}:${detail}`;
+    if (this.reportedAcknowledgementDiagnostics.has(key)) {
+      return;
+    }
+    this.reportedAcknowledgementDiagnostics.add(key);
+    const consoleSource = getConsoleSource();
+    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
+    consoleSource?.warn?.(
+      code === "invalid"
+        ? `DebugBundle ${laneLabel} retained events after an invalid ingestion acknowledgement (${detail}).`
+        : `DebugBundle ${laneLabel} removed terminally rejected events (${detail}).`
+    );
   }
 
   private installBrowserHooks(): void {

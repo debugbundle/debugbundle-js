@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-28
+
+### Fixed
+
+- Reconcile Node and Browser connected ingestion acknowledgements per event, retaining retryable rejections and preventing rejected-only batches from reporting successful delivery.
+- Keep browser unload delivery beacon-first while applying acknowledgement reconciliation to the keepalive fallback.
+- Remove a consent-withdrawal race that could briefly retain the standard analytics visitor value during asynchronous initialization.
+
+### Changed
+
+- Run browser-global and relay test files serially for deterministic isolation on constrained CI runners.
+- Enforce at least 80% statements, branches, functions, and lines for every executable source file in CI and release verification.
+- Align the Node and Browser SDKs with `@debugbundle/shared-types@1.6.0` and `@debugbundle/redaction@1.6.0`.
+
 ## [1.5.0] - 2026-07-17
 
 ### Added

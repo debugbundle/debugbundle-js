@@ -26,6 +26,7 @@ afterEach((): void => {
   }
 
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.stubGlobal("crypto", ORIGINAL_CRYPTO);
 });
 
@@ -121,6 +122,81 @@ describe("sdk-browser trigger token validation", () => {
       expiresAt: "2026-03-20T00:00:00.000Z",
       triggerExpiresAt: "2026-03-20T00:00:00.000Z"
     });
+  });
+
+  it("should validate tokens through browser-native base64 decoding", async (): Promise<void> => {
+    const projectId = "proj_123";
+    const triggerTokenKey = deriveProbeTriggerTokenKey(projectId);
+    const triggerToken = generateProbeTriggerToken({
+      projectId,
+      payload: {
+        activation_id: "11111111-1111-4111-8111-111111111111",
+        label_pattern: "checkout.*",
+        service: "checkout-web",
+        environment: "production",
+        trigger_expires_at: "2026-03-20T00:00:00.000Z"
+      }
+    }).plaintext;
+
+    vi.stubGlobal("Buffer", undefined);
+    vi.stubGlobal("crypto", webcrypto as unknown);
+
+    await expect(
+      validateBrowserTriggerToken({
+        token: triggerToken,
+        triggerTokenKey,
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).resolves.toMatchObject({
+      activationId: "11111111-1111-4111-8111-111111111111",
+      service: "checkout-web"
+    });
+  });
+
+  it("should safely reject browser-native base64 decoding failures", async (): Promise<void> => {
+    const nativeAtob = globalThis.atob;
+    const projectId = "proj_123";
+    const validToken = generateProbeTriggerToken({
+      projectId,
+      payload: {
+        activation_id: "11111111-1111-4111-8111-111111111111",
+        label_pattern: "checkout.*",
+        service: "checkout-web",
+        environment: "production",
+        trigger_expires_at: "2026-03-20T00:00:00.000Z"
+      }
+    }).plaintext;
+    vi.stubGlobal("Buffer", undefined);
+    vi.stubGlobal("crypto", webcrypto as unknown);
+    vi.stubGlobal("atob", (): never => {
+      throw new TypeError("invalid base64");
+    });
+
+    await expect(
+      validateBrowserTriggerToken({
+        token: "dbundle_probe_payload.signature",
+        triggerTokenKey: "key",
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).resolves.toBeNull();
+
+    vi.stubGlobal(
+      "atob",
+      vi
+        .fn()
+        .mockImplementationOnce(nativeAtob)
+        .mockImplementationOnce((): never => {
+          throw new TypeError("invalid payload");
+        })
+    );
+
+    await expect(
+      validateBrowserTriggerToken({
+        token: validToken,
+        triggerTokenKey: deriveProbeTriggerTokenKey(projectId),
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).resolves.toBeNull();
   });
 
   it("should reject malformed, invalid, and expired tokens", async (): Promise<void> => {

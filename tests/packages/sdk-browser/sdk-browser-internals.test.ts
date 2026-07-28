@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { BrowserSdk } from "../../../packages/sdk-browser/src/index.js";
 import {
@@ -150,6 +150,84 @@ describe("sdk-browser health status", () => {
     await sdk.flush();
     expect(sdk.status).toBe("healthy");
     expect(sdk.lastEventAt).toBeTypeOf("number");
+    sdk.dispose();
+  });
+
+  it("should retry only the indexed retryable browser event", async () => {
+    const transport = vi.fn()
+      .mockResolvedValueOnce({
+        status: 202,
+        retry_after_ms: 0,
+        body: {
+          accepted: 1,
+          rejected: 1,
+          errors: [{ index: 1, reason: "analytics_quota_exceeded" }]
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 202,
+        body: { accepted: 1, rejected: 0, errors: [] }
+      });
+    const sdk = createInitedSdk(transport);
+    sdk.captureMessage("accepted", "error");
+    sdk.captureMessage("retry", "error");
+
+    await sdk.flush();
+    expect(sdk.status).toBe("degraded");
+    expect(sdk.lastEventAt).toBeTypeOf("number");
+
+    await sdk.flush();
+    const secondRequest = transport.mock.calls[1]?.[0] as DebugBundleBrowserTransportRequest;
+    expect(secondRequest.events).toHaveLength(1);
+    expect(secondRequest.events[0]?.payload).toMatchObject({ message: "retry" });
+    expect(sdk.status).toBe("healthy");
+    sdk.dispose();
+  });
+
+  it("should not report an all-terminally-rejected browser batch as delivered", async () => {
+    const transport = vi.fn().mockResolvedValue({
+      status: 202,
+      body: {
+        accepted: 0,
+        rejected: 1,
+        errors: [{ index: 0, reason: "capture_policy_rejected" }]
+      }
+    });
+    const sdk = createInitedSdk(transport);
+    sdk.captureMessage("terminal", "error");
+
+    await sdk.flush();
+
+    expect(sdk.status).toBe("disconnected");
+    expect(sdk.lastEventAt).toBeNull();
+    await sdk.flush();
+    expect(transport).toHaveBeenCalledTimes(1);
+    sdk.dispose();
+  });
+
+  it("should retain a browser batch after an inconsistent acknowledgement", async () => {
+    const transport = vi.fn()
+      .mockResolvedValueOnce({
+        status: 202,
+        retry_after_ms: 0,
+        body: { accepted: 1, rejected: 0, errors: [] }
+      })
+      .mockResolvedValueOnce({
+        status: 202,
+        body: { accepted: 2, rejected: 0, errors: [] }
+      });
+    const sdk = createInitedSdk(transport);
+    sdk.captureMessage("first", "error");
+    sdk.captureMessage("second", "error");
+
+    await sdk.flush();
+    expect(sdk.status).toBe("degraded");
+    expect(sdk.lastEventAt).toBeNull();
+    await sdk.flush();
+
+    const secondRequest = transport.mock.calls[1]?.[0] as DebugBundleBrowserTransportRequest;
+    expect(secondRequest.events).toHaveLength(2);
+    expect(sdk.status).toBe("healthy");
     sdk.dispose();
   });
 

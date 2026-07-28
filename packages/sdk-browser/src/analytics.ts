@@ -467,7 +467,12 @@ export class BrowserAnalyticsController {
 
     active.visitorInitializationPending = true;
     try {
-      const visitor = await resolveStandardAnalyticsVisitor(projectToken);
+      const visitor = await resolveStandardAnalyticsVisitor(projectToken, (storageKey) => {
+        active.visitorStorageKey = storageKey;
+        if (this.active !== active || active.privacyMode !== "standard" || !active.consentGranted) {
+          removeStoredAnalyticsVisitor(storageKey);
+        }
+      });
       if (visitor === null) {
         return;
       }

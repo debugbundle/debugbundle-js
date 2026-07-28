@@ -615,6 +615,104 @@ describe("sdk-node health status", () => {
     expect(sdk.lastEventAt).toBeTypeOf("number");
   });
 
+  it("should retry only indexed retryable rejections without requeueing accepted events", async () => {
+    const transport = vi.fn()
+      .mockResolvedValueOnce({
+        status: 202,
+        retry_after_ms: 0,
+        body: {
+          accepted: 1,
+          rejected: 1,
+          errors: [{ index: 1, reason: "rate_limited" }]
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 202,
+        body: { accepted: 1, rejected: 0, errors: [] }
+      });
+    const sdk = createDebugBundleSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_test",
+      service: "test-api",
+      environment: "test",
+      batchSize: 10,
+      flushInterval: 60_000,
+      transport
+    });
+    sdk.captureMessage("accepted", "error");
+    sdk.captureMessage("retry", "error");
+
+    await sdk.flush();
+    expect(sdk.status).toBe("degraded");
+    expect(sdk.lastEventAt).toBeTypeOf("number");
+
+    await sdk.flush();
+    expect(getTransportEvents(transport, 1).map(getEventMessage)).toEqual(["retry"]);
+    expect(sdk.status).toBe("healthy");
+  });
+
+  it("should remove terminal rejections but never report all-rejected delivery as success", async () => {
+    const transport = vi.fn().mockResolvedValue({
+      status: 202,
+      body: {
+        accepted: 0,
+        rejected: 1,
+        errors: [{ index: 0, reason: "capture_policy_rejected" }]
+      }
+    });
+    const sdk = createDebugBundleSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_test",
+      service: "test-api",
+      environment: "test",
+      flushInterval: 60_000,
+      transport
+    });
+    sdk.captureMessage("terminal", "error");
+
+    await sdk.flush();
+
+    expect(sdk.status).toBe("disconnected");
+    expect(sdk.lastEventAt).toBeNull();
+    await sdk.flush();
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("should retain the full batch after an inconsistent acknowledgement", async () => {
+    const transport = vi.fn()
+      .mockResolvedValueOnce({
+        status: 202,
+        retry_after_ms: 0,
+        body: { accepted: 1, rejected: 0, errors: [] }
+      })
+      .mockResolvedValueOnce({
+        status: 202,
+        body: { accepted: 2, rejected: 0, errors: [] }
+      });
+    const sdk = createDebugBundleSdk();
+    activeSdks.push(sdk);
+    sdk.init({
+      projectToken: "dbundle_proj_test",
+      service: "test-api",
+      environment: "test",
+      batchSize: 10,
+      flushInterval: 60_000,
+      transport
+    });
+    sdk.captureMessage("first", "error");
+    sdk.captureMessage("second", "error");
+
+    await sdk.flush();
+    expect(sdk.lastEventAt).toBeNull();
+    expect(sdk.status).toBe("degraded");
+    await sdk.flush();
+
+    expect(getTransportEvents(transport, 1).map(getEventMessage)).toEqual(["first", "second"]);
+    expect(sdk.status).toBe("healthy");
+  });
+
   it("should report degraded when transport returns 429", async () => {
     const transport = vi.fn().mockResolvedValue({ status: 429, retry_after_ms: 5_000 });
     const sdk = createDebugBundleSdk();

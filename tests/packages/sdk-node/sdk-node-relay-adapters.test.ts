@@ -151,6 +151,51 @@ describe("sdk-node relay adapters", () => {
     expect(end).toHaveBeenCalled();
   });
 
+  it("supports Express header/send fallbacks with an already serialized body", async () => {
+    const eventsDir = fs.mkdtempSync(path.join(os.tmpdir(), "debugbundle-relay-express-fallback-"));
+
+    try {
+      const middleware = debugBundleRelay({
+        projectMode: "local-only",
+        localEventsDir: eventsDir
+      });
+      const header = vi.fn();
+      const send = vi.fn();
+      const status = vi.fn(() => ({ send }));
+
+      await middleware(
+        {
+          method: "POST",
+          headers: relayHeaders(),
+          body: createBrowserRequestBody()
+        },
+        { header, status }
+      );
+
+      expect(status).toHaveBeenCalledWith(202);
+      expect(header).toHaveBeenCalledWith("access-control-allow-origin", "https://app.example.com");
+      expect(send).toHaveBeenCalledWith({ accepted: 1, rejected: 0, errors: [] });
+    } finally {
+      fs.rmSync(eventsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ends Express responses when no body sender is available", async () => {
+    const middleware = debugBundleRelay();
+    const end = vi.fn();
+    const status = vi.fn(() => ({ end }));
+
+    await middleware(
+      {
+        body: new Uint8Array()
+      },
+      { status }
+    );
+
+    expect(status).toHaveBeenCalled();
+    expect(end).toHaveBeenCalled();
+  });
+
   it("registers a Fastify POST /debugbundle/browser route that writes local-only relay files", async () => {
     const eventsDir = fs.mkdtempSync(path.join(os.tmpdir(), "debugbundle-relay-fastify-"));
 
@@ -249,6 +294,42 @@ describe("sdk-node relay adapters", () => {
     expect(header).toHaveBeenCalledWith("access-control-allow-origin", "https://web.example.com");
     expect(code).toHaveBeenCalledWith(204);
     expect(send).toHaveBeenCalledWith(undefined);
+  });
+
+  it("supports Fastify byte bodies and replies without a header helper", async () => {
+    const routes: Array<{
+      method: string;
+      handler: (request: unknown, reply: unknown) => Promise<void> | void;
+    }> = [];
+    const fastify = {
+      route: vi.fn(
+        (definition: {
+          method: string;
+          handler: (request: unknown, reply: unknown) => Promise<void> | void;
+        }) => {
+          routes.push(definition);
+        }
+      )
+    };
+
+    debugBundleRelayPlugin(
+      fastify as unknown as {
+        route: (definition: {
+          method: "POST" | "OPTIONS";
+          url: string;
+          handler: (request: unknown, reply: unknown) => Promise<void>;
+        }) => void;
+      },
+      { routePath: "/custom-relay" },
+      vi.fn()
+    );
+
+    const send = vi.fn();
+    const code = vi.fn(() => ({ send }));
+    await routes.find((route) => route.method === "POST")?.handler({ body: new Uint8Array() }, { code });
+
+    expect(code).toHaveBeenCalled();
+    expect(send).toHaveBeenCalled();
   });
 
   it("returns a Next.js POST handler that writes local-only relay files", async () => {

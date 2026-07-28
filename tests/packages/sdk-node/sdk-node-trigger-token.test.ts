@@ -93,6 +93,40 @@ describe("sdk-node trigger token resolution", () => {
     ]);
   });
 
+  it("should ignore requests without a usable trigger token", (): void => {
+    const common = {
+      triggerTokenKey: "key",
+      nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+    };
+
+    expect(resolveRequestTriggerDirectives({ ...common, request: undefined })).toEqual([]);
+    expect(resolveRequestTriggerDirectives({ ...common, request: { headers: {} } })).toEqual([]);
+    expect(
+      resolveRequestTriggerDirectives({
+        ...common,
+        request: { headers: {}, query: { _debug_probe: 123 } }
+      })
+    ).toEqual([]);
+    expect(
+      resolveRequestTriggerDirectives({
+        ...common,
+        request: { headers: {}, query: { _debug_probe: [null, 123, ""] } }
+      })
+    ).toEqual([]);
+    expect(
+      resolveRequestTriggerDirectives({
+        ...common,
+        request: { headers: {}, query: { _debug_probe: ["", "dbundle_probe_missing_separator"] } }
+      })
+    ).toEqual([]);
+    expect(
+      resolveRequestTriggerDirectives({
+        ...common,
+        request: { headers: {}, query: { _debug_probe: "not_a_probe_token" } }
+      })
+    ).toEqual([]);
+  });
+
   it("should reject missing keys, malformed payloads, invalid signatures, and expired tokens", (): void => {
     const projectId = "proj_123";
     const key = deriveProbeTriggerTokenKey(projectId);
@@ -138,6 +172,56 @@ describe("sdk-node trigger token resolution", () => {
     expect(
       resolveRequestTriggerDirectives({
         request: { query: { _debug_probe: "dbundle_probe_invalid.invalid" }, headers: {} },
+        triggerTokenKey: key,
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).toEqual([]);
+
+    const invalidJsonToken = createSignedToken({
+      key,
+      payloadJson: "not-json"
+    });
+    expect(
+      resolveRequestTriggerDirectives({
+        request: { query: { _debug_probe: invalidJsonToken }, headers: {} },
+        triggerTokenKey: key,
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).toEqual([]);
+
+    for (const payloadJson of ["null", "[]"]) {
+      const invalidShapeToken = createSignedToken({ key, payloadJson });
+      expect(
+        resolveRequestTriggerDirectives({
+          request: { query: { _debug_probe: invalidShapeToken }, headers: {} },
+          triggerTokenKey: key,
+          nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+        })
+      ).toEqual([]);
+    }
+
+    const invalidDateToken = createSignedToken({
+      key,
+      payloadJson: JSON.stringify({
+        activation_id: "33333333-3333-4333-8333-333333333333",
+        label_pattern: "checkout.*",
+        service: "checkout-api",
+        environment: "production",
+        trigger_expires_at: "not-a-date"
+      })
+    });
+    expect(
+      resolveRequestTriggerDirectives({
+        request: { query: { _debug_probe: invalidDateToken }, headers: {} },
+        triggerTokenKey: key,
+        nowMs: Date.parse("2026-03-15T00:00:00.000Z")
+      })
+    ).toEqual([]);
+
+    const [payloadSegment] = expiredToken.replace("dbundle_probe_", "").split(".");
+    expect(
+      resolveRequestTriggerDirectives({
+        request: { query: { _debug_probe: `dbundle_probe_${payloadSegment}.a` }, headers: {} },
         triggerTokenKey: key,
         nowMs: Date.parse("2026-03-15T00:00:00.000Z")
       })

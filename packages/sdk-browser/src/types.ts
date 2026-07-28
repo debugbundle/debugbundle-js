@@ -388,6 +388,12 @@ export interface DebugBundleBrowserTransportResponse {
   retry_after_ms?: number;
 }
 
+export interface DebugBundleIngestionAcknowledgement {
+  accepted: number;
+  rejected: number;
+  errors: Array<{ index: number; reason: string }>;
+}
+
 export type DebugBundleBrowserTransport = (
   request: DebugBundleBrowserTransportRequest
 ) => Promise<DebugBundleBrowserTransportResponse>;

@@ -1,4 +1,5 @@
 import { buildBrowserTransportRequestBody, getNavigatorSource } from "./runtime.js";
+import { decideBrowserAcknowledgement } from "./ingestion-acknowledgement.js";
 import type {
   ActiveConfig,
   BrowserAnalyticsEventEnvelope,
@@ -24,6 +25,11 @@ interface BrowserEventTransportCallbacks {
     statusCode: 401 | 403,
     endpoint: string,
     body: unknown
+  ): void;
+  onAcknowledgementDiagnostic(
+    lane: BrowserTransportLaneName,
+    code: "invalid" | "terminal_rejection",
+    detail: string
   ): void;
 }
 
@@ -144,13 +150,13 @@ export class BrowserEventTransport {
         });
 
         if (response.status >= 200 && response.status < 300) {
-          if (laneName === "debug") {
-            this.callbacks.onDebugResponse(response.body);
-          }
-          lane.nextRetryAt = null;
-          lane.lastEventAt = Date.now();
-          lane.consecutiveFailures = 0;
-          removeLeadingEvents(lane, events);
+          this.reconcileSuccessfulResponse(
+            laneName,
+            lane,
+            events,
+            response.body,
+            response.retry_after_ms
+          );
           return;
         }
 
@@ -216,13 +222,23 @@ export class BrowserEventTransport {
         keepalive: true
       }).then((response) => {
         if (response.status >= 200 && response.status < 300) {
-          removeLeadingEvents(lane, pendingEvents);
-          lane.nextRetryAt = null;
-          this.clearLaneTimer(lane);
+          void readResponseBody(response).then((responseBody) => {
+            this.reconcileSuccessfulResponse(
+              laneName,
+              lane,
+              pendingEvents,
+              responseBody,
+              undefined
+            );
+            this.clearLaneTimer(lane);
+          });
         }
       }).catch(() => undefined);
     };
 
+    // Unload delivery preserves the established beacon-first path; a declined or
+    // unavailable beacon falls back to keepalive fetch so acknowledgements can
+    // still be reconciled when the browser permits a response.
     if (typeof navigatorSource.sendBeacon !== "function") {
       flushViaKeepalive();
       return;
@@ -244,6 +260,51 @@ export class BrowserEventTransport {
     return name === "debug" ? this.debug : this.analytics;
   }
 
+  private reconcileSuccessfulResponse(
+    laneName: BrowserTransportLaneName,
+    lane: BrowserTransportLane,
+    events: DebugBundleBrowserTransportEvent[],
+    body: unknown,
+    retryAfterMs: number | undefined
+  ): void {
+    const acknowledgement = decideBrowserAcknowledgement(body, events.length);
+    if (acknowledgement.kind === "protocol_failure") {
+      lane.consecutiveFailures += 1;
+      lane.nextRetryAt = Date.now() + (retryAfterMs ?? 1_000);
+      this.callbacks.onAcknowledgementDiagnostic(laneName, "invalid", acknowledgement.reason);
+      return;
+    }
+    if (laneName === "debug") {
+      this.callbacks.onDebugResponse(body);
+    }
+    if (acknowledgement.kind === "legacy") {
+      reconcileLeadingEvents(lane, events, []);
+      lane.nextRetryAt = null;
+      lane.lastEventAt = Date.now();
+      lane.consecutiveFailures = 0;
+      return;
+    }
+
+    const retryableEvents = acknowledgement.retryableIndices
+      .map((index) => events[index])
+      .filter((event): event is DebugBundleBrowserTransportEvent => event !== undefined);
+    reconcileLeadingEvents(lane, events, retryableEvents);
+    if (acknowledgement.terminalErrors.length > 0) {
+      const reasons = [...new Set(acknowledgement.terminalErrors.map((error) => error.reason))].join(",");
+      this.callbacks.onAcknowledgementDiagnostic(laneName, "terminal_rejection", reasons);
+    }
+    if (acknowledgement.accepted > 0) {
+      lane.lastEventAt = Date.now();
+    }
+    if (retryableEvents.length > 0) {
+      lane.consecutiveFailures += 1;
+      lane.nextRetryAt = Date.now() + (retryAfterMs ?? 1_000);
+      return;
+    }
+    lane.nextRetryAt = null;
+    lane.consecutiveFailures = acknowledgement.accepted > 0 ? 0 : 3;
+  }
+
   private clearLaneTimer(lane: BrowserTransportLane): void {
     if (lane.timer !== null) {
       clearTimeout(lane.timer);
@@ -252,16 +313,24 @@ export class BrowserEventTransport {
   }
 }
 
-function removeLeadingEvents(
+function reconcileLeadingEvents(
   lane: BrowserTransportLane,
-  events: DebugBundleBrowserTransportEvent[]
+  events: DebugBundleBrowserTransportEvent[],
+  retainedEvents: DebugBundleBrowserTransportEvent[]
 ): void {
   if (
     lane.events.length >= events.length &&
     events.every((event, index) => lane.events[index]?.event_id === event.event_id)
   ) {
-    lane.events.splice(0, events.length);
+    lane.events.splice(0, events.length, ...retainedEvents);
   }
+}
+
+async function readResponseBody(response: { json?: () => Promise<unknown> }): Promise<unknown> {
+  if (typeof response.json !== "function") {
+    return undefined;
+  }
+  return response.json().catch(() => undefined);
 }
 
 function getTransportHeaders(config: ActiveConfig): Record<string, string> {

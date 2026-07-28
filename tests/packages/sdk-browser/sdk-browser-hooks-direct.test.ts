@@ -147,6 +147,12 @@ describe("sdk-browser hooks direct", () => {
       originalConsoleError: null,
       originalConsoleWarn: null
     });
+
+    vi.stubGlobal("console", { error: null, warn: null } as unknown);
+    expect(getConsoleHookResult(installConsoleHook(createConfig(), vi.fn()))).toEqual({
+      originalConsoleError: null,
+      originalConsoleWarn: null
+    });
   });
 
   it("should wrap console error and warn methods into breadcrumbs", (): void => {
@@ -401,6 +407,52 @@ describe("sdk-browser hooks direct", () => {
       }
     });
     expect(breadcrumbs[0]?.data["caller_trace"]).toEqual(expect.any(Array));
+  });
+
+  it("should normalize non-Error fetch failures without affecting host rejection behavior", async (): Promise<void> => {
+    vi.stubGlobal("location", { href: "https://example.com/checkout" } as unknown);
+    vi.stubGlobal("XMLHttpRequest", null as unknown);
+    const failures = [" string failure ", { message: " object failure " }, {}];
+    const fetchSource = vi
+      .fn<(input: string, init?: RequestInit) => Promise<Response>>()
+      .mockRejectedValueOnce(failures[0])
+      .mockRejectedValueOnce(failures[1])
+      .mockRejectedValueOnce(failures[2]);
+    vi.stubGlobal("fetch", fetchSource as unknown);
+
+    const breadcrumbs: BrowserBreadcrumb[] = [];
+    installNetworkHook(
+      createConfig({ tracePropagationTargets: [] }),
+      (breadcrumb) => {
+        breadcrumbs.push(breadcrumb);
+      },
+      vi.fn(),
+      () => false,
+      () => true,
+      () => "/checkout"
+    );
+
+    await expect(globalThis.fetch("https://third-party.example/string")).rejects.toBe(failures[0]);
+    await expect(globalThis.fetch("https://third-party.example/object")).rejects.toBe(failures[1]);
+    await expect(globalThis.fetch("https://third-party.example/unknown")).rejects.toBe(failures[2]);
+
+    expect(breadcrumbs.map((breadcrumb) => breadcrumb.data["failure_reason"])).toEqual([
+      "string failure",
+      "object failure",
+      "network failure"
+    ]);
+  });
+
+  it("should no-op network hooks when config and browser transports are unavailable", () => {
+    vi.stubGlobal("fetch", null as unknown);
+    vi.stubGlobal("XMLHttpRequest", null as unknown);
+
+    expect(
+      getNetworkHookResult(installNetworkHook(null, vi.fn(), vi.fn(), () => false, () => false, () => null))
+    ).toEqual({
+      originalFetch: null,
+      originalXmlHttpRequest: null
+    });
   });
 
   it("should wrap XMLHttpRequest and honor network capture filters", (): void => {

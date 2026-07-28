@@ -146,8 +146,15 @@ export interface DebugBundleTransportRequest {
 
 export interface DebugBundleTransportResponse {
   status: number;
+  body?: unknown;
   retry_after_ms?: number;
   writtenFilePath?: string;
+}
+
+export interface DebugBundleIngestionAcknowledgement {
+  accepted: number;
+  rejected: number;
+  errors: Array<{ index: number; reason: string }>;
 }
 
 export type DebugBundleTransport = (

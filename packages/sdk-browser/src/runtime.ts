@@ -404,10 +404,13 @@ export function createFetchTransport(): DebugBundleBrowserTransport {
     });
 
     const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
+    const body = typeof response.json === "function"
+      ? await response.json().catch(() => undefined)
+      : undefined;
 
     return {
       status: response.status,
-      body: typeof response.json === "function" ? await response.json() : undefined,
+      ...(body === undefined ? {} : { body }),
       ...(retryAfterMs === undefined ? {} : { retry_after_ms: retryAfterMs })
     };
   };

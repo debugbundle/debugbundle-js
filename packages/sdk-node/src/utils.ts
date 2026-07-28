@@ -364,9 +364,13 @@ export function createFetchTransport(fetchImpl: typeof fetch, projectToken: stri
       });
 
       const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+      const body: unknown = typeof response.json === "function"
+        ? await response.json().catch(() => undefined)
+        : undefined;
 
       return {
         status: response.status,
+        ...(body === undefined ? {} : { body }),
         ...(retryAfterMs === undefined ? {} : { retry_after_ms: retryAfterMs })
       };
     } finally {

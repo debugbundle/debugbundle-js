@@ -63,7 +63,10 @@ export interface StandardAnalyticsVisitor {
   visitorIdHash: string;
 }
 
-export async function resolveStandardAnalyticsVisitor(projectToken: string): Promise<StandardAnalyticsVisitor | null> {
+export async function resolveStandardAnalyticsVisitor(
+  projectToken: string,
+  onStorageKeyResolved?: (storageKey: string) => void
+): Promise<StandardAnalyticsVisitor | null> {
   const projectScopeHash = await hashAnalyticsValue(projectToken);
   if (projectScopeHash === null) {
     return null;
@@ -74,6 +77,7 @@ export async function resolveStandardAnalyticsVisitor(projectToken: string): Pro
   if (visitorId === null) {
     return null;
   }
+  onStorageKeyResolved?.(storageKey);
 
   const visitorIdHash = await hashAnalyticsValue(`${projectScopeHash}:${visitorId}`);
   return visitorIdHash === null ? null : { storageKey, visitorIdHash };

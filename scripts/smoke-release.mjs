@@ -227,7 +227,12 @@ const ingestionServer = createHttpServer(async (request, response) => {
   });
 
   response.setHeader("content-type", "application/json");
-  response.end(JSON.stringify({ accepted: parsedBody.events.length, rejected: 0, probe_directives: [] }));
+  response.end(JSON.stringify({
+    accepted: parsedBody.events.length,
+    rejected: 0,
+    errors: [],
+    probe_directives: []
+  }));
 });
 
 ingestionServer.listen(0, "127.0.0.1");

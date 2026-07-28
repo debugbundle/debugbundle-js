@@ -1,12 +1,29 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
-import { applyNodeBeforeSend } from "./before-send.js";
-import { evaluateNodeCaptureRulesForEvent } from "./capture-rules.js";
 import { resolveDefaultNodeTransport } from "./file-transport.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
 import { createExpressMiddleware, createFastifyPlugin, createNextHandlerWrapper } from "./framework-integrations.js";
+import { decideIngestionAcknowledgement } from "./ingestion-acknowledgement.js";
 import { findMatchingRemoteProbeDirectives, parseRemoteProbeConfig } from "./remote-probes.js";
+import { shouldCaptureNodeRequestEvent } from "./request-policy.js";
+import {
+  applyNodeBeforeSendEvent,
+  buildInternalSdkPaths,
+  applyNodeCaptureRules,
+  buildNodeCorrelation,
+  buildNodeLogAttributes,
+  buildNodeRequestSnapshot,
+  buildNodeResponseSnapshot,
+  buildNodeServiceDescriptor,
+  buildNodeSuppressionKey,
+  buildNodeSuppressionAggregateEvents,
+  consumeNodeProbeData,
+  effectiveNodeLogThreshold,
+  formatNodeConsoleMessage,
+  normalizeNodeRequestPath,
+  shouldCaptureNodeSample
+} from "./event-support.js";
 import { EventSuppressionTracker } from "./suppression.js";
 import { resolveRequestTriggerDirectives } from "./trigger-token.js";
 import {
@@ -28,15 +45,12 @@ import {
   type ActiveConfig,
   type CaptureExceptionContext,
   type CaptureLogContext,
-  type CapturePolicy,
   type CaptureRequestContext,
   type CaptureRequestInput,
   type CaptureResponseInput,
-  type CorrelationFields,
   type DebugBundleDiagnostic,
   type DebugBundleNodeInitConfig,
   type FrameworkSdkBridge,
-  type HttpMethod,
   type LogLevel,
   type NextApiHandler,
   type NextWrappedHandler,
@@ -50,14 +64,12 @@ import {
   detectRuntimeContext,
   detectProcessRuntimeFacts,
   ensureObject,
-  extractHeaderValue,
   fetchWithTimeout,
   normalizeError,
   normalizeFiniteNumber,
   normalizeSampleRate,
   redactObject,
   sanitizeMetadataObject,
-  sanitizeUnknown
 } from "./utils.js";
 
 function normalizeLogLevel(level: string | undefined): LogLevel {
@@ -66,80 +78,6 @@ function normalizeLogLevel(level: string | undefined): LogLevel {
   }
 
   return level in LOG_LEVEL_ORDER ? (level as LogLevel) : DEFAULT_LOG_LEVEL;
-}
-
-const BALANCED_IMMEDIATE_REQUEST_STATUSES = new Set([408, 423, 424, 425, 429]);
-const INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES = new Set([...BALANCED_IMMEDIATE_REQUEST_STATUSES, 409]);
-function isImmediateRequestIncidentStatus(
-  statusCode: number,
-  preset: string,
-  immediateClientErrorStatuses: readonly number[] = [],
-  requestPath?: string,
-  httpMethod?: string,
-  immediateClientErrorPathRules: CapturePolicy["immediateClientErrorPathRules"] = []
-): boolean {
-  if (!Number.isFinite(statusCode)) {
-    return false;
-  }
-
-  if (statusCode >= 500) {
-    return true;
-  }
-
-  if (immediateClientErrorStatuses.includes(statusCode)) {
-    return true;
-  }
-  if (matchesImmediateClientErrorPathRule(statusCode, requestPath, httpMethod, immediateClientErrorPathRules)) {
-    return true;
-  }
-
-  if (preset === "investigative") {
-    return INVESTIGATIVE_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
-  }
-
-  if (preset === "balanced") {
-    return BALANCED_IMMEDIATE_REQUEST_STATUSES.has(statusCode);
-  }
-
-  return false;
-}
-
-function matchesImmediateClientErrorPathRule(
-  statusCode: number,
-  requestPath: string | undefined,
-  httpMethod: string | undefined,
-  rules: CapturePolicy["immediateClientErrorPathRules"]
-): boolean {
-  if (statusCode < 400 || statusCode > 499 || requestPath === undefined) {
-    return false;
-  }
-  const normalizedPath = normalizeRequestPath(requestPath);
-  const normalizedMethod = typeof httpMethod === "string" ? httpMethod.toUpperCase() : null;
-  return rules.some((rule) => {
-    if (rule.statusCode !== statusCode) {
-      return false;
-    }
-    if (rule.methods.length > 0 && (normalizedMethod === null || !rule.methods.includes(normalizedMethod as HttpMethod))) {
-      return false;
-    }
-    if (rule.pathPattern.endsWith("*")) {
-      return normalizedPath.startsWith(rule.pathPattern.slice(0, -1));
-    }
-    return normalizedPath === rule.pathPattern;
-  });
-}
-
-function normalizeRequestPath(value: string): string {
-  try {
-    return new URL(value, "https://debugbundle.local").pathname || "/";
-  } catch {
-    const queryIndex = value.indexOf("?");
-    const fragmentIndex = value.indexOf("#");
-    const end =
-      queryIndex === -1 ? (fragmentIndex === -1 ? value.length : fragmentIndex) : fragmentIndex === -1 ? queryIndex : Math.min(queryIndex, fragmentIndex);
-    const path = value.slice(0, end);
-    return path.startsWith("/") && path.length > 0 ? path : "/";
-  }
 }
 
 export class DebugBundleNodeSdk implements FrameworkSdkBridge {
@@ -384,15 +322,15 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureException(error: unknown, context: CaptureExceptionContext = {}): void {
     const config = this.config;
-    if (config === null || !this.shouldCapture(config.sampleRate)) {
+    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
       return;
     }
 
     try {
       const normalizedError = normalizeError(error);
-      const request = this.buildRequestSnapshot(context.request);
-      const response = this.buildResponseSnapshot(context.response);
-      const probeData = config.probeFlushOnError ? this.consumeProbeData() : null;
+      const request = buildNodeRequestSnapshot(context.request, config.redactFields);
+      const response = buildNodeResponseSnapshot(context.response, config.redactFields);
+      const probeData = config.probeFlushOnError ? consumeNodeProbeData(this.probeBuffers) : null;
       const runtime = detectProcessRuntimeFacts();
 
       const event = createEventEnvelope({
@@ -401,9 +339,13 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         project_token: config.projectToken,
         sdk_name: SDK_NAME,
         sdk_version: SDK_VERSION,
-        service: this.buildServiceDescriptor(config),
+        service: buildNodeServiceDescriptor(config),
         occurred_at: new Date().toISOString(),
-        correlation: this.buildCorrelation(context.correlation, context.request),
+        correlation: buildNodeCorrelation(
+          context.correlation,
+          context.request ?? this.requestContextStorage.getStore()?.request,
+          this.contextFields
+        ),
         payload: {
           name: normalizedError.name,
           message: normalizedError.message,
@@ -436,7 +378,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureLog(message: string, level: LogLevel, context: CaptureLogContext = {}): void {
     const config = this.config;
-    if (config === null || !this.shouldCapture(config.sampleRate)) {
+    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
       return;
     }
 
@@ -445,7 +387,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    const effectiveThreshold = this.effectiveLogThreshold(config.logLevel, policy);
+    const effectiveThreshold = effectiveNodeLogThreshold(config.logLevel, policy.captureLogs as LogLevel);
     if (LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[effectiveThreshold]) {
       return;
     }
@@ -457,13 +399,17 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         project_token: config.projectToken,
         sdk_name: SDK_NAME,
         sdk_version: SDK_VERSION,
-        service: this.buildServiceDescriptor(config),
+        service: buildNodeServiceDescriptor(config),
         occurred_at: new Date().toISOString(),
-        correlation: this.buildCorrelation(context.correlation),
+        correlation: buildNodeCorrelation(
+          context.correlation,
+          this.requestContextStorage.getStore()?.request,
+          this.contextFields
+        ),
         payload: {
           level,
           message,
-          attributes: this.buildLogAttributes(context)
+          attributes: buildNodeLogAttributes(context, this.contextFields, config.redactFields)
         }
       });
 
@@ -477,26 +423,26 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureRequest(request: CaptureRequestInput, response: CaptureResponseInput, context: CaptureRequestContext = {}): void {
     const config = this.config;
-    if (config === null || !this.shouldCapture(config.sampleRate)) {
+    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
       return;
     }
 
-    if (!this.shouldCaptureRequestEvent(request, response)) {
+    if (!shouldCaptureNodeRequestEvent(this.remoteProbeConfig.capturePolicy, request, response)) {
       return;
     }
 
     try {
-      const requestSnapshot = this.buildRequestSnapshot(request);
-      const responseSnapshot = this.buildResponseSnapshot(response);
+      const requestSnapshot = buildNodeRequestSnapshot(request, config.redactFields);
+      const responseSnapshot = buildNodeResponseSnapshot(response, config.redactFields);
       const event = createEventEnvelope({
         schema_version: SDK_SCHEMA_VERSION,
         event_type: "request_event",
         project_token: config.projectToken,
         sdk_name: SDK_NAME,
         sdk_version: SDK_VERSION,
-        service: this.buildServiceDescriptor(config),
+        service: buildNodeServiceDescriptor(config),
         occurred_at: new Date().toISOString(),
-        correlation: this.buildCorrelation(context.correlation, request),
+        correlation: buildNodeCorrelation(context.correlation, request, this.contextFields),
         payload: {
           method: requestSnapshot.method,
           path: requestSnapshot.path,
@@ -552,12 +498,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return false;
     }
 
-    const requestPath = this.normalizeRequestPath(request.path ?? request.url ?? request.routeTemplate ?? null);
+    const requestPath = normalizeNodeRequestPath(request.path ?? request.url ?? request.routeTemplate ?? null);
     if (requestPath === null) {
       return true;
     }
 
-    return !this.getInternalSdkPaths(config).includes(requestPath);
+    return !buildInternalSdkPaths(config).includes(requestPath);
   }
 
   public probe(label: string, data: unknown, options: ProbeOptions = {}): void {
@@ -603,9 +549,13 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
             project_token: config.projectToken,
             sdk_name: SDK_NAME,
             sdk_version: SDK_VERSION,
-            service: this.buildServiceDescriptor(config),
+            service: buildNodeServiceDescriptor(config),
             occurred_at: new Date().toISOString(),
-            correlation: this.buildCorrelation(undefined),
+            correlation: buildNodeCorrelation(
+              undefined,
+              this.requestContextStorage.getStore()?.request,
+              this.contextFields
+            ),
             payload: {
               label,
               data: redacted,
@@ -657,12 +607,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
     console.error = (...args: unknown[]): void => {
       this.originalConsoleError?.(...args);
-      this.captureLog(this.formatConsoleMessage(args), "error");
+      this.captureLog(formatNodeConsoleMessage(args), "error");
     };
 
     console.warn = (...args: unknown[]): void => {
       this.originalConsoleWarn?.(...args);
-      this.captureLog(this.formatConsoleMessage(args), "warning");
+      this.captureLog(formatNodeConsoleMessage(args), "warning");
     };
   }
 
@@ -717,7 +667,11 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    this.enqueueSuppressionAggregates();
+    if (this.config !== null) {
+      for (const aggregateEvent of buildNodeSuppressionAggregateEvents(this.suppressionTracker, this.config)) {
+        this.enqueueInternalEvent(aggregateEvent);
+      }
+    }
 
     while (this.buffer.length > 0) {
       const batch = this.buffer.splice(0, config.batchSize);
@@ -734,9 +688,49 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         });
 
         if (response.status >= 200 && response.status < 300) {
+          const acknowledgement = decideIngestionAcknowledgement(response.body, batch.length);
+          if (acknowledgement.kind === "protocol_failure") {
+            this.buffer = [...batch, ...this.buffer];
+            this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
+            this._consecutiveFailures++;
+            this.emitDiagnostic(
+              "ingestion_acknowledgement_invalid",
+              "sdk-node retained a batch after an invalid ingestion acknowledgement",
+              { reason: acknowledgement.reason }
+            );
+            return;
+          }
+          if (acknowledgement.kind === "legacy") {
+            this.nextRetryAt = null;
+            this._lastEventAt = Date.now();
+            this._consecutiveFailures = 0;
+            continue;
+          }
+
+          const retryableEvents = acknowledgement.retryableIndices
+            .map((index) => batch[index])
+            .filter((event): event is EventEnvelope => event !== undefined);
+          if (acknowledgement.terminalErrors.length > 0) {
+            this.emitDiagnostic(
+              "ingestion_events_rejected",
+              "sdk-node removed terminally rejected ingestion events",
+              {
+                rejected_count: acknowledgement.terminalErrors.length,
+                reasons: [...new Set(acknowledgement.terminalErrors.map((error) => error.reason))]
+              }
+            );
+          }
+          if (acknowledgement.accepted > 0) {
+            this._lastEventAt = Date.now();
+          }
+          if (retryableEvents.length > 0) {
+            this.buffer = [...retryableEvents, ...this.buffer];
+            this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
+            this._consecutiveFailures++;
+            return;
+          }
           this.nextRetryAt = null;
-          this._lastEventAt = Date.now();
-          this._consecutiveFailures = 0;
+          this._consecutiveFailures = acknowledgement.accepted > 0 ? 0 : 3;
           continue;
         }
 
@@ -757,170 +751,29 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
   }
 
-  private buildServiceDescriptor(config: ActiveConfig): EventEnvelope["service"] {
-    return {
-      name: config.service,
-      runtime: "node",
-      ...(config.framework === null ? {} : { framework: config.framework }),
-      environment: config.environment
-    };
-  }
-
-  private buildCorrelation(
-    correlation: Partial<CorrelationFields> | undefined,
-    request?: CaptureRequestInput
-  ): CorrelationFields {
-    const requestHeaders = (request ?? this.requestContextStorage.getStore()?.request)?.headers;
-    return {
-      request_id: correlation?.request_id ?? this.readContextString("request_id") ?? extractHeaderValue(requestHeaders, "x-request-id"),
-      trace_id:
-        correlation?.trace_id ?? this.readContextString("trace_id") ?? extractHeaderValue(requestHeaders, "x-debugbundle-trace-id"),
-      session_id: correlation?.session_id ?? this.readContextString("session_id"),
-      user_id_hash: correlation?.user_id_hash ?? this.readContextString("user_id_hash")
-    };
-  }
-
-  private readContextString(key: string): string | null {
-    const value = this.contextFields[key];
-    return typeof value === "string" ? value : null;
-  }
-
-  private buildRequestSnapshot(request: CaptureRequestInput | undefined): {
-    method: string;
-    path: string;
-    headers: Record<string, unknown>;
-    query: Record<string, unknown>;
-    body: unknown;
-    route_template: string | null;
-  } {
-    const config = this.config;
-    const sensitiveKeys = config?.redactFields ?? [];
-    return {
-      method: request?.method ?? "UNKNOWN",
-      path: request?.path ?? request?.url ?? "/",
-      headers: redactObject(request?.headers ?? {}, sensitiveKeys),
-      query: redactObject(request?.query ?? {}, sensitiveKeys),
-      body: request?.body === undefined ? null : redactObject(request.body, sensitiveKeys),
-      route_template: request?.routeTemplate ?? null
-    };
-  }
-
-  private buildResponseSnapshot(response: CaptureResponseInput | undefined): {
-    status_code: number;
-    headers?: Record<string, unknown>;
-    body?: unknown;
-  } {
-    const config = this.config;
-    const sensitiveKeys = config?.redactFields ?? [];
-    const statusCode = response?.statusCode ?? response?.status ?? 0;
-
-    const snapshot: { status_code: number; headers?: Record<string, unknown>; body?: unknown } = {
-      status_code: statusCode
-    };
-
-    if (response?.headers !== undefined && Object.keys(response.headers).length > 0) {
-      snapshot.headers = redactObject(response.headers, sensitiveKeys);
-    }
-
-    if (response?.body !== undefined && statusCode >= 400) {
-      snapshot.body = redactObject(response.body, sensitiveKeys);
-    }
-
-    return snapshot;
-  }
-
-  private buildLogAttributes(context: CaptureLogContext): Record<string, unknown> {
-    const config = this.config;
-    const attributes: Record<string, unknown> = {};
-    if (Object.keys(this.contextFields).length > 0) {
-      attributes["context"] = { ...this.contextFields };
-    }
-
-    const rest: Record<string, unknown> = { ...context };
-    delete rest["correlation"];
-    const redacted = redactObject(rest, config?.redactFields ?? []);
-    for (const [key, value] of Object.entries(redacted)) {
-      attributes[key] = value;
-    }
-
-    return attributes;
-  }
-
-  private consumeProbeData(): { version: 1; items: ProbeBufferItem[] } | null {
-    if (this.probeBuffers.size === 0) {
-      return null;
-    }
-
-    const items = Array.from(this.probeBuffers.values()).flatMap((entries) => entries);
-    this.probeBuffers.clear();
-    return {
-      version: 1,
-      items
-    };
-  }
-
   private enqueueEvent(event: EventEnvelope): void {
-    const beforeSendEvent = this.applyBeforeSendToEvent(event);
+    const beforeSendEvent = applyNodeBeforeSendEvent(
+      event,
+      this.config?.beforeSend,
+      (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
+    );
     if (beforeSendEvent === null) {
       return;
     }
 
-    const resolvedEvent = this.applyCaptureRulesToEvent(beforeSendEvent);
+    const resolvedEvent = applyNodeCaptureRules(beforeSendEvent, this.remoteProbeConfig.captureRules);
     if (resolvedEvent === null) {
       return;
     }
 
     event = resolvedEvent;
-    const suppressionKey = this.buildSuppressionKey(event);
+    const suppressionKey = buildNodeSuppressionKey(event);
     if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
       this.scheduleFlush();
       return;
     }
 
     this.enqueueInternalEvent(event, false);
-  }
-
-  private applyBeforeSendToEvent(event: EventEnvelope): EventEnvelope | null {
-    const config = this.config;
-    return applyNodeBeforeSend(
-      event,
-      config?.beforeSend,
-      (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
-    );
-  }
-
-  private applyCaptureRulesToEvent(event: EventEnvelope): EventEnvelope | null {
-    const config = this.config;
-    const captureRules = this.remoteProbeConfig.captureRules;
-    if (config === null || captureRules.length === 0) {
-      return event;
-    }
-
-    const projectId = captureRules[0]?.project_id;
-    if (typeof projectId !== "string" || projectId.length === 0) {
-      return event;
-    }
-
-    try {
-      const captureRule = evaluateNodeCaptureRulesForEvent(
-        captureRules,
-        projectId,
-        event,
-        new Date().toISOString()
-      );
-
-      if (captureRule === null) {
-        return event;
-      }
-
-      if (captureRule.outcome === "drop" || captureRule.outcome === "sampled_out") {
-        return null;
-      }
-    } catch {
-      return event;
-    }
-
-    return event;
   }
 
   private enqueueInternalEvent(event: EventEnvelope, applyBeforeSend = true): void {
@@ -930,7 +783,11 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
 
     if (applyBeforeSend) {
-      const beforeSendEvent = this.applyBeforeSendToEvent(event);
+      const beforeSendEvent = applyNodeBeforeSendEvent(
+        event,
+        config.beforeSend,
+        (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
+      );
       if (beforeSendEvent === null) {
         return;
       }
@@ -949,78 +806,6 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
 
     this.scheduleFlush();
-  }
-
-  private buildSuppressionKey(event: EventEnvelope): string | null {
-    if (event.event_type === "backend_exception") {
-      return JSON.stringify({
-        event_type: event.event_type,
-        name: event.payload.name,
-        message: event.payload.message,
-        stack: event.payload.stack,
-        path: event.payload.request.path,
-        status: event.payload.response.status_code
-      });
-    }
-
-    if (event.event_type === "log_event") {
-      return JSON.stringify({
-        event_type: event.event_type,
-        level: event.payload.level,
-        message: event.payload.message,
-        attributes: event.payload.attributes
-      });
-    }
-
-    if (event.event_type === "request_event") {
-      return JSON.stringify({
-        event_type: event.event_type,
-        method: event.payload.method,
-        path: event.payload.path,
-        status: event.payload.response_status,
-        route_template: event.payload.route_template ?? null
-      });
-    }
-
-    return null;
-  }
-
-  private shouldCapture(sampleRate: number): boolean {
-    return sampleRate >= 1 || Math.random() <= sampleRate;
-  }
-
-  private effectiveLogThreshold(initLogLevel: LogLevel, policy: CapturePolicy): LogLevel {
-    const policyLogLevel = policy.captureLogs as LogLevel;
-    return LOG_LEVEL_ORDER[initLogLevel] >= LOG_LEVEL_ORDER[policyLogLevel] ? initLogLevel : policyLogLevel;
-  }
-
-  private shouldCaptureRequestEvent(request: CaptureRequestInput, response: CaptureResponseInput): boolean {
-    const capturePolicy = this.remoteProbeConfig.capturePolicy;
-    const policy = capturePolicy.captureRequestEvents;
-    const statusCode = response.statusCode ?? response.status ?? 0;
-    if (
-      isImmediateRequestIncidentStatus(
-        statusCode,
-        capturePolicy.preset,
-        capturePolicy.immediateClientErrorStatuses,
-        request.path ?? request.url,
-        request.method,
-        capturePolicy.immediateClientErrorPathRules
-      )
-    ) {
-      return true;
-    }
-    if (policy === "off") {
-      return false;
-    }
-    if (policy === "all") {
-      return true;
-    }
-    if (policy === "failures_only") {
-      return statusCode >= 500;
-    }
-    // "filtered" has no user-defined filters yet, so only immediate failures above are kept.
-    return false;
   }
 
   private scheduleFlush(delayMs?: number): void {
@@ -1062,15 +847,6 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
   }
 
-  private formatConsoleMessage(args: unknown[]): string {
-    return args
-      .map((arg) => {
-        const sanitized = sanitizeUnknown(arg);
-        return typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized);
-      })
-      .join(" ");
-  }
-
   private emitDiagnostic(code: string, message: string, metadata?: Record<string, unknown>): void {
     try {
       const sanitizedMetadata = sanitizeMetadataObject(metadata);
@@ -1081,52 +857,6 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       });
     } catch {
       // Diagnostics must never destabilize the host.
-    }
-  }
-
-  private enqueueSuppressionAggregates(): void {
-    const config = this.config;
-    if (config === null) {
-      return;
-    }
-
-    for (const aggregate of this.suppressionTracker.drainAggregates(Date.now())) {
-      this.enqueueInternalEvent(
-        createEventEnvelope({
-          schema_version: SDK_SCHEMA_VERSION,
-          event_type: "error_suppressed",
-          project_token: config.projectToken,
-          sdk_name: SDK_NAME,
-          sdk_version: SDK_VERSION,
-          service: this.buildServiceDescriptor(config),
-          occurred_at: aggregate.lastSeen,
-          payload: {
-            fingerprint: aggregate.fingerprint,
-            suppressed_count: aggregate.suppressedCount,
-            window_seconds: aggregate.windowSeconds,
-            first_seen: aggregate.firstSeen,
-            last_seen: aggregate.lastSeen
-          }
-        })
-      );
-    }
-  }
-
-  private getInternalSdkPaths(config: ActiveConfig): string[] {
-    return [config.endpoint, buildSdkConfigEndpoint(config.endpoint)]
-      .map((value) => this.normalizeRequestPath(value))
-      .filter((value): value is string => value !== null);
-  }
-
-  private normalizeRequestPath(value: string | null): string | null {
-    if (value === null || value.trim().length === 0) {
-      return null;
-    }
-
-    try {
-      return new URL(value, "http://debugbundle.local").pathname;
-    } catch {
-      return value.startsWith("/") ? value : `/${value}`;
     }
   }
 

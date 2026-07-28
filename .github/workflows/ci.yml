@@ -37,8 +37,8 @@ jobs:
       - name: Type-check
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+      - name: Test with per-file coverage gate
+        run: pnpm test:coverage
 
       - name: Build
         run: pnpm build

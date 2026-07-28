@@ -117,6 +117,45 @@ describe("sdk-browser capture", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it("should keep compatibility aliases and scalar context safe with default service fields", async (): Promise<void> => {
+    browserFixtures.installBrowserGlobals();
+    const transport = vi.fn().mockResolvedValue({ status: 202 });
+    const sdk = browserFixtures.createDebugBundleBrowserSdk();
+    browserFixtures.activeSdks.push(sdk);
+
+    sdk.setContext("before-init", "ignored");
+    sdk.captureRequest({ method: "GET", path: "/" });
+    sdk.init({
+      projectToken: "dbundle_proj_browser",
+      service: " ",
+      environment: " ",
+      flushInterval: 60_000,
+      transport
+    });
+    await browserFixtures.settleBrowserTriggerActivation();
+
+    sdk.setContext(" ", "ignored");
+    sdk.setContext("token", "secret");
+    sdk.captureError(new Error("compatibility alias"));
+    sdk.captureMessage("context event", "error");
+    await sdk.flush();
+
+    const events = browserFixtures.createTransportEvents(transport, 0);
+    expect(events.map((event) => event.service)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "browser-app",
+          environment: "development"
+        })
+      ])
+    );
+    expect(events.find((event) => event.event_type === "log_event")?.payload).toMatchObject({
+      attributes: {
+        token: "[REDACTED]"
+      }
+    });
+  });
+
   it("should enable relay mode for relative endpoints without auth headers or embedded project tokens", async (): Promise<void> => {
     const globals = browserFixtures.installBrowserGlobals();
     const transport = vi.fn().mockResolvedValue({ status: 202 });

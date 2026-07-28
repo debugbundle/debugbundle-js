@@ -150,7 +150,7 @@ jobs:
         run: |
           pnpm lint
           pnpm typecheck
-          pnpm test
+          pnpm test:coverage
           pnpm build
 
       - name: Smoke test packed SDK artifacts

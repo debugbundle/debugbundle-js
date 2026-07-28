@@ -435,10 +435,12 @@ describe("sdk-browser", () => {
       }
     });
     await browserFixtures.settleAsyncInit();
-    await new Promise((resolve) => setTimeout(resolve, 10));
 
     firstSdk.analytics.track("checkout.started");
-    await firstSdk.flush();
+    await vi.waitFor(async () => {
+      await firstSdk.flush();
+      expect(browserFixtures.getAnalyticsEvents(firstTransport)).toHaveLength(1);
+    });
 
     const firstVisitorHash = browserFixtures.getAnalyticsEvents(firstTransport)[0]?.correlation.visitor_id_hash;
     expect(firstVisitorHash).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -462,10 +464,12 @@ describe("sdk-browser", () => {
       }
     });
     await browserFixtures.settleAsyncInit();
-    await new Promise((resolve) => setTimeout(resolve, 10));
 
     secondSdk.analytics.track("checkout.completed");
-    await secondSdk.flush();
+    await vi.waitFor(async () => {
+      await secondSdk.flush();
+      expect(browserFixtures.getAnalyticsEvents(secondTransport)).toHaveLength(1);
+    });
 
     expect(browserFixtures.getAnalyticsEvents(secondTransport)[0]?.correlation.visitor_id_hash).toBe(firstVisitorHash);
   });
@@ -505,8 +509,9 @@ describe("sdk-browser", () => {
         trackSessions: false
       }
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(globals.localStorage.entries()).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(globals.localStorage.entries()).toHaveLength(1);
+    });
 
     sdk.analytics.setConsent(false);
     sdk.analytics.track("checkout.after_consent_withdrawal");
