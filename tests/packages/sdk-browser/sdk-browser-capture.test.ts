@@ -245,7 +245,7 @@ describe("sdk-browser capture", () => {
       target: {
         tagName: "BUTTON",
         id: "pay-now",
-        textContent: "Upgrade to Team - $49/mo"
+        textContent: "Upgrade to Team - $19/mo"
       }
     });
     globals.documentTarget.dispatch("submit", {

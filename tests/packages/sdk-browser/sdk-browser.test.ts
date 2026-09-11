@@ -140,7 +140,7 @@ describe("sdk-browser", () => {
       target: {
         tagName: "BUTTON",
         id: "pay-now",
-        textContent: "Upgrade to Team - $49/mo",
+        textContent: "Upgrade to Team - $19/mo",
         value: "private-button-value"
       }
     });
@@ -158,7 +158,7 @@ describe("sdk-browser", () => {
       title: null
     });
     expect(JSON.stringify(action)).not.toContain("pay-now");
-    expect(JSON.stringify(action)).not.toContain("Upgrade to Team - $49/mo");
+    expect(JSON.stringify(action)).not.toContain("Upgrade to Team - $19/mo");
     expect(JSON.stringify(action)).not.toContain("private-button-value");
   });
 
@@ -194,7 +194,7 @@ describe("sdk-browser", () => {
     const buttonTarget = {
       tagName: "BUTTON",
       id: "pay-now",
-      textContent: "Pay $49 now",
+      textContent: "Pay $19 now",
       value: "private-button-value"
     };
     const nonInteractiveTarget = {
@@ -222,7 +222,7 @@ describe("sdk-browser", () => {
     expect(markers).toEqual(["friction.repeated_click", "friction.dead_click", "friction.backtrack"]);
     const serialized = JSON.stringify(browserFixtures.getAnalyticsEvents(transport));
     expect(serialized).not.toContain("pay-now");
-    expect(serialized).not.toContain("Pay $49 now");
+    expect(serialized).not.toContain("Pay $19 now");
     expect(serialized).not.toContain("private-button-value");
     expect(serialized).not.toContain("looks-clickable");
     expect(serialized).not.toContain("Upgrade to Team");
