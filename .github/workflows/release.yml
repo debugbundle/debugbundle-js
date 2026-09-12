@@ -16,6 +16,9 @@ permissions:
 
 jobs:
   release:
+    permissions:
+      contents: write
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -26,6 +29,9 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
+
+      - name: Set up npm for trusted publishing
+        run: npm install --global npm@11.5.2
 
       - name: Enable Corepack
         run: |
@@ -161,8 +167,6 @@ jobs:
         run: |
           npm publish ./.tmp/npm-release/sdk-node --tag latest --access public
           npm publish ./.tmp/npm-release/sdk-browser --tag latest --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Smoke test published SDK packages
         run: pnpm smoke:registry
@@ -173,6 +177,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.release_version.outputs.value }}
+          target_commitish: ${{ github.sha }}
           files: |
             .tmp/npm-packages/debugbundle-sdk-node-${{ steps.release_version.outputs.value }}.tgz
             .tmp/npm-packages/debugbundle-sdk-browser-${{ steps.release_version.outputs.value }}.tgz
