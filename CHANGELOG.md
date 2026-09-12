@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-13
+
+### Changed
+
+- License the Node and Browser SDKs under Apache 2.0 and ship the complete license in both npm artifacts.
+- Consume Apache-licensed shared types and redaction packages at 1.7.0.
+- Publish through GitHub Actions trusted publishing without a long-lived npm token.
+
 ## [1.6.0] - 2026-07-28
 
 ### Fixed
