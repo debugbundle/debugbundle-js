@@ -3,7 +3,7 @@
   "version": "1.6.0",
   "private": false,
   "type": "module",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "description": "Node.js SDK for DebugBundle",
   "repository": {
     "type": "git",

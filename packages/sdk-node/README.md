@@ -3,7 +3,7 @@
 Node.js SDK for DebugBundle.
 
 ![npm](https://img.shields.io/npm/v/%40debugbundle%2Fsdk-node?label=npm)
-![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 Use this package to capture backend exceptions, request metadata, structured logs, runtime context, and probe data from Node.js services. It also ships browser relay handlers for full-stack apps that use `@debugbundle/sdk-browser`.
 
@@ -205,4 +205,4 @@ pnpm smoke:packed
 
 ## License
 
-AGPL-3.0-only.
+Apache-2.0.

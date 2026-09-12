@@ -5,7 +5,7 @@ JavaScript SDK repository for DebugBundle.
 ![CI](https://img.shields.io/github/actions/workflow/status/debugbundle/debugbundle-js/ci.yml?branch=main&label=ci)
 ![Node SDK](https://img.shields.io/npm/v/%40debugbundle%2Fsdk-node?label=sdk-node)
 ![Browser SDK](https://img.shields.io/npm/v/%40debugbundle%2Fsdk-browser?label=sdk-browser)
-![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 This repository publishes the DebugBundle JavaScript SDK packages used to capture backend Node.js failures and browser-side incidents, breadcrumbs, device context, request summaries, and probe data.
 
@@ -273,4 +273,4 @@ Before publishing:
 
 ## License
 
-AGPL-3.0-only. See `LICENSE`.
+Apache-2.0. See `LICENSE`.

@@ -3,7 +3,7 @@
 Browser SDK for DebugBundle.
 
 ![npm](https://img.shields.io/npm/v/%40debugbundle%2Fsdk-browser?label=npm)
-![License](https://img.shields.io/badge/license-AGPL--3.0--only-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 Use this package to capture frontend exceptions, breadcrumbs, first-party request failures, browser device context, trace headers, and probe data. The recommended transport is a browser relay served by your backend.
 
@@ -222,4 +222,4 @@ pnpm smoke:packed
 
 ## License
 
-AGPL-3.0-only.
+Apache-2.0.
