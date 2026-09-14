@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-14
+
+### Fixed
+
+- Preserve native and cross-realm browser errors, promise rejection reasons, source coordinates and resource identity through guarded fixed-field reads.
+- Capture structural click/form breadcrumbs from native DOM fields without reading form values or page text; cap form inspection and preserve page-cache lifecycle behavior.
+- Strip credentials, query and fragment from HTTP(S) stack locations, including URLs containing parentheses, while retaining file/line/column; avoid synthetic listener stacks when the browser provides no application error.
+
 ## [1.7.0] - 2026-09-13
 
 ### Changed

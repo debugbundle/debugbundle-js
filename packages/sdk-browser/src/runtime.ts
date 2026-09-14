@@ -1,3 +1,4 @@
+import { sanitizeBrowserStack } from "./browser-stack.js";
 import {
   DEFAULT_LOG_LEVEL,
   LOG_LEVELS,
@@ -32,6 +33,8 @@ import {
   type DebugBundleBrowserTransportResponse,
   type NormalizedBrowserNetworkFilter
 } from "./types.js";
+
+import { hasErrorDetails, readNativeField, readNativeFields } from "./native-fields.js";
 
 const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
 const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
@@ -187,11 +190,14 @@ export function normalizeUnknownRecord(value: unknown): Record<string, unknown> 
 }
 
 export function normalizeError(error: unknown): { name: string; message: string; stack: string } {
-  if (error instanceof Error) {
+  if (hasErrorDetails(error)) {
+    const fields = readNativeFields(error, ["name", "message", "stack"]);
+    const name = getStringField(fields, "name") ?? "Error";
+    const message = getStringField(fields, "message") ?? "Unknown browser error";
     return {
-      name: error.name || "Error",
-      message: error.message || "Unknown browser error",
-      stack: error.stack || `${error.name || "Error"}: ${error.message || "Unknown browser error"}`
+      name,
+      message,
+      stack: sanitizeBrowserStack(getStringField(fields, "stack") ?? `${name}: ${message}`)
     };
   }
 
@@ -199,7 +205,7 @@ export function normalizeError(error: unknown): { name: string; message: string;
     return {
       name: "Error",
       message: error,
-      stack: `Error: ${error}`
+      stack: sanitizeBrowserStack(`Error: ${error}`)
     };
   }
 
@@ -298,7 +304,7 @@ function normalizeBrowserErrorTargetAttributes(record: Record<string, unknown>):
 }
 
 function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventContext["target"] {
-  const record = normalizeUnknownRecord(target);
+  const record = readNativeFields(target, ["tagName", "src", "href", "currentSrc", "rel", "as", "type", "media", "crossOrigin", "async", "defer", "integrity"]);
   const tagName = getStringField(record, "tagName")?.toLowerCase() ?? null;
   const sourceUrl = getStringField(record, "src") ?? getStringField(record, "href") ?? getStringField(record, "currentSrc");
   const attributes = normalizeBrowserErrorTargetAttributes(record);
@@ -315,9 +321,9 @@ function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventCont
 }
 
 export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEventContext {
-  const record = normalizeUnknownRecord(event);
-  const target = normalizeBrowserErrorTarget(record["target"]);
-  const hasErrorObject = record["error"] instanceof Error;
+  const record = readNativeFields(event, ["message", "filename", "lineno", "colno"]);
+  const target = normalizeBrowserErrorTarget(readNativeField(event, "target"));
+  const hasErrorObject = hasErrorDetails(readNativeField(event, "error"));
   const kind = target !== null && target.source_url !== null ? "resource_error" : "window_error";
 
   return {

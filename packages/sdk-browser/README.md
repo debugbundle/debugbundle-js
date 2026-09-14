@@ -223,3 +223,9 @@ pnpm smoke:packed
 ## License
 
 Apache-2.0.
+
+## Browser error evidence
+
+The global hooks retain native and cross-realm error messages, original application stacks and browser source coordinates where available. Resource failures retain a sanitized resource URL. Existing bounded click/form breadcrumbs contain structural selectors and a field count, never form values or page text. Form inspection stops after 1,000 controls. Native getter and instrumentation failures are swallowed.
+
+HTTP(S) stack locations and browser-event page/resource URLs omit credentials, query and fragment. Source file/line/column remain useful. When a browser exposes only `Script error.` for a cross-origin script, its withheld message/stack cannot be recovered by a relay. Configure script CORS and `crossorigin="anonymous"` together where appropriate, initialize capture before application scripts, or pass the real error from an application error boundary. No synthetic SDK listener stack is presented as application evidence.

@@ -4,13 +4,14 @@ import { BrowserAnalyticsController } from "./analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
 import {
   isImmediateRequestIncidentStatus,
-  normalizeUnhandledRejectionReason,
   shouldCaptureBrowserNetworkRequest,
   shouldCaptureFailedBrowserNetworkRequest,
   shouldCaptureRequestStatus
 } from "./capture-helpers.js";
 import { applyBrowserCaptureRules, buildBrowserSuppressionKey } from "./event-pipeline.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
+import { captureNativeError, captureNativeRejection } from "./native-error-hooks.js";
+import { countFormFields, readNativeField, readStructuralTarget } from "./native-fields.js";
 import { EventSuppressionTracker } from "./suppression.js";
 import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
 import { BrowserProbeController } from "./probes.js";
@@ -24,7 +25,6 @@ import {
   getLocationSource,
   getWindowSource,
   createBrowserTraceId,
-  normalizeBrowserErrorEvent,
   normalizeBoolean,
   normalizeError,
   normalizeLogLevel,
@@ -474,25 +474,16 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     const windowSource = getWindowSource();
     if (windowSource !== null) {
       const onPageHide = (event: unknown): void => {
-        if (normalizeUnknownRecord(event)["persisted"] !== true) {
+        if (readNativeField(event, "persisted") !== true) {
           this.analyticsController.captureSessionSummary();
         }
         this.flushViaBeacon();
       };
       const onError = (event: unknown): void => {
-        const maybeError = normalizeUnknownRecord(event);
-        const browserEvent = normalizeBrowserErrorEvent(event);
-        const fallbackMessage = browserEvent.kind === "resource_error" ? "Browser resource load error" : "Window error";
-        this.captureException(maybeError["error"] ?? maybeError["message"] ?? new Error(fallbackMessage), {
-          browser_event: browserEvent
-        });
+        captureNativeError(event, (error, context) => this.captureException(error, context));
       };
       const onUnhandledRejection = (event: unknown): void => {
-        const maybeError = normalizeUnknownRecord(event);
-        const rejection = normalizeUnhandledRejectionReason(maybeError["reason"]);
-        this.captureException(rejection.error, {
-          rejection_reason: rejection.rejectionReason
-        });
+        captureNativeRejection(event, (error, context) => this.captureException(error, context));
       };
 
       windowSource.addEventListener("pagehide", onPageHide);
@@ -514,8 +505,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
           return;
         }
 
-        const targetIdentity = normalizeUnknownRecord(event)["target"];
-        const target = normalizeUnknownRecord(targetIdentity);
+        const targetIdentity = readNativeField(event, "target");
+        const target = readStructuralTarget(targetIdentity);
         if (captureDebugClick) {
           const selector = buildSelector(target);
           if (selector !== null) {
@@ -538,12 +529,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       };
 
       const onSubmit = (event: unknown): void => {
-        const target = normalizeUnknownRecord(normalizeUnknownRecord(event)["target"]);
+        const targetIdentity = readNativeField(event, "target");
+        const target = readStructuralTarget(targetIdentity);
         const selector = buildSelector(target) ?? "form";
-        const elements = Array.isArray(target["elements"]) ? target["elements"] : [];
-        const fieldCount = elements
-          .map((entry) => normalizeUnknownRecord(entry))
-          .filter((entry) => typeof entry["name"] === "string" && entry["name"].length > 0).length;
+        const fieldCount = countFormFields(targetIdentity);
 
         this.addBreadcrumb({
           ts: new Date().toISOString(),

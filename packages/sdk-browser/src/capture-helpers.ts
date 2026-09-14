@@ -1,9 +1,9 @@
 import {
   getLocationSource,
   matchesBrowserPattern,
-  matchesStatusCodeFilter,
-  normalizeUnknownRecord
+  matchesStatusCodeFilter
 } from "./runtime.js";
+import { hasErrorDetails, readNativeField, readNativeFields } from "./native-fields.js";
 import type {
   ActiveConfig,
   BrowserCapturePreset,
@@ -33,17 +33,27 @@ export function createInitialRemoteProbeState(): BrowserRemoteProbeState {
   };
 }
 
+function rejectionFallback(message: string, name = "Error"): Error {
+  const error = new Error(message);
+  error.name = name;
+  // Preserve the existing Error return shape without claiming SDK frames are
+  // the stack of a primitive/object rejection.
+  error.stack = `${name}: ${message}`;
+  return error;
+}
+
 export function normalizeUnhandledRejectionReason(reason: unknown): {
   error: unknown;
   rejectionReason: BrowserRejectionReasonContext;
 } {
-  if (reason instanceof Error) {
+  if (hasErrorDetails(reason) && typeof readNativeField(reason, "stack") === "string") {
+    const fields = readNativeFields(reason, ["name", "message"]);
     return {
       error: reason,
       rejectionReason: {
         kind: "error",
-        name: reason.name || "Error",
-        message: truncateRejectionReasonPreview(reason.message || "Unknown rejection error")
+        name: readReasonStringField(fields, "name") ?? "Error",
+        message: truncateRejectionReasonPreview(readReasonStringField(fields, "message") ?? "Unknown rejection error")
       }
     };
   }
@@ -51,35 +61,33 @@ export function normalizeUnhandledRejectionReason(reason: unknown): {
   if (typeof reason === "string") {
     const preview = truncateRejectionReasonPreview(reason.length > 0 ? reason : "[empty string]");
     return {
-      error: new Error(reason.length > 0 ? reason : "Unhandled promise rejection"),
+      error: rejectionFallback(reason.length > 0 ? reason : "Unhandled promise rejection"),
       rejectionReason: { kind: "string", preview }
     };
   }
 
   if (reason === null) {
     return {
-      error: new Error("Unhandled promise rejection: null"),
+      error: rejectionFallback("Unhandled promise rejection: null"),
       rejectionReason: { kind: "null", preview: "null" }
     };
   }
 
   if (reason === undefined) {
     return {
-      error: new Error("Unhandled promise rejection: undefined"),
+      error: rejectionFallback("Unhandled promise rejection: undefined"),
       rejectionReason: { kind: "undefined", preview: "undefined" }
     };
   }
 
-  const record = normalizeUnknownRecord(reason);
+  const record = readNativeFields(reason, ["name", "message"]);
   const name = readReasonStringField(record, "name");
   const message = readReasonStringField(record, "message");
-  const constructorName = typeof reason === "object" && reason !== null && "constructor" in reason
-    ? (reason as { constructor?: { name?: unknown } }).constructor?.name
-    : undefined;
+  const constructorName = readNativeField(readNativeField(reason, "constructor"), "name");
   const preview = typeof constructorName === "string" && constructorName.length > 0 ? constructorName : "object";
 
   return {
-    error: new Error(message ?? "Unhandled promise rejection"),
+    error: rejectionFallback(message ?? "Unhandled promise rejection", name ?? "Error"),
     rejectionReason: {
       kind: "object",
       ...(name === undefined ? {} : { name }),
