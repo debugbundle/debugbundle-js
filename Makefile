@@ -3,6 +3,10 @@ NODE_IMAGE ?= node:24-alpine
 NODE_RUN = docker run --rm -v "$(CURDIR):/workspace" --tmpfs /workspace/.tmp -w /workspace $(NODE_IMAGE) sh -lc
 
 .PHONY: test-focused check
+.PHONY: install-dependencies
+install-dependencies:
+	$(NODE_RUN) 'corepack enable && corepack pnpm install --no-frozen-lockfile'
+
 test-focused:
 	$(NODE_RUN) 'corepack pnpm vitest run $(TEST_FILES)'
 

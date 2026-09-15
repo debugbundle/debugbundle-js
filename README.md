@@ -9,6 +9,10 @@ JavaScript SDK repository for DebugBundle.
 
 This repository publishes the DebugBundle JavaScript SDK packages used to capture backend Node.js failures and browser-side incidents, breadcrumbs, device context, request summaries, and probe data.
 
+## Automatic capture and application filtering
+
+Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
+
 ## Packages
 
 | Package | npm name | Purpose |

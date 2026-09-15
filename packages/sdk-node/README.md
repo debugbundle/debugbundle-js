@@ -9,6 +9,10 @@ Use this package to capture backend exceptions, request metadata, structured log
 
 Requires Node.js 22 or newer.
 
+## Logger filtering
+
+Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
+
 ## Installation
 
 ```bash

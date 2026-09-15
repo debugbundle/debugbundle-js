@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import type { CaptureLogContext, DebugBundleDiagnostic, LogLevel, LoggerAttachmentResult, LoggerCaptureApi, ModuleResolver } from "./types.js";
 import { sanitizeUnknown } from "./utils.js";
+import { attachNativeLogger } from "./logger-emission.js";
 
 const LOGGER_LEVEL_MAP: Record<string, LogLevel> = {
   trace: "debug",
@@ -98,16 +99,28 @@ function patchMethod(
     return;
   }
 
+  const descriptor = Object.getOwnPropertyDescriptor(record, methodName);
+  let active = true;
   const wrapped = (...args: unknown[]): unknown => {
     const result = Reflect.apply(original, record, args);
-    const normalized = normalizeLoggerCall(level, args);
-    captureApi.captureLog(normalized.message, level, normalized.context);
+    try {
+      if (!active || record["silent"] === true) return result;
+      const enabled = getFunction(record, "isLevelEnabled");
+      if (enabled !== null && Reflect.apply(enabled, record, [methodName]) === false) return result;
+      const normalized = normalizeLoggerCall(level, args);
+      captureApi.captureLog(normalized.message, level, normalized.context);
+    } catch {
+      // SDK capture failures must preserve the application's logger result.
+    }
     return result;
   };
 
   record[methodName] = wrapped;
   restorers.push(() => {
-    record[methodName] = original;
+    active = false;
+    if (record[methodName] !== wrapped) return;
+    if (descriptor === undefined) delete record[methodName];
+    else Object.defineProperty(record, methodName, descriptor);
   });
 }
 
@@ -122,34 +135,46 @@ export function attachLoggerIntegration(input: {
     return { attached: false };
   }
 
-  const resolveModule = input.resolveModule ?? defaultResolveModule;
-  const supportsPinoModule = canResolve(resolveModule, "pino");
-  const supportsWinstonModule = canResolve(resolveModule, "winston");
-  const supportsBunyanModule = canResolve(resolveModule, "bunyan");
-  const hasLogMethod = getFunction(loggerRecord, "log") !== null;
-  const hasTraceMethod = getFunction(loggerRecord, "trace") !== null;
-  const supportsBunyan = supportsBunyanModule || (looksLikeBunyanLogger(loggerRecord) && hasTraceMethod);
-  const supportsPino = supportsPinoModule || (looksLikePinoLogger(loggerRecord) && !hasLogMethod && !hasTraceMethod);
-  const supportsWinston = supportsWinstonModule || looksLikeWinstonLogger(loggerRecord);
-
   const restorers: Array<() => void> = [];
+  let capturing = false;
+  const captureApi: LoggerCaptureApi = { captureLog: (message, level, context): void => {
+    if (capturing) return;
+    capturing = true;
+    try { input.captureApi.captureLog(message, level, context); }
+    finally { capturing = false; }
+  } };
+  const restoreAll = (): void => {
+    for (const restore of [...restorers].reverse()) {
+      try { restore(); } catch { /* A changed or frozen logger must not break cleanup. */ }
+    }
+  };
 
   try {
+    const resolveModule = input.resolveModule ?? defaultResolveModule;
+    const supportsPinoModule = canResolve(resolveModule, "pino");
+    const supportsWinstonModule = canResolve(resolveModule, "winston");
+    const supportsBunyanModule = canResolve(resolveModule, "bunyan");
+    const hasLogMethod = getFunction(loggerRecord, "log") !== null;
+    const hasTraceMethod = getFunction(loggerRecord, "trace") !== null;
+    const supportsBunyan = supportsBunyanModule || (looksLikeBunyanLogger(loggerRecord) && hasTraceMethod);
+    const supportsPino = supportsPinoModule || (looksLikePinoLogger(loggerRecord) && !hasLogMethod && !hasTraceMethod);
+    const supportsWinston = supportsWinstonModule || looksLikeWinstonLogger(loggerRecord);
+
+    const native = attachNativeLogger(loggerRecord, captureApi);
+    if (native !== null) return native;
     if (supportsPino) {
-      patchMethod(loggerRecord, "debug", "debug", input.captureApi, restorers);
-      patchMethod(loggerRecord, "info", "info", input.captureApi, restorers);
-      patchMethod(loggerRecord, "warn", "warning", input.captureApi, restorers);
-      patchMethod(loggerRecord, "error", "error", input.captureApi, restorers);
-      patchMethod(loggerRecord, "fatal", "critical", input.captureApi, restorers);
+      patchMethod(loggerRecord, "debug", "debug", captureApi, restorers);
+      patchMethod(loggerRecord, "info", "info", captureApi, restorers);
+      patchMethod(loggerRecord, "warn", "warning", captureApi, restorers);
+      patchMethod(loggerRecord, "error", "error", captureApi, restorers);
+      patchMethod(loggerRecord, "fatal", "critical", captureApi, restorers);
       return {
         attached: restorers.length > 0,
         ...(restorers.length === 0
           ? {}
           : {
               restore: (): void => {
-                for (const restore of restorers.reverse()) {
-                  restore();
-                }
+                restoreAll();
               }
             })
       };
@@ -157,7 +182,7 @@ export function attachLoggerIntegration(input: {
 
     if (supportsBunyan) {
       for (const [methodName, level] of Object.entries(LOGGER_LEVEL_MAP)) {
-        patchMethod(loggerRecord, methodName, level, input.captureApi, restorers);
+        patchMethod(loggerRecord, methodName, level, captureApi, restorers);
       }
 
       return {
@@ -166,41 +191,38 @@ export function attachLoggerIntegration(input: {
           ? {}
           : {
               restore: (): void => {
-                for (const restore of restorers.reverse()) {
-                  restore();
-                }
+                restoreAll();
               }
             })
       };
     }
 
     if (supportsWinston) {
-      patchMethod(loggerRecord, "debug", "debug", input.captureApi, restorers);
-      patchMethod(loggerRecord, "info", "info", input.captureApi, restorers);
-      patchMethod(loggerRecord, "warn", "warning", input.captureApi, restorers);
-      patchMethod(loggerRecord, "error", "error", input.captureApi, restorers);
-      patchMethod(loggerRecord, "log", "info", input.captureApi, restorers);
+      patchMethod(loggerRecord, "debug", "debug", captureApi, restorers);
+      patchMethod(loggerRecord, "info", "info", captureApi, restorers);
+      patchMethod(loggerRecord, "warn", "warning", captureApi, restorers);
+      patchMethod(loggerRecord, "error", "error", captureApi, restorers);
+      patchMethod(loggerRecord, "log", "info", captureApi, restorers);
       return {
         attached: restorers.length > 0,
         ...(restorers.length === 0
           ? {}
           : {
               restore: (): void => {
-                for (const restore of restorers.reverse()) {
-                  restore();
-                }
+                restoreAll();
               }
             })
       };
     }
   } catch (error) {
-    input.onDiagnostic?.({
+    restoreAll();
+    try { input.onDiagnostic?.({
       code: "logger_attach_failed",
       message: "sdk-node failed to attach a logger integration",
       metadata: {
         error: sanitizeUnknown(error)
       }
-    });
+    }); } catch { /* Diagnostic callbacks must not break application logging. */ }
   }
 
   return { attached: false };

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-09-15
+
+### Fixed
+
+- Respect Pino levels, silent mode and log-method hooks; Bunyan levels and enabled probes; Winston levels, silent mode and format filters. Capture each accepted record once.
+- Preserve native logger results and errors, isolate recursive capture and SDK callback failures, and safely detach cached/child emitters.
+
+### Changed
+
+- Align Browser SDK and shared dependencies at 1.7.2; browser runtime behavior is unchanged.
+
+
 ## [1.7.1] - 2026-09-14
 
 ### Fixed

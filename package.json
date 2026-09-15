@@ -1,6 +1,6 @@
 {
   "name": "debugbundle-js",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -28,7 +28,11 @@
     "smoke:registry": "node scripts/smoke-release.mjs registry"
   },
   "devDependencies": {
-    "@debugbundle/shared-types": "1.7.1",
+    "@types/bunyan": "^1.8.11",
+    "bunyan": "^1.8.15",
+    "pino": "^9.14.0",
+    "winston": "^3.19.0",
+    "@debugbundle/shared-types": "1.7.2",
     "@types/node": "^24.0.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
