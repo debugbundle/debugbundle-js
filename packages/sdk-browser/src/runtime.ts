@@ -245,7 +245,7 @@ function sanitizeBrowserEventUrl(value: string | null): string | null {
 
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
       const path = parsed.pathname || "/";
-      return isRelative ? path : `${parsed.origin}${path}`;
+      return isRelative && parsed.origin === new URL(baseHref).origin ? path : `${parsed.origin}${path}`;
     }
 
     return `${parsed.protocol.replace(/:$/, "")}:`;

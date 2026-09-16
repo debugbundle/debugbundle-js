@@ -68,6 +68,14 @@ describe("native browser error capture", () => {
     expect(event.payload.stack).not.toContain("onError");
   });
 
+  it("preserves the external origin of protocol-relative resource URLs", async () => {
+    const { sdk, transport, globals } = fixtures.createSdk();
+    globals.windowTarget.dispatch("error", nativeFields({ target: nativeFields({ tagName: "SCRIPT", src: "//cdn.example/app.js?token=secret#boot" }) }));
+    await sdk.flush();
+    const event = fixtures.getFrontendExceptionEvent(fixtures.createTransportEvents(transport, 0)[0]);
+    expect(event.payload.browser_event?.target?.source_url).toBe("https://cdn.example/app.js");
+  });
+
   it("preserves inherited PromiseRejectionEvent reasons", async () => {
     const { sdk, transport, globals } = fixtures.createSdk();
     globals.windowTarget.dispatch("unhandledrejection", nativeFields({ reason: new Error("Save rejected") }));

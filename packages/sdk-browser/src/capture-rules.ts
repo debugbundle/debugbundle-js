@@ -1,3 +1,4 @@
+import { evaluateResourceOrigin } from "./resource-origin.js";
 import type {
   BrowserCaptureRule,
   BrowserCaptureRuleAction,
@@ -429,7 +430,8 @@ function buildEvaluationContext(projectId: string, event: EventEnvelope): Browse
       browserEvent?.["kind"] === "window_error" || browserEvent?.["kind"] === "resource_error"
         ? browserEvent["kind"]
         : undefined;
-    const resourceUrl = normalizeEvaluationUrl(sourceUrl);
+    const page = browserEvent?.["page"];
+    const resourceUrl = evaluateResourceOrigin(sourceUrl, page !== null && typeof page === "object" ? (page as Record<string, unknown>)["url"] : undefined);
     return {
       ...baseWithClient,
       ...(resourceUrl.first_party === undefined ? {} : { first_party: resourceUrl.first_party }),

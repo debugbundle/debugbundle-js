@@ -229,3 +229,10 @@ Apache-2.0.
 The global hooks retain native and cross-realm error messages, original application stacks and browser source coordinates where available. Resource failures retain a sanitized resource URL. Existing bounded click/form breadcrumbs contain structural selectors and a field count, never form values or page text. Form inspection stops after 1,000 controls. Native getter and instrumentation failures are swallowed.
 
 HTTP(S) stack locations and browser-event page/resource URLs omit credentials, query and fragment. Source file/line/column remain useful. When a browser exposes only `Script error.` for a cross-origin script, its withheld message/stack cannot be recovered by a relay. Configure script CORS and `crossorigin="anonymous"` together where appropriate, initialize capture before application scripts, or pass the real error from an application error boundary. No synthetic SDK listener stack is presented as application evidence.
+
+
+### Browser resource noise
+
+Resource failures retain their target and page evidence; the server derives resource titles and cross-route grouping without a new capture payload or Bundle version. Noise rules should match the exact resource host/path, service and environment. Treat tracker blocking as a possible cause, not proof of a browser extension or network blocker. Google sign-in and application assets should remain actionable unless an operator explicitly decides otherwise.
+
+Resource `first_party` evaluation compares the captured page and target origins (including scheme and port), rather than assuming every absolute URL is third-party. Absolute targets without a page origin stay unknown; root-relative targets remain same-origin. The SDK preserves external protocol-relative target hosts and strips credentials/query/fragment. Server enforcement remains authoritative for installed older SDKs; SDK-side drop/sample support can reduce transmission after compatible rules are adopted.

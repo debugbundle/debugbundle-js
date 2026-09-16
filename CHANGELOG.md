@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-16
+
+### Fixed
+
+- Compare browser resource URLs against the captured page origin when evaluating first-party rules. Missing origin stays unknown; protocol-relative external targets preserve their host while credentials/query/fragment are removed. Existing capture payloads remain compatible with Bundle v1.
+
+### Changed
+
+- Align the JavaScript SDK family with shared packages 1.8.0 and additive Bundle v1 resource evidence. Node capture behavior is unchanged.
+
 ## [1.7.2] - 2026-09-15
 
 ### Fixed

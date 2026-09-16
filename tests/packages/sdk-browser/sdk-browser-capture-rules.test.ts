@@ -73,6 +73,7 @@ function createFrontendExceptionEvent(
       browser_event: {
         kind: "resource_error",
         opaque: true,
+        page: { url: "https://app.example.com/checkout" },
         target: {
           source_url: "https://cdn.example.com/assets/app.js"
         }
@@ -99,6 +100,25 @@ function createRequestEvent(path = "https://api.example.com/orders/1"): EventEnv
 }
 
 describe("sdk-browser capture rules", () => {
+  it.each([
+    ["https://app.example.com/assets/app.js", "https://app.example.com/checkout", true],
+    ["/assets/app.js", "https://app.example.com/checkout", true],
+    ["//cdn.example.com/app.js", "https://app.example.com/checkout", false],
+    ["https://app.example.com:8443/app.js", "https://app.example.com/checkout", false],
+    ["https://app.example.com/app.js", null, null]
+  ])("evaluates origin from the captured page for %s", (url, page, expected) => {
+    const event = createFrontendExceptionEvent();
+    if (event.event_type !== "frontend_exception") throw new Error("Expected frontend event");
+    event.payload.browser_event = { kind: "resource_error", opaque: true, target: { source_url: url }, page: { url: page } } as NonNullable<typeof event.payload.browser_event>;
+    for (const firstParty of [true, false]) {
+      const rule = parseRule(createRawRule({ matcher: { event_types: ["frontend_exception"], first_party: firstParty, resource_url: { path_equals: "/assets/app.js" } } }));
+      // Origin-only matching avoids confusing URL matching with origin evidence.
+      rule.matcher = { event_types: ["frontend_exception"], first_party: firstParty };
+      const result = evaluateBrowserCaptureRulesForEvent([rule], "proj_123", event, "2026-05-26T10:01:00.000Z");
+      expect(result?.outcome ?? null).toBe(expected === firstParty ? "drop" : null);
+    }
+  });
+
   it("should fail closed for malformed payloads and incompatible rule fields", () => {
     expect(parseRemoteCaptureRulesPayload(null)).toEqual([]);
     expect(parseRemoteCaptureRulesPayload({ capture_rules: "invalid" })).toEqual([]);
