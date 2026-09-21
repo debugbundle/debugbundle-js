@@ -1,4 +1,4 @@
-import { redact, type JsonValue } from "@debugbundle/redaction";
+import { sanitizeTelemetry } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { BrowserAnalyticsController } from "./analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
@@ -15,6 +15,7 @@ import { countFormFields, readNativeField, readStructuralTarget } from "./native
 import { EventSuppressionTracker } from "./suppression.js";
 import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
 import { BrowserProbeController } from "./probes.js";
+import { protectBrowserEvent } from "./privacy.js";
 import {
   buildSelector,
   createFetchTransport,
@@ -301,15 +302,13 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     try {
-      const attributes = redact(
-        {
-          ...this.persistentContext,
-          ...normalizeUnknownRecord(context)
-        } as Record<string, JsonValue>,
-        {
-          sensitiveKeys: config.redactFields
-        }
-      ).redacted as Record<string, unknown>;
+      const protectedAttributes = sanitizeTelemetry({
+        ...this.persistentContext,
+        ...normalizeUnknownRecord(context)
+      }, { additionalKeys: config.redactFields });
+      if (!protectedAttributes.ok || protectedAttributes.value === null ||
+          Array.isArray(protectedAttributes.value) || typeof protectedAttributes.value !== "object") return;
+      const attributes = protectedAttributes.value;
 
       const event = createEventEnvelope({
         schema_version: SDK_SCHEMA_VERSION,
@@ -352,14 +351,17 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   public setContext(key: string, value: unknown): void {
     const config = this.config;
-    if (config === null || key.trim().length === 0) {
+    if (config === null || typeof key !== "string" || key.length > 128 || key.trim().length === 0) {
       return;
     }
 
-    const redacted = redact({ [key]: value } as Record<string, JsonValue>, {
-      sensitiveKeys: config.redactFields
-    }).redacted as Record<string, unknown>;
-    this.persistentContext[key] = redacted[key] ?? null;
+    try {
+      const result = sanitizeTelemetry({ ...this.persistentContext, [key]: value }, { additionalKeys: config.redactFields });
+      if (!result.ok || result.value === null || Array.isArray(result.value) || typeof result.value !== "object") return;
+      this.persistentContext = result.value;
+    } catch {
+      return;
+    }
   }
 
   public probe(label: string, data: unknown): void {
@@ -612,6 +614,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
+    const protectedBreadcrumb = sanitizeTelemetry(breadcrumb, { additionalKeys: config.redactFields });
+    if (!protectedBreadcrumb.ok || protectedBreadcrumb.value === null ||
+        Array.isArray(protectedBreadcrumb.value) || typeof protectedBreadcrumb.value !== "object") return;
+    breadcrumb = protectedBreadcrumb.value as unknown as BrowserBreadcrumb;
+
     if (config.breadcrumbsOnErrorOnly !== true) {
       this.enqueueEvent(this.createBreadcrumbEvent(breadcrumb));
       return;
@@ -807,14 +814,19 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private enqueueEvent(event: EventEnvelope, countTowardSession = true): void {
-    const beforeSendEvent = applyBrowserBeforeSend(event, this.config?.beforeSend);
+    const protectedInput = protectBrowserEvent(event, this.config?.redactFields ?? []);
+    if (protectedInput === null) return;
+    const beforeSendEvent = applyBrowserBeforeSend(protectedInput, this.config?.beforeSend);
     if (beforeSendEvent === null) {
       return;
     }
 
+    const protectedResult = protectBrowserEvent(beforeSendEvent, this.config?.redactFields ?? []);
+    if (protectedResult === null) return;
+
     const captureRuleResult = applyBrowserCaptureRules({
       config: this.config,
-      event: beforeSendEvent,
+      event: protectedResult,
       currentRoute: this.getCurrentRoute(),
       now: new Date().toISOString()
     });
@@ -850,12 +862,20 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     if (applyBeforeSend && event.event_type !== "analytics_event") {
-      const beforeSendEvent = applyBrowserBeforeSend(event, config.beforeSend);
+      const protectedInput = protectBrowserEvent(event, config.redactFields);
+      if (protectedInput === null) return;
+      const beforeSendEvent = applyBrowserBeforeSend(protectedInput, config.beforeSend);
       if (beforeSendEvent === null) {
         return;
       }
 
       event = beforeSendEvent;
+    }
+
+    if (event.event_type !== "analytics_event") {
+      const protectedResult = protectBrowserEvent(event, config.redactFields);
+      if (protectedResult === null) return;
+      event = protectedResult;
     }
 
     this.eventTransport.enqueueDebug(event);

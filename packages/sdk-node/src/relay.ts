@@ -8,6 +8,7 @@ import { createFileTransport, resolveDefaultLocalEventsDir } from "./file-transp
 import type { DebugBundleProjectMode, DebugBundleTransport } from "./types.js";
 import { createFetchTransport } from "./utils.js";
 import { EventEnvelopeSchema, type EventEnvelope } from "@debugbundle/shared-types";
+import { sanitizeTelemetry } from "@debugbundle/redaction";
 
 const DEFAULT_BROWSER_RELAY_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_BROWSER_RELAY_RATE_LIMIT_PER_MINUTE = 60;
@@ -460,6 +461,24 @@ function toBrowserRelayEvent(
   return normalizedEvent;
 }
 
+function protectRelayEvent(event: BrowserRelayEvent): BrowserRelayEvent | null {
+  for (const value of [event.schema_version, event.sdk_name, event.sdk_version,
+    ...Object.values(event.correlation ?? {})]) {
+    if (typeof value !== "string") continue;
+    const checked = sanitizeTelemetry(value);
+    if (!checked.ok || checked.value !== value) return null;
+  }
+  const sanitized = sanitizeTelemetry({ payload: event.payload, service: event.service });
+  if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
+      typeof sanitized.value !== "object") return null;
+  const parsed = BrowserRelayEventSchema.safeParse({
+    ...event,
+    payload: sanitized.value["payload"],
+    service: sanitized.value["service"]
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 function resolveDefaultRelaySpoolDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".debugbundle", "local", "browser-relay-spool");
 }
@@ -606,12 +625,17 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
       }
 
       try {
-        acceptedEvents.push(
+        const protectedEvent = protectRelayEvent(
           toBrowserRelayEvent(candidate, {
             ...(options.service === undefined ? {} : { service: options.service }),
             ...(options.environment === undefined ? {} : { environment: options.environment })
           })
         );
+        if (protectedEvent === null) {
+          errors.push(`batch[${index}]: Privacy sanitation failed.`);
+          continue;
+        }
+        acceptedEvents.push(protectedEvent);
       } catch (error) {
         if (error instanceof z.ZodError) {
           errors.push(`batch[${index}]: ${getIssueMessage(error)}`);

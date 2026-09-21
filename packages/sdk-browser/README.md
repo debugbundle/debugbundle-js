@@ -178,6 +178,8 @@ await debugbundle.flush();
 - Browser project tokens are never needed when using relay mode.
 - Breadcrumb and probe buffers are in-memory only.
 
+Persistent context is sanitized as a complete snapshot, with at most 256 keys and 128 characters per key, and a 256 KiB combined budget. Unsafe updates are withheld while the previous protected context remains available.
+
 ## Safe startup behavior
 
 - Relay mode keeps browser-visible credentials out of the page and does not require a token in frontend config.

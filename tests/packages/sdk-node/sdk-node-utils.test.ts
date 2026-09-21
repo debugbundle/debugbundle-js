@@ -26,6 +26,16 @@ afterEach((): void => {
 });
 
 describe("sdk-node utils", () => {
+  it("scans structured strings before formatting and never invokes context getters", () => {
+    const getter = vi.fn(() => "GETTER_SECRET");
+    const input = Object.defineProperty({ safe: "kept" }, "note", { get: getter, enumerable: true });
+    expect(redactObject(input, [])).toEqual({ safe: "kept" });
+    const array = Object.defineProperty(["initial"], "0", { get: getter, enumerable: true });
+    expect(sanitizeUnknown(array)).toEqual([null]);
+    expect(getter).not.toHaveBeenCalled();
+    const structured = JSON.stringify({ safe: "x".repeat(1800), password: "STRING_SECRET", padding: "x".repeat(500) });
+    expect(JSON.stringify(redactObject({ note: structured }, []))).not.toContain("STRING_SECRET");
+  });
   it("should detect runtime context from package metadata and handle read failures", (): void => {
     const firstDir = mkdtempSync(join(tmpdir(), "debugbundle-fastify-"));
     const secondDir = mkdtempSync(join(tmpdir(), "debugbundle-next-"));

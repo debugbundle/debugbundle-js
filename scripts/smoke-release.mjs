@@ -50,6 +50,7 @@ async function main() {
     installSmokeDependencies(tempDir);
     writeFileSync(path.join(tempDir, "smoke.mjs"), buildSmokeScript({ releaseVersion, serverProjectToken }));
     runCommand(process.execPath, [path.join(tempDir, "smoke.mjs")], { cwd: tempDir });
+    console.log("installed Node/Browser delivery and privacy canaries passed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -77,9 +78,10 @@ function installSmokeDependencies(tempDir) {
   const installArgs = ["install", "--prefix", tempDir, "--no-package-lock", "express@5.1.0"];
 
   if (mode === "packed") {
+    const localRedactionPackage = process.env.DEBUGBUNDLE_SMOKE_REDACTION_TARBALL?.trim();
     installArgs.push(
       `@debugbundle/shared-types@${sharedPackageVersion}`,
-      `@debugbundle/redaction@${sharedPackageVersion}`,
+      localRedactionPackage || `@debugbundle/redaction@${sharedPackageVersion}`,
       path.join(npmPackagesDir, `debugbundle-sdk-node-${releaseVersion}.tgz`),
       path.join(npmPackagesDir, `debugbundle-sdk-browser-${releaseVersion}.tgz`)
     );
@@ -138,6 +140,16 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 const releaseVersion = ${JSON.stringify(input.releaseVersion)};
 const serverProjectToken = ${JSON.stringify(input.serverProjectToken)};
 
+// The installed SDK handles application errors. A failing smoke assertion must
+// still terminate the test instead of becoming another captured SDK event.
+const failSmoke = (error) => {
+  console.error("installed_consumer_failed", error instanceof Error ? error.message : "unknown");
+  process.exit(1);
+};
+process.on("uncaughtExceptionMonitor", failSmoke);
+process.on("unhandledRejection", failSmoke);
+setTimeout(() => failSmoke(new Error("installed_consumer_timeout")), 30_000).unref();
+
 const ingestionRequests = [];
 const relayRequests = [];
 let sawNodeMessageEvent = false;
@@ -165,6 +177,7 @@ const ingestionServer = createHttpServer(async (request, response) => {
   }
 
   const rawBody = Buffer.concat(chunks).toString("utf8");
+  assert.doesNotMatch(rawBody, /PACKED_(?:SOURCE|HOOK)_SECRET/);
   const parsedBody = JSON.parse(rawBody);
   assert.equal(request.headers.authorization, \`Bearer \${serverProjectToken}\`);
   assert.ok(Array.isArray(parsedBody.events));
@@ -181,6 +194,7 @@ const ingestionServer = createHttpServer(async (request, response) => {
       assert.equal(event.service?.name, "smoke-api");
       assert.equal(event.service?.environment, "smoke-test");
       assert.equal(event.correlation?.trace_id, "trace-smoke-node-123");
+      assert.equal(event.context?.marker, "safe-hook-marker", "node_hook_marker_missing");
       sawNodeMessageEvent = true;
     }
 
@@ -246,7 +260,12 @@ nodeSdk.init({
   projectToken: serverProjectToken,
   service: "smoke-api",
   environment: "smoke-test",
-  endpoint: \`\${ingestionOrigin}/v1/events\`
+  endpoint: \`\${ingestionOrigin}/v1/events\`,
+  beforeSend(event) {
+    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET/);
+    event.context = { marker: "safe-hook-marker", password: "PACKED_HOOK_SECRET" };
+    return event;
+  }
 });
 
 const app = express();
@@ -254,7 +273,9 @@ app.use(express.json({ limit: "256kb" }));
 app.use(nodeSdk.express());
 
 app.get("/smoke-node", (_request, response) => {
-  nodeSdk.captureMessage("node smoke message", "error", { source: "smoke-route" });
+  nodeSdk.captureMessage("node smoke message", "error", {
+    source: "smoke-route", password: "PACKED_SOURCE_SECRET"
+  });
   response.status(200).json({ ok: true });
 });
 
@@ -365,8 +386,14 @@ browserSdk.init({
   captureClicks: false,
   captureRouteChanges: false,
   captureConsole: false,
-  flushInterval: 60_000
+  flushInterval: 60_000,
+  beforeSend(event) {
+    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET/);
+    event.context = { marker: "safe-hook-marker", password: "PACKED_HOOK_SECRET" };
+    return event;
+  }
 });
+browserSdk.setContext("password", "PACKED_SOURCE_SECRET");
 browserSdk.captureException(new Error("browser smoke exception"));
 const browserErrorHandler = windowListeners.get("error");
 assert.equal(typeof browserErrorHandler, "function");
@@ -392,6 +419,8 @@ nodeSdk.dispose();
 
 assert.equal(relayRequests.length, 1);
 const relayRequest = relayRequests[0];
+assert.doesNotMatch(JSON.stringify(relayRequest.body), /PACKED_(?:SOURCE|HOOK)_SECRET/);
+assert.equal(relayRequest.body.batch[0].context?.marker, "safe-hook-marker", "browser_hook_marker_missing");
 assert.equal(relayRequest.headers.authorization, undefined);
 assert.ok(Array.isArray(relayRequest.body.batch));
 assert.equal(relayRequest.body.batch.length, 2);

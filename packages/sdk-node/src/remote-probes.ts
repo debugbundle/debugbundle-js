@@ -1,6 +1,7 @@
 import {
   BALANCED_CAPTURE_POLICY,
   DEFAULT_PROBES_POLL_INTERVAL_MS,
+  type CaptureRequestInput,
   type CapturePolicy,
   type HttpMethod,
   type ImmediateClientErrorPathRule,
@@ -8,6 +9,30 @@ import {
   type RemoteProbeDirective
 } from "./types.js";
 import { parseRemoteCaptureRulesPayload } from "./capture-rules.js";
+import { resolveRequestTriggerDirectives } from "./trigger-token.js";
+
+export function findActiveRemoteProbeDirectives(input: {
+  snapshot: RemoteProbeConfigSnapshot;
+  request: CaptureRequestInput | undefined;
+  label: string;
+  service: string;
+  environment: string;
+  nowMs: number;
+}): RemoteProbeDirective[] {
+  const { snapshot, request, label, service, environment, nowMs } = input;
+  const matches = snapshot.probesEnabled && snapshot.remoteProbesEnabled
+    ? findMatchingRemoteProbeDirectives(snapshot.directives, label, service, environment, nowMs)
+    : [];
+  const requestDirectives = resolveRequestTriggerDirectives({
+    request,
+    triggerTokenKey: snapshot.triggerTokenKey,
+    nowMs
+  });
+  for (const directive of findMatchingRemoteProbeDirectives(requestDirectives, label, service, environment, nowMs)) {
+    if (!matches.some((existing) => existing.id === directive.id)) matches.push(directive);
+  }
+  return matches;
+}
 
 const VALID_CAPTURE_LOGS = new Set(["off", "error", "warning", "info"]);
 const VALID_CAPTURE_REQUEST_EVENTS = new Set(["off", "failures_only", "filtered", "all"]);

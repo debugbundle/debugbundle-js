@@ -88,6 +88,36 @@ afterEach((): void => {
 });
 
 describe("sdk-node", () => {
+  it("bounds repeated context retention and safely rejects invalid context keys", () => {
+    const { sdk } = createSdk();
+    expect(() => sdk.setContext(null as unknown as string, "ignored")).not.toThrow();
+    sdk.setContext("x".repeat(129), "ignored");
+    for (let i = 0; i < 600; i++) sdk.setContext(`field_${i}`, "safe");
+    const retained = (sdk as unknown as { contextFields: Record<string, unknown> }).contextFields;
+    expect(Object.keys(retained).length).toBeLessThanOrEqual(256);
+    expect(Object.keys(retained).some(key => key.length > 128)).toBe(false);
+    expect(JSON.stringify(retained).length).toBeLessThan(262_144);
+  });
+
+  it("protects the hook input and re-scrubs its result before buffering or transport", async () => {
+    const hookInputs: string[] = [];
+    const { sdk, transport } = createSdk({
+      redactFields: [],
+      beforeSend: (event) => {
+        hookInputs.push(JSON.stringify(event));
+        if (event.event_type !== "log_event") return event;
+        return { ...event, payload: { ...event.payload, message: "Bearer POST_HOOK_SECRET" } };
+      }
+    });
+    sdk.setContext("password", "PREBUFFER_SECRET");
+    sdk.captureMessage("Authorization: Bearer ORIGINAL_SECRET", "error");
+    expect(JSON.stringify((sdk as unknown as { contextFields: Record<string, unknown> }).contextFields)).not.toContain("PREBUFFER_SECRET");
+    await sdk.flush();
+    expect(hookInputs.join(" ")).not.toContain("ORIGINAL_SECRET");
+    expect(JSON.stringify(getTransportEvents(transport, 0))).not.toContain("POST_HOOK_SECRET");
+    expect(getTransportEvents(transport, 0)[0]).toMatchObject({ payload: { message: "Bearer [REDACTED]" } });
+  });
+
   it("should expose the universal sdk surface", (): void => {
     const sdk = createDebugBundleSdk();
     activeSdks.push(sdk);

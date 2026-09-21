@@ -200,6 +200,8 @@ pnpm smoke:packed
 - Duplicate event storms are suppressed locally.
 - Local-only mode writes event files atomically.
 
+Persistent context is sanitized as a complete snapshot, with at most 50 keys and 128 characters per key. Combined scanning is capped at 256 KiB; unsafe updates are withheld. Protocol credentials used for signed probe activation are read separately from captured telemetry.
+
 ## Documentation
 
 - Node.js SDK docs: <https://debugbundle.com/docs/sdks/node>

@@ -25,6 +25,7 @@ jobs:
 
       - name: Enable Corepack
         run: |
+          npm install --global corepack@0.34.1
           corepack enable
           corepack prepare pnpm@11.3.0 --activate
 
@@ -59,6 +60,7 @@ jobs:
 
       - name: Enable Corepack
         run: |
+          npm install --global corepack@0.34.1
           corepack enable
           corepack prepare pnpm@11.3.0 --activate
 

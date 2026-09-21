@@ -3,6 +3,35 @@ import { describe, expect, it, vi } from "vitest";
 import * as browserFixtures from "../../helpers/sdk-browser-fixtures.js";
 
 describe("sdk-browser capture", () => {
+  it("bounds repeated context retention and safely rejects invalid context keys", () => {
+    const { sdk } = browserFixtures.createSdk();
+    expect(() => sdk.setContext(null as unknown as string, "ignored")).not.toThrow();
+    sdk.setContext("x".repeat(129), "ignored");
+    for (let i = 0; i < 600; i++) sdk.setContext(`field_${i}`, "safe");
+    const retained = (sdk as unknown as { persistentContext: Record<string, unknown> }).persistentContext;
+    expect(Object.keys(retained).length).toBeLessThanOrEqual(256);
+    expect(Object.keys(retained).some(key => key.length > 128)).toBe(false);
+    expect(JSON.stringify(retained).length).toBeLessThan(262_144);
+  });
+
+  it("protects persistent context and re-scrubs hooks before transport", async () => {
+    const hookInputs: string[] = [];
+    const { sdk, transport } = browserFixtures.createSdk({
+      redactFields: [],
+      beforeSend: (event) => {
+        hookInputs.push(JSON.stringify(event));
+        if (event.event_type !== "log_event") return event;
+        return { ...event, payload: { ...event.payload, message: "Bearer POST_HOOK_SECRET" } };
+      }
+    });
+    sdk.setContext("password", "PREBUFFER_SECRET");
+    sdk.captureMessage("Authorization: Bearer ORIGINAL_SECRET", "error");
+    expect(JSON.stringify((sdk as unknown as { persistentContext: Record<string, unknown> }).persistentContext)).not.toContain("PREBUFFER_SECRET");
+    await sdk.flush();
+    expect(hookInputs.join(" ")).not.toContain("ORIGINAL_SECRET");
+    expect(JSON.stringify(browserFixtures.createTransportEvents(transport, 0))).not.toContain("POST_HOOK_SECRET");
+  });
+
   it("should allow beforeSend to mutate or drop browser events before transport", async (): Promise<void> => {
     const { sdk, transport } = browserFixtures.createSdk({
       beforeSend: (event) => {

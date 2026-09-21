@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 
-import { redact, type JsonObject, type JsonValue } from "@debugbundle/redaction";
+import { sanitizeTelemetry, type JsonObject, type JsonValue } from "@debugbundle/redaction";
 import type { DebugBundleTransport, DebugBundleTransportRequest, DebugBundleTransportResponse, RuntimeDetectionResult } from "./types.js";
 
 const MAX_SANITIZE_DEPTH = 8;
@@ -167,6 +167,9 @@ export function normalizeError(input: unknown): Error {
 }
 
 function truncateSanitizedString(value: string): string {
+  const protectedValue = sanitizeTelemetry(value);
+  if (!protectedValue.ok || typeof protectedValue.value !== "string") return TRUNCATED_MARKER;
+  value = protectedValue.value;
   if (value.length <= MAX_SANITIZE_STRING_LENGTH) {
     return value;
   }
@@ -216,9 +219,11 @@ function sanitizeUnknownInternal(value: unknown, seen: WeakSet<object>, depth: n
   }
 
   if (Array.isArray(value)) {
-    const sanitizedEntries = value
-      .slice(0, MAX_SANITIZE_ARRAY_ITEMS)
-      .map((entry) => sanitizeUnknownInternal(entry, seen, depth + 1));
+    const sanitizedEntries = Array.from({ length: Math.min(value.length, MAX_SANITIZE_ARRAY_ITEMS) }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      return descriptor !== undefined && "value" in descriptor
+        ? sanitizeUnknownInternal(descriptor.value, seen, depth + 1) : null;
+    });
 
     if (value.length > MAX_SANITIZE_ARRAY_ITEMS) {
       sanitizedEntries.push(TRUNCATED_MARKER);
@@ -234,9 +239,11 @@ function sanitizeUnknownInternal(value: unknown, seen: WeakSet<object>, depth: n
 
     seen.add(value);
     const output: JsonObject = {};
-    const entries = Object.entries(value).slice(0, MAX_SANITIZE_OBJECT_KEYS);
-    for (const [key, nestedValue] of entries) {
-      output[key] = sanitizeUnknownInternal(nestedValue, seen, depth + 1);
+    const keys = Object.keys(value).slice(0, MAX_SANITIZE_OBJECT_KEYS);
+    for (const key of keys) {
+      if (key.length > 128) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor !== undefined && "value" in descriptor) output[key] = sanitizeUnknownInternal(descriptor.value, seen, depth + 1);
     }
     seen.delete(value);
     return output;
@@ -281,16 +288,22 @@ export function sanitizeMetadataObject(metadata: Record<string, unknown> | undef
     return undefined;
   }
 
-  const sanitized = sanitizeUnknown(metadata);
-  if (sanitized === null || Array.isArray(sanitized) || typeof sanitized !== "object") {
+  const sanitized = sanitizeTelemetry(sanitizeUnknown(metadata));
+  if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
+      typeof sanitized.value !== "object") {
     return undefined;
   }
 
-  return sanitized;
+  return sanitized.value;
 }
 
 export function redactObject(value: unknown, sensitiveKeys: string[]): JsonObject {
-  return redact(ensureObject(value), { sensitiveKeys }).redacted;
+  const sanitized = sanitizeTelemetry(ensureObject(value), { additionalKeys: sensitiveKeys });
+  if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
+      typeof sanitized.value !== "object") {
+    throw new Error("privacy_sanitization_failed");
+  }
+  return sanitized.value;
 }
 
 export function extractHeaderValue(headers: Record<string, unknown> | undefined, headerName: string): string | null {
@@ -299,21 +312,26 @@ export function extractHeaderValue(headers: Record<string, unknown> | undefined,
   }
 
   const normalizedName = headerName.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
+  for (const key of Object.keys(headers)) {
     if (key.toLowerCase() !== normalizedName) {
       continue;
     }
-
-    const sanitized = sanitizeUnknown(value);
-    if (sanitized === null) {
-      return null;
+    const descriptor = Object.getOwnPropertyDescriptor(headers, key);
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.value === null) return null;
+    // This is a protocol read (including signed probe credentials), not telemetry.
+    // Preserve bounded strings here; captured header snapshots are protected separately.
+    const values: unknown[] = Array.isArray(descriptor.value) ? descriptor.value : [descriptor.value];
+    if (values.length > MAX_SANITIZE_ARRAY_ITEMS) return null;
+    const parts: string[] = [];
+    for (let index = 0; index < values.length; index++) {
+      const entry = Object.getOwnPropertyDescriptor(values, String(index));
+      if (entry === undefined || !("value" in entry)) return null;
+      const part = typeof entry.value === "string" ? entry.value : stringifyJsonValue(sanitizeUnknown(entry.value));
+      if (part.length > MAX_SANITIZE_STRING_LENGTH) return null;
+      parts.push(part);
     }
-
-    if (Array.isArray(sanitized)) {
-      return sanitized.map((entry) => stringifyJsonValue(entry)).join(",");
-    }
-
-    return stringifyJsonValue(sanitized);
+    const joined = parts.join(",");
+    return joined.length <= MAX_SANITIZE_STRING_LENGTH ? joined : null;
   }
 
   return null;

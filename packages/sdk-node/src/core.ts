@@ -1,11 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { sanitizeTelemetry } from "@debugbundle/redaction";
 
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { resolveDefaultNodeTransport } from "./file-transport.js";
+import { protectNodeEvent } from "./privacy.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
 import { createExpressMiddleware, createFastifyPlugin, createNextHandlerWrapper } from "./framework-integrations.js";
 import { decideIngestionAcknowledgement } from "./ingestion-acknowledgement.js";
-import { findMatchingRemoteProbeDirectives, parseRemoteProbeConfig } from "./remote-probes.js";
+import { findActiveRemoteProbeDirectives, parseRemoteProbeConfig } from "./remote-probes.js";
 import { shouldCaptureNodeRequestEvent } from "./request-policy.js";
 import {
   applyNodeBeforeSendEvent,
@@ -25,7 +27,6 @@ import {
   shouldCaptureNodeSample
 } from "./event-support.js";
 import { EventSuppressionTracker } from "./suppression.js";
-import { resolveRequestTriggerDirectives } from "./trigger-token.js";
 import {
   BALANCED_CAPTURE_POLICY,
   DEFAULT_BATCH_SIZE,
@@ -470,7 +471,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   public setContext(key: string, value: unknown): void {
-    if (key.length === 0) {
+    if (typeof key !== "string" || key.length === 0 || key.length > 128) {
       return;
     }
 
@@ -479,8 +480,15 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    const redacted = redactObject({ [key]: value }, config.redactFields);
-    this.contextFields[key] = redacted[key] ?? null;
+    try {
+      if (!Object.hasOwn(this.contextFields, key) && Object.keys(this.contextFields).length >= 50) return;
+      const result = sanitizeTelemetry({ ...this.contextFields, [key]: value }, {
+        additionalKeys: config.redactFields
+      });
+      if (result.ok && result.value !== null && !Array.isArray(result.value) && typeof result.value === "object") this.contextFields = redactObject(result.value, config.redactFields);
+    } catch {
+      // A failed mandatory scrub must not retain a raw context value.
+    }
   }
 
   public runWithRequestContext<Result>(request: CaptureRequestInput, callback: () => Result): Result {
@@ -752,8 +760,10 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private enqueueEvent(event: EventEnvelope): void {
+    const protectedInput = protectNodeEvent(event, this.config?.redactFields ?? []);
+    if (protectedInput === null) return;
     const beforeSendEvent = applyNodeBeforeSendEvent(
-      event,
+      protectedInput,
       this.config?.beforeSend,
       (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
     );
@@ -761,12 +771,16 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    const resolvedEvent = applyNodeCaptureRules(beforeSendEvent, this.remoteProbeConfig.captureRules);
+    const protectedResult = protectNodeEvent(beforeSendEvent, this.config?.redactFields ?? []);
+    if (protectedResult === null) return;
+    const resolvedEvent = applyNodeCaptureRules(protectedResult, this.remoteProbeConfig.captureRules);
     if (resolvedEvent === null) {
       return;
     }
 
-    event = resolvedEvent;
+    const finalEvent = protectNodeEvent(resolvedEvent, this.config?.redactFields ?? []);
+    if (finalEvent === null) return;
+    event = finalEvent;
     const suppressionKey = buildNodeSuppressionKey(event);
     if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
       this.scheduleFlush();
@@ -782,6 +796,9 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
+    const protectedInput = protectNodeEvent(event, config.redactFields);
+    if (protectedInput === null) return;
+    event = protectedInput;
     if (applyBeforeSend) {
       const beforeSendEvent = applyNodeBeforeSendEvent(
         event,
@@ -792,7 +809,9 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         return;
       }
 
-      event = beforeSendEvent;
+      const protectedResult = protectNodeEvent(beforeSendEvent, config.redactFields);
+      if (protectedResult === null) return;
+      event = protectedResult;
     }
 
     this.buffer.push(event);
@@ -949,38 +968,15 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   private getMatchingRemoteProbeDirectives(label: string, nowMs: number): RemoteProbeDirective[] {
     const config = this.config;
-    if (config === null) {
-      return [];
-    }
-
-    const matches: RemoteProbeDirective[] = [];
-
+    if (config === null) return [];
     if (this.remoteProbeConfig.probesEnabled && this.remoteProbeConfig.remoteProbesEnabled) {
       this.pruneExpiredRemoteProbeDirectives(nowMs);
-      matches.push(
-        ...findMatchingRemoteProbeDirectives(
-          this.remoteProbeConfig.directives,
-          label,
-          config.service,
-          config.environment,
-          nowMs
-        )
-      );
     }
-
-    const request = this.requestContextStorage.getStore()?.request;
-    const requestDirectives = resolveRequestTriggerDirectives({
-      request,
-      triggerTokenKey: this.remoteProbeConfig.triggerTokenKey,
-      nowMs
+    return findActiveRemoteProbeDirectives({
+      snapshot: this.remoteProbeConfig,
+      request: this.requestContextStorage.getStore()?.request,
+      label, service: config.service, environment: config.environment, nowMs
     });
-    for (const directive of findMatchingRemoteProbeDirectives(requestDirectives, label, config.service, config.environment, nowMs)) {
-      if (!matches.some((existing) => existing.id === directive.id)) {
-        matches.push(directive);
-      }
-    }
-
-    return matches;
   }
 
   private pruneExpiredRemoteProbeDirectives(nowMs: number): void {

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-21
+
+### Security
+
+- Enforce the mandatory `telemetry-privacy-v1` baseline before capture retention, after `beforeSend`, before transport, and across the browser relay so sensitive values cannot bypass local scrubbing through custom hooks or relay ingestion.
+
+### Changed
+
+- Treat existing `redactFields` configuration as additive to the mandatory privacy baseline. Applications that previously relied on those fields replacing built-in rules should review their configuration.
+- Align the Node and Browser SDKs with `@debugbundle/shared-types@2.0.0` and `@debugbundle/redaction@2.0.0`; the four packages form one coordinated JavaScript privacy release.
+
 ## [1.8.0] - 2026-09-16
 
 ### Fixed

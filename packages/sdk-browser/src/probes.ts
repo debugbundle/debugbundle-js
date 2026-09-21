@@ -1,4 +1,4 @@
-import { redact, type JsonValue } from "@debugbundle/redaction";
+import { sanitizeTelemetry, type JsonValue } from "@debugbundle/redaction";
 
 import { parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { createInitialRemoteProbeState } from "./capture-helpers.js";
@@ -64,10 +64,9 @@ export class BrowserProbeController {
     }
 
     try {
-      const redacted = redact(normalizeProbeInput(data), {
-        sensitiveKeys: config.redactFields
-      }).redacted;
-      const probeData = normalizeUnknownRecord(redacted);
+      const protectedData = sanitizeTelemetry(normalizeProbeInput(data), { additionalKeys: config.redactFields });
+      if (!protectedData.ok) return;
+      const probeData = normalizeUnknownRecord(protectedData.value);
       this.buffer(normalizedLabel, probeData);
 
       const matchingDirectives = this.getMatchingDirectives(normalizedLabel, Date.now());
