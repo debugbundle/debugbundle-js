@@ -3,14 +3,15 @@ import { sanitizeTelemetry } from "@debugbundle/redaction";
 
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { resolveDefaultNodeTransport } from "./file-transport.js";
+import { BoundedEventBuffer } from "./buffer-admission.js";
+import { finalizeNodeBatch } from "./delivery-hooks.js";
 import { protectNodeEvent } from "./privacy.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
 import { createExpressMiddleware, createFastifyPlugin, createNextHandlerWrapper } from "./framework-integrations.js";
 import { decideIngestionAcknowledgement } from "./ingestion-acknowledgement.js";
-import { findActiveRemoteProbeDirectives, parseRemoteProbeConfig } from "./remote-probes.js";
+import { parseRemoteProbeConfig } from "./remote-probes.js";
 import { shouldCaptureNodeRequestEvent } from "./request-policy.js";
 import {
-  applyNodeBeforeSendEvent,
   buildInternalSdkPaths,
   applyNodeCaptureRules,
   buildNodeCorrelation,
@@ -20,10 +21,16 @@ import {
   buildNodeServiceDescriptor,
   buildNodeSuppressionKey,
   buildNodeSuppressionAggregateEvents,
+  buildNodeQueuePressureEvent,
+  buildNodeRequestEvent,
   consumeNodeProbeData,
-  effectiveNodeLogThreshold,
+  emitNodeDiagnostic,
+  matchNodeProbeDirectives,
+  normalizeLogLevel,
+  pruneNodeProbeDirectives,
   formatNodeConsoleMessage,
   normalizeNodeRequestPath,
+  shouldCaptureNodeLog,
   shouldCaptureNodeSample
 } from "./event-support.js";
 import { EventSuppressionTracker } from "./suppression.js";
@@ -32,13 +39,12 @@ import {
   DEFAULT_BATCH_SIZE,
   DEFAULT_ENDPOINT,
   DEFAULT_FLUSH_INTERVAL_MS,
-  DEFAULT_LOG_LEVEL,
   DEFAULT_MAX_BUFFERED_EVENTS,
+  DEFAULT_MAX_BUFFERED_BYTES,
   DEFAULT_MAX_PROBE_ENTRIES,
   DEFAULT_MAX_PROBE_LABELS,
   DEFAULT_PROBES_POLL_INTERVAL_MS,
   DEFAULT_REQUEST_TIMEOUT_MS,
-  LOG_LEVEL_ORDER,
   MINIMAL_CAPTURE_POLICY,
   SDK_NAME,
   SDK_SCHEMA_VERSION,
@@ -70,20 +76,16 @@ import {
   normalizeFiniteNumber,
   normalizeSampleRate,
   redactObject,
-  sanitizeMetadataObject,
 } from "./utils.js";
-
-function normalizeLogLevel(level: string | undefined): LogLevel {
-  if (level === undefined) {
-    return DEFAULT_LOG_LEVEL;
-  }
-
-  return level in LOG_LEVEL_ORDER ? (level as LogLevel) : DEFAULT_LOG_LEVEL;
-}
 
 export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   private config: ActiveConfig | null = null;
-  private buffer: EventEnvelope[] = [];
+  private readonly boundedBuffer = new BoundedEventBuffer();
+  private buffer: EventEnvelope[] = this.boundedBuffer.events;
+  private finalizedEvents = new WeakSet<EventEnvelope>();
+  private inFlightCount = 0;
+  private inFlightBytes = 0;
+  private generation = 0;
   private nextRetryAt: number | null = null;
   private _lastEventAt: number | null = null;
   private _consecutiveFailures = 0;
@@ -178,6 +180,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       endpoint: config.endpoint ?? DEFAULT_ENDPOINT,
       logLevel: normalizeLogLevel(config.logLevel),
       maxBufferedEvents: normalizeFiniteNumber(config.maxBufferedEvents, DEFAULT_MAX_BUFFERED_EVENTS, 1),
+      maxBufferedBytes: normalizeFiniteNumber(config.maxBufferedBytes, DEFAULT_MAX_BUFFERED_BYTES, 1),
       probesPollInterval: normalizeFiniteNumber(config.probesPollInterval, DEFAULT_PROBES_POLL_INTERVAL_MS, 1),
       maxProbeLabels: normalizeFiniteNumber(config.maxProbeLabels, DEFAULT_MAX_PROBE_LABELS, 1),
       maxProbeEntriesPerLabel: normalizeFiniteNumber(config.maxProbeEntriesPerLabel, DEFAULT_MAX_PROBE_ENTRIES, 1),
@@ -218,6 +221,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   public dispose(): void {
+    this.generation++;
     this.clearFlushTimer();
     this.clearRemoteProbePollTimer();
     this.restoreConsole();
@@ -250,7 +254,10 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     this.loggerRestorers = [];
     this.attachedLoggers = new WeakSet<object>();
     this.config = null;
-    this.buffer = [];
+    this.boundedBuffer.clear();
+    this.finalizedEvents = new WeakSet<EventEnvelope>();
+    this.inFlightCount = 0;
+    this.inFlightBytes = 0;
     this.nextRetryAt = null;
     this._lastEventAt = null;
     this._consecutiveFailures = 0;
@@ -323,7 +330,9 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureException(error: unknown, context: CaptureExceptionContext = {}): void {
     const config = this.config;
-    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
+    if (config === null || !this.boundedBuffer.canAdmit("backend_exception", undefined,
+      config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes)
+      || (config.beforeSend === undefined && !shouldCaptureNodeSample(config.sampleRate))) {
       return;
     }
 
@@ -379,19 +388,14 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureLog(message: string, level: LogLevel, context: CaptureLogContext = {}): void {
     const config = this.config;
-    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
+    if (config === null) {
       return;
     }
 
-    const policy = this.remoteProbeConfig.capturePolicy;
-    if (policy.captureLogs === "off") {
-      return;
-    }
-
-    const effectiveThreshold = effectiveNodeLogThreshold(config.logLevel, policy.captureLogs as LogLevel);
-    if (LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[effectiveThreshold]) {
-      return;
-    }
+    if (!shouldCaptureNodeLog(config, this.remoteProbeConfig.capturePolicy, level)) return;
+    if (!this.boundedBuffer.canAdmit("log_event", level,
+      config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes)) return;
+    if ((config.beforeSend === undefined && !shouldCaptureNodeSample(config.sampleRate))) return;
 
     try {
       const event = createEventEnvelope({
@@ -424,38 +428,21 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
   public captureRequest(request: CaptureRequestInput, response: CaptureResponseInput, context: CaptureRequestContext = {}): void {
     const config = this.config;
-    if (config === null || !shouldCaptureNodeSample(config.sampleRate)) {
-      return;
-    }
-
-    if (!shouldCaptureNodeRequestEvent(this.remoteProbeConfig.capturePolicy, request, response)) {
-      return;
-    }
+    if (config === null) return;
 
     try {
+      if (!shouldCaptureNodeRequestEvent(this.remoteProbeConfig.capturePolicy, request, response)) return;
+      const responseStatus = response.statusCode ?? response.status;
+      if (!this.boundedBuffer.canAdmit("request_event", undefined,
+        config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes, responseStatus)
+        || (config.beforeSend === undefined && !shouldCaptureNodeSample(config.sampleRate))) return;
+
       const requestSnapshot = buildNodeRequestSnapshot(request, config.redactFields);
       const responseSnapshot = buildNodeResponseSnapshot(response, config.redactFields);
-      const event = createEventEnvelope({
-        schema_version: SDK_SCHEMA_VERSION,
-        event_type: "request_event",
-        project_token: config.projectToken,
-        sdk_name: SDK_NAME,
-        sdk_version: SDK_VERSION,
-        service: buildNodeServiceDescriptor(config),
-        occurred_at: new Date().toISOString(),
+      const event = buildNodeRequestEvent({
+        config, requestSnapshot, responseSnapshot,
         correlation: buildNodeCorrelation(context.correlation, request, this.contextFields),
-        payload: {
-          method: requestSnapshot.method,
-          path: requestSnapshot.path,
-          query: requestSnapshot.query,
-          headers: requestSnapshot.headers,
-          ...(requestSnapshot.body === null ? {} : { body: requestSnapshot.body }),
-          response_status: responseSnapshot.status_code,
-          duration_ms: context.durationMs ?? response.durationMs ?? 0,
-          ...(requestSnapshot.route_template === null ? {} : { route_template: requestSnapshot.route_template }),
-          ...(responseSnapshot.headers !== undefined ? { response_headers: responseSnapshot.headers } : {}),
-          ...(responseSnapshot.body !== undefined ? { response_body: responseSnapshot.body } : {})
-        }
+        durationMs: context.durationMs ?? response.durationMs ?? 0
       });
 
       this.enqueueEvent(event);
@@ -652,20 +639,26 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     }
 
     this.clearFlushTimer();
-    this.flushPromise = this.flushInternal();
+    const generation = this.generation;
+    // Establish single-flight ownership before any callback/transport executes,
+    // including when batch-full capture or a hook reenters flush().
+    const flushPromise = Promise.resolve().then(() => this.flushInternal(generation));
+    this.flushPromise = flushPromise;
 
     try {
-      await this.flushPromise;
+      await flushPromise;
     } finally {
-      this.flushPromise = null;
-      if (this.buffer.length > 0) {
+      if (this.generation === generation && this.flushPromise === flushPromise) {
+        this.flushPromise = null;
+      }
+      if (this.generation === generation && this.buffer.length > 0) {
         const retryDelay = this.nextRetryAt === null ? undefined : Math.max(0, this.nextRetryAt - Date.now());
         this.scheduleFlush(retryDelay);
       }
     }
   }
 
-  private async flushInternal(): Promise<void> {
+  private async flushInternal(generation: number): Promise<void> {
     const config = this.config;
     if (config === null) {
       return;
@@ -681,10 +674,45 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       }
     }
 
-    while (this.buffer.length > 0) {
-      const batch = this.buffer.splice(0, config.batchSize);
+    let pressureAttempted = false;
+    while (this.generation === generation) {
+      if (this.buffer.length === 0) {
+        if (pressureAttempted) return;
+        pressureAttempted = true;
+        for (const snapshot of this.boundedBuffer.pressureSnapshots()) {
+          const aggregate = buildNodeQueuePressureEvent(snapshot, config);
+          if (this.enqueueInternalEvent(aggregate, false, false)) {
+            this.boundedBuffer.acknowledgePressure(snapshot.kind, snapshot.count);
+            break;
+          }
+        }
+        if (this.buffer.length === 0) return;
+      }
+      const { events: batch, bytes } = this.boundedBuffer.takeBatch(config.batchSize);
+      let batchBytes = bytes;
+      this.inFlightCount += batch.length;
+      this.inFlightBytes += batchBytes;
+      const restoreBatch = (events: EventEnvelope[]): void => {
+        this.boundedBuffer.restore(events, config.maxBufferedEvents - this.inFlightCount + batch.length,
+          config.maxBufferedBytes - this.inFlightBytes + batchBytes);
+      };
 
       try {
+        finalizeNodeBatch({ batch, buffer: this.boundedBuffer, config, remote: this.remoteProbeConfig,
+          finalized: this.finalizedEvents, suppression: this.suppressionTracker, current: () => this.generation === generation,
+          ownership: () => ({ count: this.inFlightCount, bytes: this.inFlightBytes }),
+          adjustOwnership: (count, delta) => {
+            this.inFlightCount += count;
+            this.inFlightBytes += delta;
+            batchBytes += delta;
+          },
+          diagnostic: (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
+        });
+        if (this.generation !== generation) return;
+        for (const aggregate of buildNodeSuppressionAggregateEvents(this.suppressionTracker, config)) {
+          this.enqueueInternalEvent(aggregate);
+        }
+        if (batch.length === 0) continue;
         const response = await config.transport({
           endpoint: config.endpoint,
           headers: {
@@ -694,11 +722,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
           events: batch,
           timeout_ms: config.requestTimeoutMs
         });
+        if (this.generation !== generation) return;
 
         if (response.status >= 200 && response.status < 300) {
           const acknowledgement = decideIngestionAcknowledgement(response.body, batch.length);
           if (acknowledgement.kind === "protocol_failure") {
-            this.buffer = [...batch, ...this.buffer];
+            restoreBatch(batch);
             this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
             this._consecutiveFailures++;
             this.emitDiagnostic(
@@ -732,7 +761,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
             this._lastEventAt = Date.now();
           }
           if (retryableEvents.length > 0) {
-            this.buffer = [...retryableEvents, ...this.buffer];
+            restoreBatch(retryableEvents);
             this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
             this._consecutiveFailures++;
             return;
@@ -742,19 +771,25 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
           continue;
         }
 
-        this.buffer = [...batch, ...this.buffer];
+        restoreBatch(batch);
         this._consecutiveFailures++;
         if (response.status === 429) {
           this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
         }
         return;
       } catch (caught) {
-        this.buffer = [...batch, ...this.buffer];
+        if (this.generation !== generation) return;
+        restoreBatch(batch);
         this._consecutiveFailures++;
         this.emitDiagnostic("flush_failed", "sdk-node failed to flush buffered events", {
           error: ensureObject(caught)
         });
         return;
+      } finally {
+        if (this.generation === generation) {
+          this.inFlightCount -= batch.length;
+          this.inFlightBytes -= batchBytes;
+        }
       }
     }
   }
@@ -762,18 +797,11 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   private enqueueEvent(event: EventEnvelope): void {
     const protectedInput = protectNodeEvent(event, this.config?.redactFields ?? []);
     if (protectedInput === null) return;
-    const beforeSendEvent = applyNodeBeforeSendEvent(
-      protectedInput,
-      this.config?.beforeSend,
-      (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
-    );
-    if (beforeSendEvent === null) {
+    if (this.config?.beforeSend !== undefined) {
+      this.enqueueInternalEvent(protectedInput);
       return;
     }
-
-    const protectedResult = protectNodeEvent(beforeSendEvent, this.config?.redactFields ?? []);
-    if (protectedResult === null) return;
-    const resolvedEvent = applyNodeCaptureRules(protectedResult, this.remoteProbeConfig.captureRules);
+    const resolvedEvent = applyNodeCaptureRules(protectedInput, this.remoteProbeConfig.captureRules);
     if (resolvedEvent === null) {
       return;
     }
@@ -787,44 +815,31 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return;
     }
 
-    this.enqueueInternalEvent(event, false);
+    this.enqueueInternalEvent(event);
   }
 
-  private enqueueInternalEvent(event: EventEnvelope, applyBeforeSend = true): void {
+  private enqueueInternalEvent(event: EventEnvelope, applyBeforeSend = true, recordPressure = true): boolean {
     const config = this.config;
     if (config === null) {
-      return;
+      return false;
     }
 
     const protectedInput = protectNodeEvent(event, config.redactFields);
-    if (protectedInput === null) return;
+    if (protectedInput === null) return false;
     event = protectedInput;
-    if (applyBeforeSend) {
-      const beforeSendEvent = applyNodeBeforeSendEvent(
-        event,
-        config.beforeSend,
-        (code, message, metadata) => this.emitDiagnostic(code, message, metadata)
-      );
-      if (beforeSendEvent === null) {
-        return;
-      }
+    if (!applyBeforeSend || config.beforeSend === undefined) this.finalizedEvents.add(event);
 
-      const protectedResult = protectNodeEvent(beforeSendEvent, config.redactFields);
-      if (protectedResult === null) return;
-      event = protectedResult;
-    }
-
-    this.buffer.push(event);
-    while (this.buffer.length > config.maxBufferedEvents) {
-      this.buffer.shift();
-    }
+    const dropped = this.boundedBuffer.admit(event, Math.max(0, config.maxBufferedEvents - this.inFlightCount),
+      Math.max(0, config.maxBufferedBytes - this.inFlightBytes), true, recordPressure);
+    if (dropped.includes(event)) return false;
 
     if (this.buffer.length >= config.batchSize && (this.nextRetryAt === null || Date.now() >= this.nextRetryAt)) {
       void this.flush();
-      return;
+      return true;
     }
 
     this.scheduleFlush();
+    return true;
   }
 
   private scheduleFlush(delayMs?: number): void {
@@ -867,16 +882,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private emitDiagnostic(code: string, message: string, metadata?: Record<string, unknown>): void {
-    try {
-      const sanitizedMetadata = sanitizeMetadataObject(metadata);
-      this.config?.onDiagnostic?.({
-        code,
-        message,
-        ...(sanitizedMetadata === undefined ? {} : { metadata: sanitizedMetadata })
-      });
-    } catch {
-      // Diagnostics must never destabilize the host.
-    }
+    emitNodeDiagnostic(this.config, code, message, metadata);
   }
 
   private async refreshRemoteProbeConfig(): Promise<void> {
@@ -884,6 +890,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     if (config === null) {
       return;
     }
+    const generation = this.generation;
 
     const configEndpoint = buildSdkConfigEndpoint(config.endpoint);
 
@@ -902,6 +909,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         },
         config.requestTimeoutMs
       );
+      if (this.generation !== generation) return;
 
       const nextEtag = response.headers.get("etag");
       if (nextEtag !== null) {
@@ -909,7 +917,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       }
 
       if (response.status === 304) {
-        this.pruneExpiredRemoteProbeDirectives(Date.now());
+        this.remoteProbeConfig = pruneNodeProbeDirectives(this.remoteProbeConfig, Date.now());
         this.scheduleRemoteProbePoll(this.remoteProbeConfig.pollIntervalMs);
         return;
       }
@@ -920,7 +928,9 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         return;
       }
 
-      const parsed = parseRemoteProbeConfig(await response.json(), config.probesPollInterval, Date.now());
+      const body: unknown = await response.json();
+      if (this.generation !== generation) return;
+      const parsed = parseRemoteProbeConfig(body, config.probesPollInterval, Date.now());
       if (parsed === null) {
         this.emitDiagnostic("remote_probe_config_invalid", "sdk-node received an invalid remote probe config payload");
         this.applyMinimalPolicyFallbackIfNeeded();
@@ -936,6 +946,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         this.clearRemoteProbePollTimer();
       }
     } catch (caught) {
+      if (this.generation !== generation) return;
       this.emitDiagnostic("remote_probe_config_failed", "sdk-node failed to refresh remote probe config", {
         error: ensureObject(caught)
       });
@@ -969,22 +980,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   private getMatchingRemoteProbeDirectives(label: string, nowMs: number): RemoteProbeDirective[] {
     const config = this.config;
     if (config === null) return [];
-    if (this.remoteProbeConfig.probesEnabled && this.remoteProbeConfig.remoteProbesEnabled) {
-      this.pruneExpiredRemoteProbeDirectives(nowMs);
-    }
-    return findActiveRemoteProbeDirectives({
-      snapshot: this.remoteProbeConfig,
-      request: this.requestContextStorage.getStore()?.request,
-      label, service: config.service, environment: config.environment, nowMs
-    });
+    const result = matchNodeProbeDirectives({ snapshot: this.remoteProbeConfig,
+      request: this.requestContextStorage.getStore()?.request, label, config, nowMs });
+    this.remoteProbeConfig = result.snapshot;
+    return result.directives;
   }
 
-  private pruneExpiredRemoteProbeDirectives(nowMs: number): void {
-    this.remoteProbeConfig = {
-      ...this.remoteProbeConfig,
-      directives: this.remoteProbeConfig.directives.filter((directive) => Date.parse(directive.expiresAt) > nowMs)
-    };
-  }
 }
 
 export function createDebugBundleSdk(): DebugBundleNodeSdk {

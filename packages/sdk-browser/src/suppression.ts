@@ -1,9 +1,14 @@
+import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { SDK_NAME, SDK_SCHEMA_VERSION, SDK_VERSION, type ActiveConfig } from "./types.js";
+
 const DUPLICATE_WINDOW_MS = 30_000;
 const LOOP_WINDOW_MS = 2_000;
 const LOOP_THRESHOLD = 10;
 const LOOP_RESET_AFTER_MS = 60_000;
 const LOOP_CHECKPOINT_MS = 30_000;
 const MAX_NORMAL_EVENTS_PER_WINDOW = 3;
+const MAX_TRACKED_FINGERPRINTS = 2_048;
+const MAX_DETAILED_AGGREGATES = 64;
 
 interface SuppressionState {
   windowStartedAtMs: number;
@@ -24,6 +29,33 @@ export interface SuppressionAggregate {
   firstSeen: string;
   lastSeen: string;
   windowSeconds: number;
+}
+
+export function createBrowserSuppressionEvent(
+  config: ActiveConfig,
+  aggregate: SuppressionAggregate
+): EventEnvelope {
+  return createEventEnvelope({
+    schema_version: SDK_SCHEMA_VERSION,
+    event_type: "error_suppressed",
+    ...(config.projectToken === null ? {} : { project_token: config.projectToken }),
+    sdk_name: SDK_NAME,
+    sdk_version: SDK_VERSION,
+    service: {
+      name: config.service,
+      runtime: "browser",
+      framework: null,
+      environment: config.environment
+    },
+    occurred_at: aggregate.lastSeen,
+    payload: {
+      fingerprint: aggregate.fingerprint,
+      suppressed_count: aggregate.suppressedCount,
+      window_seconds: aggregate.windowSeconds,
+      first_seen: aggregate.firstSeen,
+      last_seen: aggregate.lastSeen
+    }
+  });
 }
 
 function createState(nowMs: number): SuppressionState {
@@ -67,12 +99,27 @@ function buildFingerprint(key: string): string {
 
 export class EventSuppressionTracker {
   private readonly states = new Map<string, SuppressionState>();
+  private overflowCount = 0;
+  private overflowFirstAtMs: number | null = null;
+  private overflowLastAtMs: number | null = null;
+
+  public get trackedCount(): number { return this.states.size; }
 
   public reset(): void {
     this.states.clear();
+    this.overflowCount = 0;
+    this.overflowFirstAtMs = null;
+    this.overflowLastAtMs = null;
   }
 
   public shouldCapture(key: string, nowMs: number): boolean {
+    if (!this.states.has(key) && this.states.size >= MAX_TRACKED_FINGERPRINTS) {
+      const oldest = this.states.entries().next().value;
+      if (oldest !== undefined) {
+        this.addOverflow(oldest[1]);
+        this.states.delete(oldest[0]);
+      }
+    }
     const state = this.states.get(key) ?? createState(nowMs);
     this.states.set(key, state);
 
@@ -123,13 +170,17 @@ export class EventSuppressionTracker {
         continue;
       }
 
-      aggregates.push({
-        fingerprint: buildFingerprint(key),
-        suppressedCount: state.pendingSuppressedCount,
-        firstSeen: new Date(state.pendingFirstSeenAtMs).toISOString(),
-        lastSeen: new Date(state.pendingLastSeenAtMs).toISOString(),
-        windowSeconds: DUPLICATE_WINDOW_MS / 1_000
-      });
+      if (aggregates.length < MAX_DETAILED_AGGREGATES) {
+        aggregates.push({
+          fingerprint: buildFingerprint(key),
+          suppressedCount: state.pendingSuppressedCount,
+          firstSeen: new Date(state.pendingFirstSeenAtMs).toISOString(),
+          lastSeen: new Date(state.pendingLastSeenAtMs).toISOString(),
+          windowSeconds: DUPLICATE_WINDOW_MS / 1_000
+        });
+      } else {
+        this.addOverflow(state);
+      }
 
       state.pendingSuppressedCount = 0;
       state.pendingFirstSeenAtMs = null;
@@ -141,6 +192,30 @@ export class EventSuppressionTracker {
       }
     }
 
+    if (this.overflowCount > 0 && this.overflowFirstAtMs !== null && this.overflowLastAtMs !== null) {
+      aggregates.push({
+        fingerprint: buildFingerprint("suppression_state_pressure"),
+        suppressedCount: this.overflowCount,
+        firstSeen: new Date(this.overflowFirstAtMs).toISOString(),
+        lastSeen: new Date(this.overflowLastAtMs).toISOString(),
+        windowSeconds: DUPLICATE_WINDOW_MS / 1_000
+      });
+      this.overflowCount = 0;
+      this.overflowFirstAtMs = null;
+      this.overflowLastAtMs = null;
+    }
+
     return aggregates;
+  }
+
+  private addOverflow(state: SuppressionState): void {
+    if (state.pendingSuppressedCount === 0 || state.pendingFirstSeenAtMs === null || state.pendingLastSeenAtMs === null) return;
+    this.overflowCount = Math.min(Number.MAX_SAFE_INTEGER, this.overflowCount + state.pendingSuppressedCount);
+    this.overflowFirstAtMs = this.overflowFirstAtMs === null
+      ? state.pendingFirstSeenAtMs
+      : Math.min(this.overflowFirstAtMs, state.pendingFirstSeenAtMs);
+    this.overflowLastAtMs = this.overflowLastAtMs === null
+      ? state.pendingLastSeenAtMs
+      : Math.max(this.overflowLastAtMs, state.pendingLastSeenAtMs);
   }
 }

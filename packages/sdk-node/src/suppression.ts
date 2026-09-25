@@ -6,6 +6,8 @@ const LOOP_THRESHOLD = 10;
 const LOOP_RESET_AFTER_MS = 60_000;
 const LOOP_CHECKPOINT_MS = 30_000;
 const MAX_NORMAL_EVENTS_PER_WINDOW = 3;
+const MAX_TRACKED_FINGERPRINTS = 2_048;
+const MAX_DETAILED_AGGREGATES = 64;
 
 interface SuppressionState {
   windowStartedAtMs: number;
@@ -59,12 +61,27 @@ function markSuppressed(state: SuppressionState, nowMs: number): void {
 
 export class EventSuppressionTracker {
   private readonly states = new Map<string, SuppressionState>();
+  private overflowCount = 0;
+  private overflowFirstAtMs: number | null = null;
+  private overflowLastAtMs: number | null = null;
+
+  public get trackedCount(): number { return this.states.size; }
 
   public reset(): void {
     this.states.clear();
+    this.overflowCount = 0;
+    this.overflowFirstAtMs = null;
+    this.overflowLastAtMs = null;
   }
 
   public shouldCapture(key: string, nowMs: number): boolean {
+    if (!this.states.has(key) && this.states.size >= MAX_TRACKED_FINGERPRINTS) {
+      const oldest = this.states.entries().next().value;
+      if (oldest !== undefined) {
+        this.addOverflow(oldest[1]);
+        this.states.delete(oldest[0]);
+      }
+    }
     const state = this.states.get(key) ?? createState(nowMs);
     this.states.set(key, state);
 
@@ -115,13 +132,17 @@ export class EventSuppressionTracker {
         continue;
       }
 
-      aggregates.push({
-        fingerprint: createHash("sha256").update(key).digest("hex"),
-        suppressedCount: state.pendingSuppressedCount,
-        firstSeen: new Date(state.pendingFirstSeenAtMs).toISOString(),
-        lastSeen: new Date(state.pendingLastSeenAtMs).toISOString(),
-        windowSeconds: DUPLICATE_WINDOW_MS / 1_000
-      });
+      if (aggregates.length < MAX_DETAILED_AGGREGATES) {
+        aggregates.push({
+          fingerprint: createHash("sha256").update(key).digest("hex"),
+          suppressedCount: state.pendingSuppressedCount,
+          firstSeen: new Date(state.pendingFirstSeenAtMs).toISOString(),
+          lastSeen: new Date(state.pendingLastSeenAtMs).toISOString(),
+          windowSeconds: DUPLICATE_WINDOW_MS / 1_000
+        });
+      } else {
+        this.addOverflow(state);
+      }
 
       state.pendingSuppressedCount = 0;
       state.pendingFirstSeenAtMs = null;
@@ -133,6 +154,30 @@ export class EventSuppressionTracker {
       }
     }
 
+    if (this.overflowCount > 0 && this.overflowFirstAtMs !== null && this.overflowLastAtMs !== null) {
+      aggregates.push({
+        fingerprint: createHash("sha256").update("suppression_state_pressure").digest("hex"),
+        suppressedCount: this.overflowCount,
+        firstSeen: new Date(this.overflowFirstAtMs).toISOString(),
+        lastSeen: new Date(this.overflowLastAtMs).toISOString(),
+        windowSeconds: DUPLICATE_WINDOW_MS / 1_000
+      });
+      this.overflowCount = 0;
+      this.overflowFirstAtMs = null;
+      this.overflowLastAtMs = null;
+    }
+
     return aggregates;
+  }
+
+  private addOverflow(state: SuppressionState): void {
+    if (state.pendingSuppressedCount === 0 || state.pendingFirstSeenAtMs === null || state.pendingLastSeenAtMs === null) return;
+    this.overflowCount = Math.min(Number.MAX_SAFE_INTEGER, this.overflowCount + state.pendingSuppressedCount);
+    this.overflowFirstAtMs = this.overflowFirstAtMs === null
+      ? state.pendingFirstSeenAtMs
+      : Math.min(this.overflowFirstAtMs, state.pendingFirstSeenAtMs);
+    this.overflowLastAtMs = this.overflowLastAtMs === null
+      ? state.pendingLastSeenAtMs
+      : Math.max(this.overflowLastAtMs, state.pendingLastSeenAtMs);
   }
 }

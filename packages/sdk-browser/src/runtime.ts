@@ -9,7 +9,6 @@ import {
   type BrowserCryptoSource,
   type BrowserDocumentSource,
   type BrowserEventSource,
-  type BrowserFetch,
   type BrowserHistorySource,
   type BrowserHttpMethod,
   type BrowserImmediateClientErrorPathRule,
@@ -28,13 +27,16 @@ import {
   type BrowserXmlHttpRequestConstructor,
   DEFAULT_ENDPOINT,
   DEFAULT_RELAY_ENDPOINT,
-  type DebugBundleBrowserTransport,
-  type DebugBundleBrowserTransportEvent,
-  type DebugBundleBrowserTransportResponse,
   type NormalizedBrowserNetworkFilter
 } from "./types.js";
 
 import { hasErrorDetails, readNativeField, readNativeFields } from "./native-fields.js";
+export {
+  buildBrowserTransportRequestBody,
+  createFetchTransport,
+  getFetchSource,
+  parseRetryAfter
+} from "./fetch-transport.js";
 
 const DEFAULT_REQUEST_FAILURE_PRESET: BrowserCapturePreset = "balanced";
 const DEFAULT_REQUEST_CAPTURE_EVENTS: BrowserCaptureRequestEvents = "failures_only";
@@ -104,11 +106,6 @@ export function getScreenSource(): BrowserScreenSource | null {
 export function getMatchMedia(): ((query: string) => { matches: boolean }) | null {
   const candidate = (globalThis as Record<string, unknown>)["matchMedia"];
   return typeof candidate === "function" ? (candidate as (query: string) => { matches: boolean }) : null;
-}
-
-export function getFetchSource(): BrowserFetch | null {
-  const candidate = (globalThis as Record<string, unknown>)["fetch"];
-  return typeof candidate === "function" ? (candidate as BrowserFetch) : null;
 }
 
 export function getConsoleSource(): BrowserConsoleLike | null {
@@ -375,59 +372,6 @@ export function captureCallerTrace(skipFrames: number, maxFrames: number): strin
   }
 
   return frames;
-}
-
-export function parseRetryAfter(value: string | null): number | undefined {
-  if (value === null) {
-    return undefined;
-  }
-
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return Math.max(0, seconds * 1_000);
-  }
-
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    return undefined;
-  }
-
-  return Math.max(0, parsed - Date.now());
-}
-
-export function createFetchTransport(): DebugBundleBrowserTransport {
-  const fetchImpl = getFetchSource();
-
-  return async (request): Promise<DebugBundleBrowserTransportResponse> => {
-    if (fetchImpl === null) {
-      throw new Error("fetch unavailable");
-    }
-
-    const response = await fetchImpl(request.endpoint, {
-      method: "POST",
-      headers: request.headers,
-      body: buildBrowserTransportRequestBody(request.transportMode, request.events)
-    });
-
-    const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
-    const body = typeof response.json === "function"
-      ? await response.json().catch(() => undefined)
-      : undefined;
-
-    return {
-      status: response.status,
-      ...(body === undefined ? {} : { body }),
-      ...(retryAfterMs === undefined ? {} : { retry_after_ms: retryAfterMs })
-    };
-  };
-}
-
-export function buildBrowserTransportRequestBody(transportMode: BrowserTransportMode, events: DebugBundleBrowserTransportEvent[]): string {
-  if (transportMode === "direct") {
-    return JSON.stringify({ events });
-  }
-
-  return JSON.stringify({ batch: events });
 }
 
 function isAbsoluteHttpUrl(value: string): boolean {

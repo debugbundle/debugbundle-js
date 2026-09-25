@@ -1,3 +1,4 @@
+import { isPromise } from "node:util/types";
 import { EventEnvelopeSchema, type EventEnvelope } from "@debugbundle/shared-types";
 
 export type NodeBeforeSendHook = (event: EventEnvelope) => EventEnvelope | null;
@@ -24,6 +25,14 @@ export function applyNodeBeforeSend(
     }
 
     if (result === undefined) {
+      return event;
+    }
+
+    if (isPromise(result)) {
+      // Invocation is deferred, but the return contract stays synchronous. Native
+      // subscription also handles cross-realm promises without trusting .catch.
+      void Promise.prototype.then.call(result, undefined, () => undefined);
+      emitDiagnostic("before_send_invalid_event", "sdk-node beforeSend returned an invalid event");
       return event;
     }
 

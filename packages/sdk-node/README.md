@@ -62,7 +62,8 @@ await debugbundle.flush();
 | `sampleRate` | `1.0` | Fraction of events to keep before transport. |
 | `batchSize` | `50` | Events per batch before flushing. |
 | `flushInterval` | `2000` | Flush interval in milliseconds. |
-| `maxBufferedEvents` | `1000` | In-memory buffer cap before new events are dropped. |
+| `maxBufferedEvents` | `1000` | Total queued and in-flight event cap. Under pressure, lower-priority logs and ordinary requests yield to exceptions and failed requests; equal-priority replacements are sampled after the first replacement. A full in-flight batch cannot be displaced. Queue losses are summarized after capacity returns. |
+| `maxBufferedBytes` | `8388608` (8 MiB) | Total serialized bytes owned by queued and in-flight events. An event larger than the available byte budget is discarded; queued lower-priority events can be evicted for higher-priority evidence. |
 | `localEventsDir` | `.debugbundle/local/events` | Local file transport directory. |
 | `requestTimeoutMs` | `5000` | HTTP transport timeout in milliseconds. |
 | `maxProbeLabels` | `50` | Maximum distinct probe labels buffered in memory. |
@@ -73,7 +74,7 @@ await debugbundle.flush();
 | `logger` | none | Optional logger instance to attach during initialization. |
 | `transport` | auto-selected | Custom transport function for tests or advanced routing. |
 | `fetchImpl` | global `fetch` | Custom Fetch implementation. |
-| `beforeSend` | none | Synchronous hook that receives a fully built event before buffering; return an event to keep it or `null` to drop it locally. |
+| `beforeSend` | none | Synchronous-return hook deferred until after capture returns and bounded admission; return an event to keep it or `null` to drop it. |
 | `resolveModule` | Node resolution | Custom module resolver for logger auto-detection. |
 | `onDiagnostic` | none | Callback for SDK internal diagnostics. |
 
@@ -87,7 +88,7 @@ Use process environment, framework config, or your own typed startup config to s
 
 ### Local beforeSend hook
 
-Use `beforeSend` for app-owned local policy such as final redaction or tenant-specific suppression before an event enters the SDK buffer. The hook runs after the SDK builds and redacts the event and before project capture rules, sampling, suppression, and transport.
+Use `beforeSend` for app-owned final redaction or tenant-specific suppression. Version 3 runs it after capture returns and privacy-safe bounded admission, before final project capture rules, sampling, suppression and transport. Callbacks execute on the JavaScript event loop and must return promptly. Queue pressure may drop an event before its callback runs. See the [version 3 migration guide](https://github.com/debugbundle/debugbundle-js/blob/main/MIGRATION-3.0.md).
 
 ```ts
 debugbundle.init({
@@ -110,7 +111,7 @@ If the hook throws or returns an invalid event, the SDK keeps the original event
 
 Active project capture rules arrive through `GET /v1/sdk/config` and are applied locally when the Node runtime can do so without changing application behavior:
 
-- `drop` discards matching events before buffering and transport
+- `drop` discards matching events before transport; when a hook is configured, final rule evaluation follows protected admission and that hook
 - `sample` discards matching events only when the deterministic sampling decision resolves to sampled out
 - `demote` still ships today and relies on ingestion/worker backstop enforcement, because the Node SDK does not have a browser-style breadcrumb/context downgrade channel yet
 

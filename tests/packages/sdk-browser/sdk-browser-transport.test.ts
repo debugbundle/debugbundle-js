@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import * as browserFixtures from "../../helpers/sdk-browser-fixtures.js";
+import type { DebugBundleBrowserTransportEvent } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser transport", () => {
   it("should only capture 4xx and 5xx network breadcrumbs by default", async (): Promise<void> => {
@@ -224,6 +225,53 @@ describe("sdk-browser transport", () => {
     expect(suppressed.payload.first_seen).toBe("2026-03-14T00:00:00.000Z");
     expect(suppressed.payload.last_seen).toBe("2026-03-14T00:00:00.000Z");
     expect(suppressed.payload.fingerprint.length).toBeGreaterThan(0);
+  });
+
+  it("delivers duplicate-suppression summaries on the automatic timer", async (): Promise<void> => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-14T00:00:00.000Z"));
+    const { sdk, transport } = browserFixtures.createSdk({ batchSize: 10, flushInterval: 100 });
+
+    browserFixtures.captureRepeatedException(sdk, "automatic duplicate", 5);
+    await vi.advanceTimersByTimeAsync(100);
+
+    const events = transport.mock.calls.flatMap((_call: unknown[], index: number) =>
+      browserFixtures.createTransportEvents(transport, index));
+    expect(events.filter((event) => event.event_type === "frontend_exception")).toHaveLength(3);
+    expect(events.filter((event) => event.event_type === "error_suppressed")).toHaveLength(1);
+  });
+
+  it("includes a pending duplicate-suppression summary in the unload beacon", async (): Promise<void> => {
+    const { sdk, globals } = browserFixtures.createSdk({ batchSize: 10 });
+    browserFixtures.captureRepeatedException(sdk, "unload duplicate", 5);
+
+    globals.windowTarget.dispatch("pagehide", {});
+    expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
+    const body = globals.sendBeacon.mock.calls[0]?.[1] as Blob | string;
+    const serialized = typeof body === "string" ? body : await body.text();
+    const events = (JSON.parse(serialized) as { events: DebugBundleBrowserTransportEvent[] }).events;
+    expect(events.filter((event) => event.event_type === "frontend_exception")).toHaveLength(3);
+    expect(events.filter((event) => event.event_type === "error_suppressed")).toHaveLength(1);
+  });
+
+  it("keeps an automatic suppression summary due while a sender is held", async (): Promise<void> => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-14T00:00:00.000Z"));
+    let releaseFirst!: (response: { status: number }) => void;
+    const held = new Promise<{ status: number }>((resolve) => { releaseFirst = resolve; });
+    const sender = vi.fn().mockImplementationOnce(() => held).mockResolvedValue({ status: 202 });
+    const { sdk } = browserFixtures.createSdk({ batchSize: 1, flushInterval: 100, transport: sender });
+
+    browserFixtures.captureRepeatedException(sdk, "held duplicate", 5);
+    await Promise.resolve();
+    expect(sender).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    releaseFirst({ status: 202 });
+    await vi.advanceTimersByTimeAsync(100);
+
+    const calls = sender.mock.calls as Array<[{ events: DebugBundleBrowserTransportEvent[] }]>;
+    expect(calls.flatMap((call) => call[0].events)
+      .filter((event) => event.event_type === "error_suppressed")).toHaveLength(1);
   });
 
   it("should keep identical frontend exceptions suppressed until silence resets loop protection", async (): Promise<void> => {

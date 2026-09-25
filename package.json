@@ -1,10 +1,10 @@
 {
   "name": "debugbundle-js",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "DebugBundle JavaScript SDK repository — sdk-node, sdk-browser",
+  "description": "DebugBundle JavaScript SDK repository \u2014 sdk-node, sdk-browser",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/debugbundle/debugbundle-js.git"
@@ -32,8 +32,8 @@
     "bunyan": "^1.8.15",
     "pino": "^9.14.0",
     "winston": "^3.19.0",
-    "@debugbundle/redaction": "2.0.0",
-    "@debugbundle/shared-types": "2.0.0",
+    "@debugbundle/redaction": "2.1.0",
+    "@debugbundle/shared-types": "2.1.0",
     "@types/node": "^24.0.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",

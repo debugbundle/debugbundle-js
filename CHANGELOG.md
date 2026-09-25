@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-25
+
+### Breaking changes
+
+- Optional JavaScript `beforeSend` callbacks move after capture returns; application closures remain on the event loop and must return promptly. Privacy-safe bounded admission, final policy enforcement and charged replacements protect queue memory under overload. Browser unload skips pending hooks. See `MIGRATION-3.0.md`.
+- Node/browser 3.0 packaging preserves the independently versioned core dependencies instead of inventing matching major versions.
+
+### Fixed
+
+- Make Node file transport defer disk operations and publish complete files exclusively; bound Node queued plus in-flight event count and bytes, favor retained exceptions and failed requests under lower-priority pressure, reject filtered logs before sampling, and isolate old in-flight sends and configuration fetches after reinitialization. Sample equal-priority replacements when a queue is saturated, so an all-ERROR or all-exception burst does not run application hooks for every discarded record; emit bounded per-class queue-pressure aggregates when capacity returns.
+- Bound browser debug and analytics transport queues by event count and bytes, including events held by a stalled send; retain exception and failed-request capacity ahead of ordinary traffic, cap individual sends at 256 events, drain stable queues on explicit flush, and coalesce flush scheduling.
+- Enforce the configured browser fetch and keepalive fallback deadline, including response-body decoding, and retain events for retry when delivery times out instead of treating a timed-out body as acknowledged.
+- Ignore late responses from a previous browser transport configuration. While its sender is still held, the next configuration sheds new telemetry until that sender settles, keeping host memory bounded; an accepted unload beacon likewise pauses new capture until any concurrent sender finishes.
+- Coalesce repeated page-unload keepalive fallbacks into one pending request per lane and defer ordinary sends until it settles; a burst of lifecycle callbacks can no longer allocate duplicate held fetches or overlap an ordinary send for the same events.
+- Include bounded duplicate-exception suppression summaries on automatic timer sends and unload beacons, including when a summary becomes due while an ordinary sender is still pending.
+- Preserve already-queued ERROR records during an all-ERROR browser burst, reject equal-priority overflow without repeatedly inspecting retained records, and emit one bounded queue-pressure summary after capacity returns, with a 30-second report interval. The summary counts pressure across debug event types without retaining dropped message text, including when an exception burst evicts an unsent summary.
+- Limit Node and browser suppression fingerprint state and emit one overflow aggregate for excess identities.
+
 ## [2.0.0] - 2026-09-21
 
 ### Security
@@ -9,6 +27,8 @@
 - Enforce the mandatory `telemetry-privacy-v1` baseline before capture retention, after `beforeSend`, before transport, and across the browser relay so sensitive values cannot bypass local scrubbing through custom hooks or relay ingestion.
 
 ### Changed
+
+- Apply browser queue preflight before public log/exception construction and hooks, retaining the existing priority, in-flight ownership and pressure-summary behavior. Independent analytics capture and bounded local breadcrumbs remain available.
 
 - Treat existing `redactFields` configuration as additive to the mandatory privacy baseline. Applications that previously relied on those fields replacing built-in rules should review their configuration.
 - Align the Node and Browser SDKs with `@debugbundle/shared-types@2.0.0` and `@debugbundle/redaction@2.0.0`; the four packages form one coordinated JavaScript privacy release.

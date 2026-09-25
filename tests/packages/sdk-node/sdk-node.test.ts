@@ -9,8 +9,8 @@ import {
   type DebugBundleTransportRequest
 } from "../../../packages/sdk-node/src/index.js";
 import type { EventEnvelope } from "@debugbundle/shared-types";
+import { activeSdks, createSdk } from "../../helpers/sdk-node-client.js";
 
-const activeSdks: DebugBundleNodeSdk[] = [];
 type TransportMock = ReturnType<typeof vi.fn>;
 type BackendExceptionEvent = Extract<EventEnvelope, { event_type: "backend_exception" }>;
 type ErrorSuppressedEvent = Extract<EventEnvelope, { event_type: "error_suppressed" }>;
@@ -50,24 +50,6 @@ function getObjectField(value: unknown, key: string): unknown {
   }
 
   return (value as Record<string, unknown>)[key];
-}
-
-function createSdk(
-  overrides: Parameters<DebugBundleNodeSdk["init"]>[0] = {}
-): { sdk: DebugBundleNodeSdk; transport: TransportMock } {
-  const transport = vi.fn().mockResolvedValue({ status: 202 });
-  const sdk = createDebugBundleSdk();
-  activeSdks.push(sdk);
-  sdk.init({
-    projectToken: "dbundle_proj_test",
-    service: "checkout-api",
-    environment: "production",
-    flushInterval: 60_000,
-    transport,
-    ...overrides
-  });
-
-  return { sdk, transport };
 }
 
 function captureRepeatedException(sdk: DebugBundleNodeSdk, message: string, count: number): void {
@@ -221,8 +203,152 @@ describe("sdk-node", () => {
 
     await sdk.flush();
 
-    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(2);
     expect(getTransportEvents(transport, 0).map(getEventMessage)).toEqual(["second", "third"]);
+    expect(getErrorSuppressedEvent(getTransportEvents(transport, 1)[0]).payload.suppressed_count).toBe(1);
+  });
+
+  it("keeps a captured exception ahead of later warning noise at capacity", async (): Promise<void> => {
+    const { sdk, transport } = createSdk({ maxBufferedEvents: 5 });
+
+    sdk.captureException(new Error("checkout failed"));
+    for (let index = 0; index < 6; index += 1) {
+      sdk.captureMessage(`warning ${index}`, "warning");
+    }
+    await sdk.flush();
+
+    const sent = getTransportEvents(transport, 0);
+    expect(sent).toHaveLength(5);
+    expect(sent.some((event) => event.event_type === "backend_exception" &&
+      event.payload.message === "checkout failed")).toBe(true);
+  });
+
+  it("counts a stalled in-flight batch against the total event budget", () => {
+    const transport = vi.fn(() => new Promise<never>(() => {}));
+    const { sdk } = createSdk({ transport, batchSize: 4, maxBufferedEvents: 5 });
+
+    for (let index = 0; index < 4; index += 1) sdk.captureMessage(`sent warning ${index}`, "warning");
+    sdk.captureException(new Error("priority while sender stalls"));
+    for (let index = 0; index < 10; index += 1) sdk.captureMessage(`later warning ${index}`, "warning");
+
+    const buffered = (sdk as unknown as { buffer: EventEnvelope[] }).buffer;
+    expect(getTransportEvents(transport, 0).length + buffered.length).toBeLessThanOrEqual(5);
+    expect(buffered.some((event) => event.event_type === "backend_exception")).toBe(true);
+  });
+
+  it("bounds queued bytes as well as event count while preserving an exception", async () => {
+    const { sdk, transport } = createSdk({ maxBufferedEvents: 10, maxBufferedBytes: 15_000 });
+    sdk.captureException(new Error("checkout root"));
+    sdk.captureMessage("a".repeat(10_000), "warning");
+    sdk.captureMessage("b".repeat(10_000), "warning");
+
+    await sdk.flush();
+    const sent = getTransportEvents(transport, 0);
+    expect(sent.some((event) => event.event_type === "backend_exception" &&
+      event.payload.message === "checkout root")).toBe(true);
+    expect(sent.filter((event) => event.event_type === "log_event")).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(sent))).toBeLessThan(15_000);
+  });
+
+  it("counts a stalled sender's bytes against the same queue budget", async () => {
+    const transport = vi.fn(() => new Promise<never>(() => {}));
+    const { sdk } = createSdk({ transport, batchSize: 1, maxBufferedEvents: 10, maxBufferedBytes: 15_000 });
+    sdk.captureMessage("a".repeat(9_000), "warning");
+    await Promise.resolve();
+    sdk.captureException(new Error("keep this root"));
+    sdk.captureMessage("b".repeat(9_000), "warning");
+
+    const buffered = (sdk as unknown as { buffer: EventEnvelope[] }).buffer;
+    expect(buffered).toHaveLength(1);
+    expect(buffered[0]?.event_type).toBe("backend_exception");
+    const inFlight = getTransportEvents(transport, 0);
+    expect(Buffer.byteLength(JSON.stringify([...inFlight, ...buffered]))).toBeLessThan(15_000);
+  });
+
+  it("rejects every event kind before app context or hooks when a stalled sender owns the full budget", async () => {
+    const transport = vi.fn(() => new Promise<never>(() => {}));
+    const beforeSend = vi.fn((event: EventEnvelope) => event);
+    const { sdk } = createSdk({ transport, beforeSend, batchSize: 1, maxBufferedEvents: 1 });
+    sdk.captureMessage("held warning", "warning");
+    await Promise.resolve();
+    expect(transport).toHaveBeenCalledTimes(1);
+    const contextRead = vi.fn();
+    const hostileContext = new Proxy({}, { get: () => { contextRead(); throw new Error("context read"); } });
+    for (let index = 0; index < 10_000; index += 1) {
+      sdk.captureLog("pressure warning", "warning", hostileContext);
+    }
+    sdk.captureException(new Error("pressure exception"), hostileContext);
+    sdk.captureRequest({ method: "GET", path: "/checkout" }, { statusCode: 500 }, hostileContext);
+    expect(contextRead).not.toHaveBeenCalled();
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects ten thousand INFO records before sampling or reading capture context", () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const beforeSend = vi.fn((event: EventEnvelope) => event);
+    const { sdk, transport } = createSdk({ logLevel: "warning", sampleRate: 0.5, beforeSend });
+    const context = new Proxy({}, { get: () => { throw new Error("filtered context was read"); } });
+    for (let index = 0; index < 10_000; index += 1) {
+      sdk.captureLog("filtered INFO", "info", context);
+    }
+    expect(random).not.toHaveBeenCalled();
+    expect(beforeSend).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    expect((sdk as unknown as { buffer: EventEnvelope[] }).buffer).toHaveLength(0);
+  });
+
+  it("isolates an old in-flight sender after dispose and reinitialization", async () => {
+    let finishOldSend!: (result: { status: number }) => void;
+    const oldTransport = vi.fn(() => new Promise<{ status: number }>((resolve) => {
+      finishOldSend = resolve;
+    }));
+    const { sdk } = createSdk({ transport: oldTransport, batchSize: 1, maxBufferedEvents: 1 });
+    sdk.captureMessage("old warning", "warning");
+    await Promise.resolve();
+    expect(oldTransport).toHaveBeenCalledTimes(1);
+
+    sdk.dispose();
+    const newTransport = vi.fn().mockResolvedValue({ status: 202 });
+    sdk.init({
+      projectToken: "dbundle_proj_test",
+      service: "checkout-api",
+      environment: "production",
+      flushInterval: 60_000,
+      transport: newTransport,
+      batchSize: 1,
+      maxBufferedEvents: 1
+    });
+    sdk.captureException(new Error("new exception"));
+    await sdk.flush();
+    expect(getTransportEvents(newTransport, 0).map(getEventMessage)).toEqual(["new exception"]);
+
+    finishOldSend({ status: 503 });
+    await Promise.resolve();
+    expect((sdk as unknown as { buffer: EventEnvelope[] }).buffer).toHaveLength(0);
+    expect((sdk as unknown as { inFlightCount: number }).inFlightCount).toBe(0);
+  });
+
+  it("ignores a failed configuration fetch from a disposed client", async () => {
+    let failOldFetch!: (reason: Error) => void;
+    const oldFetch = vi.fn(() => new Promise<Response>((_resolve, reject) => {
+      failOldFetch = reject;
+    }));
+    const { sdk } = createSdk({ fetchImpl: oldFetch });
+    expect(oldFetch).toHaveBeenCalledTimes(1);
+    sdk.init({
+      projectToken: "dbundle_proj_test",
+      service: "checkout-api",
+      environment: "production",
+      flushInterval: 60_000,
+      transport: vi.fn().mockResolvedValue({ status: 202 }),
+      fetchImpl: vi.fn().mockResolvedValue({ status: 304, headers: { get: () => null } })
+    });
+    failOldFetch(new Error("old config offline"));
+    await Promise.resolve();
+    await Promise.resolve();
+    sdk.captureMessage("warning under new policy", "warning");
+    expect((sdk as unknown as { buffer: EventEnvelope[] }).buffer.map(getEventMessage))
+      .toEqual(["warning under new policy"]);
   });
 
   it("should allow beforeSend to mutate or drop events before transport", async (): Promise<void> => {

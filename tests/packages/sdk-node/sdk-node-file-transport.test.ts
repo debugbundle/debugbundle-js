@@ -5,6 +5,7 @@ import * as os from "node:os";
 import type { EventEnvelope } from "@debugbundle/shared-types";
 import {
   createFileTransport,
+  resolveDefaultLocalEventsDir,
 } from "../../../packages/sdk-node/src/file-transport.js";
 
 function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
@@ -48,6 +49,25 @@ describe("createFileTransport", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("resolves the conventional local events directory from a project root", () => {
+    expect(resolveDefaultLocalEventsDir(tmpDir)).toBe(path.join(tmpDir, ".debugbundle", "local", "events"));
+  });
+
+  it("returns to the caller before local disk work completes", async () => {
+    const transport = createFileTransport({ eventsDir: tmpDir, serviceName: "test-service" });
+
+    const pending = transport({
+      endpoint: "unused",
+      headers: {},
+      events: [makeEnvelope()],
+      timeout_ms: 5000
+    });
+
+    expect(fs.readdirSync(tmpDir)).toEqual([]);
+    expect((await pending).status).toBe(202);
+    expect(fs.readdirSync(tmpDir).filter((file) => file.endsWith(".events.json"))).toHaveLength(1);
   });
 
   it("writes a JSON file containing events to the output directory", async () => {

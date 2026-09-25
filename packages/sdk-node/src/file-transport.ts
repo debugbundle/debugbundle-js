@@ -71,9 +71,9 @@ function resolveValidatedEventsDir(eventsDir: string): string {
   return resolved;
 }
 
-function assertNotSymlink(targetPath: string): void {
+async function assertNotSymlink(targetPath: string): Promise<void> {
   try {
-    if (fs.lstatSync(targetPath).isSymbolicLink()) {
+    if ((await fs.promises.lstat(targetPath)).isSymbolicLink()) {
       throw new Error("symlink_path_rejected");
     }
   } catch (error) {
@@ -85,17 +85,17 @@ function assertNotSymlink(targetPath: string): void {
   }
 }
 
-function writeSecureTempFile(tmpPath: string, payload: string): void {
-  const fileDescriptor = fs.openSync(
+async function writeSecureTempFile(tmpPath: string, payload: string): Promise<void> {
+  const file = await fs.promises.open(
     tmpPath,
     fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | OPTIONAL_NOFOLLOW_FLAG,
     LOCAL_EVENT_FILE_MODE
   );
 
   try {
-    fs.writeFileSync(fileDescriptor, payload, { encoding: "utf-8" });
+    await file.writeFile(payload, { encoding: "utf-8" });
   } finally {
-    fs.closeSync(fileDescriptor);
+    await file.close();
   }
 }
 
@@ -146,7 +146,8 @@ export function resolveDefaultNodeTransport(options: DefaultNodeTransportOptions
  * Creates a file-based transport that writes event batches as JSON files.
  *
  * Each flush produces one file: `<timestamp>-<sequence>-<service>.events.json`.
- * Writes are atomic (temp file + rename) to prevent partial reads by the CLI processor.
+ * Writes publish a complete temp file through an exclusive hard link so readers
+ * never see partial content and a raced destination cannot be overwritten.
  * The transport never throws — write failures return status 500 instead.
  * Successful writes include the final written file path in the response.
  */
@@ -157,16 +158,17 @@ export function createFileTransport(options: FileTransportOptions): DebugBundleT
   let dirEnsured = false;
   const safeServiceName = sanitizeServiceName(serviceName);
 
-  return (
+  return async (
     request: DebugBundleTransportRequest
   ): Promise<DebugBundleTransportResponse> => {
     if (request.events.length === 0) {
-      return Promise.resolve({ status: 202 });
+      return { status: 202 };
     }
 
+    let tmpPath: string | null = null;
     try {
       if (!dirEnsured) {
-        fs.mkdirSync(validatedEventsDir, { recursive: true, mode: LOCAL_EVENTS_DIRECTORY_MODE });
+        await fs.promises.mkdir(validatedEventsDir, { recursive: true, mode: LOCAL_EVENTS_DIRECTORY_MODE });
         dirEnsured = true;
       }
 
@@ -174,27 +176,32 @@ export function createFileTransport(options: FileTransportOptions): DebugBundleT
       const seq = ++sequence;
       const filename = `${timestamp}-${seq}-${safeServiceName}.events.json`;
       const finalPath = path.join(validatedEventsDir, filename);
-      const tmpPath = `${finalPath}.tmp-${randomBytes(TEMP_FILE_RANDOM_BYTES).toString("hex")}`;
+      tmpPath = `${finalPath}.tmp-${randomBytes(TEMP_FILE_RANDOM_BYTES).toString("hex")}`;
 
       const payload = JSON.stringify(request.events);
 
-      assertNotSymlink(finalPath);
-      writeSecureTempFile(tmpPath, payload);
-      fs.renameSync(tmpPath, finalPath);
-
-      return Promise.resolve({ status: 202, writtenFilePath: finalPath });
-    } catch {
+      await assertNotSymlink(finalPath);
+      await writeSecureTempFile(tmpPath, payload);
+      await fs.promises.link(tmpPath, finalPath);
       try {
-        const candidateTempFiles = fs.readdirSync(validatedEventsDir).filter((entry) => entry.includes(".tmp-"));
-        for (const candidate of candidateTempFiles) {
-          fs.rmSync(path.join(validatedEventsDir, candidate), { force: true });
-        }
+        await fs.promises.unlink(tmpPath);
       } catch {
-        // Best-effort temp cleanup only.
+        // The published file is complete; temp cleanup must not trigger a duplicate retry.
+      }
+      tmpPath = null;
+
+      return { status: 202, writtenFilePath: finalPath };
+    } catch {
+      if (tmpPath !== null) {
+        try {
+          await fs.promises.rm(tmpPath, { force: true });
+        } catch {
+          // Best-effort cleanup of this send's temp file only.
+        }
       }
 
       // SDK safety: never throw into user code (contracts/sdk-interface.md §7)
-      return Promise.resolve({ status: 500 });
+      return { status: 500 };
     }
   };
 }

@@ -89,11 +89,12 @@ for (const definition of packageDefinitions) {
   cpSync(distAbsoluteDir, path.join(outputDir, "dist"), { recursive: true });
   copyOptionalFile(definition.readmePath, outputDir, "README.md");
   writeFileSync(path.join(outputDir, "LICENSE"), licenseText);
+  copyOptionalFile("MIGRATION-3.0.md", outputDir, "MIGRATION-3.0.md");
 
   const publishDependencies = Object.fromEntries(
     Object.entries(sourcePackageJson.dependencies ?? {}).map(([dependencyName, dependencyVersion]) => {
       if (coreOwnedDependencies.has(dependencyName)) {
-        return [dependencyName, sourcePackageJson.version];
+        return [dependencyName, dependencyVersion];
       }
 
       return [dependencyName, dependencyVersion];
@@ -110,7 +111,7 @@ for (const definition of packageDefinitions) {
     repository: sourcePackageJson.repository,
     bugs: sourcePackageJson.bugs,
     homepage: sourcePackageJson.homepage,
-    files: ["dist", "README.md", "LICENSE"],
+    files: ["dist", "README.md", "LICENSE", "MIGRATION-3.0.md"],
     main: "./dist/index.js",
     types: "./dist/index.d.ts",
     exports: definition.exportMap,

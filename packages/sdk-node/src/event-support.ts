@@ -1,8 +1,11 @@
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { applyNodeBeforeSend } from "./before-send.js";
 import { evaluateNodeCaptureRulesForEvent } from "./capture-rules.js";
+import { findActiveRemoteProbeDirectives } from "./remote-probes.js";
 import { EventSuppressionTracker } from "./suppression.js";
+import type { QueuePressureSnapshot } from "./buffer-admission.js";
 import {
+  DEFAULT_LOG_LEVEL,
   LOG_LEVEL_ORDER,
   SDK_NAME,
   SDK_SCHEMA_VERSION,
@@ -13,9 +16,38 @@ import {
   type CaptureResponseInput,
   type CorrelationFields,
   type LogLevel,
-  type ProbeBufferItem
+  type ProbeBufferItem,
+  type RemoteProbeConfigSnapshot,
+  type RemoteProbeDirective
 } from "./types.js";
-import { buildSdkConfigEndpoint, extractHeaderValue, redactObject, sanitizeUnknown } from "./utils.js";
+import { buildSdkConfigEndpoint, extractHeaderValue, redactObject, sanitizeMetadataObject, sanitizeUnknown } from "./utils.js";
+
+export function normalizeLogLevel(level: string | undefined): LogLevel {
+  if (level === undefined) return DEFAULT_LOG_LEVEL;
+  return level in LOG_LEVEL_ORDER ? (level as LogLevel) : DEFAULT_LOG_LEVEL;
+}
+
+export function pruneNodeProbeDirectives(snapshot: RemoteProbeConfigSnapshot, nowMs: number): RemoteProbeConfigSnapshot {
+  return {
+    ...snapshot,
+    directives: snapshot.directives.filter((directive) => Date.parse(directive.expiresAt) > nowMs)
+  };
+}
+
+export function matchNodeProbeDirectives(input: {
+  snapshot: RemoteProbeConfigSnapshot;
+  request: CaptureRequestInput | undefined;
+  label: string;
+  config: ActiveConfig;
+  nowMs: number;
+}): { snapshot: RemoteProbeConfigSnapshot; directives: RemoteProbeDirective[] } {
+  const snapshot = input.snapshot.probesEnabled && input.snapshot.remoteProbesEnabled
+    ? pruneNodeProbeDirectives(input.snapshot, input.nowMs) : input.snapshot;
+  return { snapshot, directives: findActiveRemoteProbeDirectives({
+    snapshot, request: input.request, label: input.label,
+    service: input.config.service, environment: input.config.environment, nowMs: input.nowMs
+  }) };
+}
 
 export function buildNodeServiceDescriptor(config: ActiveConfig): EventEnvelope["service"] {
   return {
@@ -171,7 +203,8 @@ export function buildNodeSuppressionKey(event: EventEnvelope): string | null {
   return null;
 }
 
-export function applyNodeCaptureRules(event: EventEnvelope, captureRules: ActiveConfig["captureRules"]): EventEnvelope | null {
+export function applyNodeCaptureRules(event: EventEnvelope, captureRules: ActiveConfig["captureRules"],
+  capturedAt = new Date().toISOString()): EventEnvelope | null {
   if (captureRules.length === 0) {
     return event;
   }
@@ -182,7 +215,7 @@ export function applyNodeCaptureRules(event: EventEnvelope, captureRules: Active
   }
 
   try {
-    const captureRule = evaluateNodeCaptureRulesForEvent(captureRules, projectId, event, new Date().toISOString());
+    const captureRule = evaluateNodeCaptureRulesForEvent(captureRules, projectId, event, capturedAt);
     if (captureRule?.outcome === "drop" || captureRule?.outcome === "sampled_out") {
       return null;
     }
@@ -217,12 +250,80 @@ export function buildNodeSuppressionAggregateEvents(
   );
 }
 
+export function buildNodeQueuePressureEvent(snapshot: QueuePressureSnapshot, config: ActiveConfig): EventEnvelope {
+  const firstSeen = new Date(snapshot.firstSeenAtMs).toISOString();
+  const lastSeen = new Date(snapshot.lastSeenAtMs).toISOString();
+  return createEventEnvelope({
+    schema_version: SDK_SCHEMA_VERSION,
+    event_type: "error_suppressed",
+    project_token: config.projectToken,
+    sdk_name: SDK_NAME,
+    sdk_version: SDK_VERSION,
+    service: buildNodeServiceDescriptor(config),
+    occurred_at: lastSeen,
+    payload: {
+      fingerprint: `node-queue-pressure:${snapshot.kind}`,
+      suppressed_count: snapshot.count,
+      window_seconds: Math.max(1, Math.ceil((snapshot.lastSeenAtMs - snapshot.firstSeenAtMs) / 1_000)),
+      first_seen: firstSeen,
+      last_seen: lastSeen
+    }
+  });
+}
+
+export function buildNodeRequestEvent(input: {
+  config: ActiveConfig;
+  requestSnapshot: ReturnType<typeof buildNodeRequestSnapshot>;
+  responseSnapshot: ReturnType<typeof buildNodeResponseSnapshot>;
+  correlation: ReturnType<typeof buildNodeCorrelation>;
+  durationMs: number;
+}): EventEnvelope {
+  const { config, requestSnapshot, responseSnapshot, correlation, durationMs } = input;
+  return createEventEnvelope({
+    schema_version: SDK_SCHEMA_VERSION,
+    event_type: "request_event",
+    project_token: config.projectToken,
+    sdk_name: SDK_NAME,
+    sdk_version: SDK_VERSION,
+    service: buildNodeServiceDescriptor(config),
+    occurred_at: new Date().toISOString(),
+    correlation,
+    payload: {
+      method: requestSnapshot.method,
+      path: requestSnapshot.path,
+      query: requestSnapshot.query,
+      headers: requestSnapshot.headers,
+      ...(requestSnapshot.body === null ? {} : { body: requestSnapshot.body }),
+      response_status: responseSnapshot.status_code,
+      duration_ms: durationMs,
+      ...(requestSnapshot.route_template === null ? {} : { route_template: requestSnapshot.route_template }),
+      ...(responseSnapshot.headers !== undefined ? { response_headers: responseSnapshot.headers } : {}),
+      ...(responseSnapshot.body !== undefined ? { response_body: responseSnapshot.body } : {})
+    }
+  });
+}
+
 export function shouldCaptureNodeSample(sampleRate: number): boolean {
   return sampleRate >= 1 || Math.random() <= sampleRate;
 }
 
 export function effectiveNodeLogThreshold(initLogLevel: LogLevel, policyLogLevel: LogLevel): LogLevel {
   return LOG_LEVEL_ORDER[initLogLevel] >= LOG_LEVEL_ORDER[policyLogLevel] ? initLogLevel : policyLogLevel;
+}
+
+export function shouldCaptureNodeLog(config: ActiveConfig, policy: RemoteProbeConfigSnapshot["capturePolicy"], level: LogLevel): boolean {
+  if (policy.captureLogs === "off") return false;
+  const threshold = effectiveNodeLogThreshold(config.logLevel, policy.captureLogs as LogLevel);
+  return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[threshold];
+}
+
+export function emitNodeDiagnostic(config: ActiveConfig | null, code: string, message: string, metadata?: Record<string, unknown>): void {
+  try {
+    const safeMetadata = sanitizeMetadataObject(metadata);
+    config?.onDiagnostic?.({ code, message, ...(safeMetadata === undefined ? {} : { metadata: safeMetadata }) });
+  } catch {
+    // Diagnostics must never destabilize the host.
+  }
 }
 
 export function formatNodeConsoleMessage(args: unknown[]): string {

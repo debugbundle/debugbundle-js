@@ -19,7 +19,8 @@ if (sdkNodePackage.version !== sdkBrowserPackage.version) {
 }
 
 const releaseVersion = process.env.DEBUGBUNDLE_SMOKE_VERSION?.trim() || sdkNodePackage.version;
-const sharedPackageVersion = releaseVersion;
+const sharedPackageVersion = sdkNodePackage.dependencies["@debugbundle/shared-types"];
+const redactionPackageVersion = sdkNodePackage.dependencies["@debugbundle/redaction"];
 const serverProjectToken = "dbundle_proj_smoke_server";
 const preparedPackagesDir = path.join(repoRoot, ".tmp", "npm-release");
 const npmPackagesDir = path.join(repoRoot, ".tmp", "npm-packages");
@@ -79,16 +80,17 @@ function installSmokeDependencies(tempDir) {
 
   if (mode === "packed") {
     const localRedactionPackage = process.env.DEBUGBUNDLE_SMOKE_REDACTION_TARBALL?.trim();
+    const localSharedPackage = process.env.DEBUGBUNDLE_SMOKE_SHARED_TYPES_TARBALL?.trim();
     installArgs.push(
-      `@debugbundle/shared-types@${sharedPackageVersion}`,
-      localRedactionPackage || `@debugbundle/redaction@${sharedPackageVersion}`,
+      localSharedPackage || `@debugbundle/shared-types@${sharedPackageVersion}`,
+      localRedactionPackage || `@debugbundle/redaction@${redactionPackageVersion}`,
       path.join(npmPackagesDir, `debugbundle-sdk-node-${releaseVersion}.tgz`),
       path.join(npmPackagesDir, `debugbundle-sdk-browser-${releaseVersion}.tgz`)
     );
   } else {
     installArgs.push(
       `@debugbundle/shared-types@${sharedPackageVersion}`,
-      `@debugbundle/redaction@${sharedPackageVersion}`,
+      `@debugbundle/redaction@${redactionPackageVersion}`,
       `@debugbundle/sdk-node@${releaseVersion}`,
       `@debugbundle/sdk-browser@${releaseVersion}`
     );

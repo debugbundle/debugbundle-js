@@ -1,8 +1,46 @@
 import { describe, expect, it, vi } from "vitest";
+import type { EventEnvelope } from "@debugbundle/shared-types";
 
 import * as browserFixtures from "../../helpers/sdk-browser-fixtures.js";
 
 describe("sdk-browser capture", () => {
+  it("defers application hooks until after capture returns and preserves replacement delivery", async () => {
+    let returned = false;
+    const beforeSend = vi.fn((event: EventEnvelope) => {
+      expect(returned).toBe(true);
+      return event;
+    });
+    const { sdk, transport } = browserFixtures.createSdk({ beforeSend, batchSize: 1 });
+    sdk.captureMessage("deferred", "error");
+    expect(beforeSend).not.toHaveBeenCalled();
+    returned = true;
+    await sdk.flush();
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+    expect(browserFixtures.createTransportEvents(transport, 0).map(browserFixtures.getEventMessage)).toEqual(["deferred"]);
+  });
+
+  it("contains rejected async hook returns while retaining the protected original", async () => {
+    const { sdk, transport } = browserFixtures.createSdk({ beforeSend: (() => Promise.reject(new Error("invalid async hook"))) as never });
+    sdk.captureMessage("safe original", "error");
+    await sdk.flush();
+    expect(browserFixtures.createTransportEvents(transport, 0).map(browserFixtures.getEventMessage)).toEqual(["safe original"]);
+  });
+
+  it("does not invoke hooks recursively when the application captures within a hook", async () => {
+    let depth = 0, maximum = 0, captured = false;
+    const { sdk, transport } = browserFixtures.createSdk({ beforeSend: event => {
+      maximum = Math.max(maximum, ++depth);
+      if (!captured) { captured = true; sdk.captureMessage("reentrant", "error"); }
+      depth -= 1;
+      return event;
+    } });
+    sdk.captureMessage("first", "error");
+    await sdk.flush();
+    expect(maximum).toBe(1);
+    expect(transport.mock.calls.flatMap((_, index) => browserFixtures.createTransportEvents(transport, index))
+      .map(browserFixtures.getEventMessage)).toEqual(["first", "reentrant"]);
+  });
+
   it("bounds repeated context retention and safely rejects invalid context keys", () => {
     const { sdk } = browserFixtures.createSdk();
     expect(() => sdk.setContext(null as unknown as string, "ignored")).not.toThrow();

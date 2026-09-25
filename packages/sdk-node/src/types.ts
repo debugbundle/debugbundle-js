@@ -13,6 +13,7 @@ export const DEFAULT_FLUSH_INTERVAL_MS = 2_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 export const DEFAULT_LOG_LEVEL = "warning";
 export const DEFAULT_MAX_BUFFERED_EVENTS = 1_000;
+export const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_PROBES_POLL_INTERVAL_MS = 60_000;
 export const DEFAULT_MAX_PROBE_LABELS = 50;
 export const DEFAULT_MAX_PROBE_ENTRIES = 10;
@@ -223,6 +224,7 @@ export interface DebugBundleNodeInitConfig {
   endpoint?: string;
   logLevel?: LogLevel;
   maxBufferedEvents?: number;
+  maxBufferedBytes?: number;
   probesPollInterval?: number;
   maxProbeLabels?: number;
   maxProbeEntriesPerLabel?: number;
@@ -250,6 +252,7 @@ export interface ActiveConfig {
   endpoint: string;
   logLevel: LogLevel;
   maxBufferedEvents: number;
+  maxBufferedBytes: number;
   probesPollInterval: number;
   maxProbeLabels: number;
   maxProbeEntriesPerLabel: number;

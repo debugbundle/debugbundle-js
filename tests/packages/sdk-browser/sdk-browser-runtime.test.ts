@@ -35,6 +35,7 @@ import {
   stringifyConsoleArgs
 } from "../../../packages/sdk-browser/src/runtime.js";
 import { parseRemoteCaptureRulesPayload } from "../../../packages/sdk-browser/src/capture-rules.js";
+import { boundedTransportTimeoutMs, parseRetryAfter } from "../../../packages/sdk-browser/src/fetch-transport.js";
 import { DEFAULT_ENDPOINT, DEFAULT_RELAY_ENDPOINT } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser runtime helpers", () => {
@@ -129,6 +130,93 @@ describe("sdk-browser runtime helpers", () => {
         timeout_ms: 5000
       })
     ).resolves.toEqual({ status: 202, body: { ok: true } });
+  });
+
+  it("aborts a stalled built-in fetch at the configured transport deadline", async (): Promise<void> => {
+    let signal: AbortSignal | undefined;
+    const fetchSource = vi.fn((_url: unknown, init: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        signal = init.signal;
+        signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }));
+    vi.stubGlobal("fetch", fetchSource);
+    try {
+      const outcome = createFetchTransport()({
+        endpoint: "https://api.debugbundle.test/v1/events",
+        headers: {}, events: [], transportMode: "direct", timeout_ms: 10
+      }).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(signal?.aborted).toBe(true), { timeout: 500 });
+      await expect(outcome).resolves.toBeInstanceOf(Error);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not acknowledge a response whose body decoding exceeded the deadline", async (): Promise<void> => {
+    const fetchSource = vi.fn((_url: unknown, init: { signal: AbortSignal }) =>
+      Promise.resolve({
+        status: 202,
+        json: () => new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(new Error("aborted")));
+        })
+      }));
+    vi.stubGlobal("fetch", fetchSource);
+    try {
+      await expect(createFetchTransport()({
+        endpoint: "https://api.debugbundle.test/v1/events",
+        headers: {}, events: [], transportMode: "direct", timeout_ms: 10
+      })).rejects.toThrow("transport timeout");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps transport deadlines and retry hints finite when input is malformed", (): void => {
+    expect(boundedTransportTimeoutMs(Number.POSITIVE_INFINITY)).toBe(5_000);
+    expect(boundedTransportTimeoutMs(0)).toBe(1);
+    expect(boundedTransportTimeoutMs(100_000)).toBe(60_000);
+    expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter("2")).toBe(2_000);
+    expect(parseRetryAfter("-3")).toBe(0);
+    expect(parseRetryAfter("not-a-date")).toBeUndefined();
+    expect(parseRetryAfter(new Date(Date.now() + 5_000).toUTCString())).toBeGreaterThan(0);
+  });
+
+  it("fails safely when fetch or abort support is unavailable", async (): Promise<void> => {
+    const request = {
+      endpoint: "https://api.debugbundle.test/v1/events",
+      headers: {}, events: [], transportMode: "direct" as const, timeout_ms: 10
+    };
+    vi.stubGlobal("fetch", undefined);
+    try {
+      await expect(createFetchTransport()(request)).rejects.toThrow("fetch unavailable");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("AbortController", undefined);
+    try {
+      await expect(createFetchTransport()(request)).rejects.toThrow("abort controller unavailable");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("preserves retry hints and no-body success responses", async (): Promise<void> => {
+    const fetchSource = vi.fn().mockResolvedValue({
+      status: 429,
+      headers: { get: () => "2" }
+    });
+    vi.stubGlobal("fetch", fetchSource);
+    try {
+      await expect(createFetchTransport()({
+        endpoint: "https://api.debugbundle.test/v1/events",
+        headers: {}, events: [], transportMode: "direct", timeout_ms: 500
+      })).resolves.toEqual({ status: 429, retry_after_ms: 2_000 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("should derive the sdk config endpoint from supported event endpoints", (): void => {

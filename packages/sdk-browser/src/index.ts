@@ -12,7 +12,7 @@ import { applyBrowserCaptureRules, buildBrowserSuppressionKey } from "./event-pi
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
 import { captureNativeError, captureNativeRejection } from "./native-error-hooks.js";
 import { countFormFields, readNativeField, readStructuralTarget } from "./native-fields.js";
-import { EventSuppressionTracker } from "./suppression.js";
+import { createBrowserSuppressionEvent, EventSuppressionTracker } from "./suppression.js";
 import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
 import { BrowserProbeController } from "./probes.js";
 import { protectBrowserEvent } from "./privacy.js";
@@ -96,6 +96,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private sessionSampledIn = true;
   private sessionEventCount = 0;
   private reportedAcknowledgementDiagnostics = new Set<string>();
+  private readonly pendingEventOptions = new WeakMap<EventEnvelope, { applyRules: boolean; countTowardSession: boolean; capturedAt: number }>();
   private readonly suppressionTracker = new EventSuppressionTracker();
   private readonly probeController = new BrowserProbeController({
     getConfig: () => this.config,
@@ -105,6 +106,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     applyRemoteAnalytics: (config) => this.analyticsController.applyRemoteSettings(config)
   });
   private readonly eventTransport = new BrowserEventTransport({
+    beforeDebugFlush: () => this.enqueueSuppressionAggregates(),
+    prepareDebugEvent: (event) => this.prepareDebugEvent(event),
     onDebugResponse: (payload) => this.probeController.updateFromIngestionResponse(payload),
     onUnauthorized: (lane, statusCode, endpoint, body) => {
       this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
@@ -211,7 +214,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   public captureException(error: unknown, context: CaptureBrowserExceptionContext = {}): void {
     const config = this.config;
-    if (config === null) {
+    if (config === null || !this.eventTransport.canCaptureDebug("frontend_exception")) {
       return;
     }
 
@@ -300,6 +303,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     if (LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[config.logLevel]) {
       return;
     }
+    if (!this.eventTransport.canCaptureDebug("log_event", level)) return;
 
     try {
       const protectedAttributes = sanitizeTelemetry({
@@ -482,9 +486,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         this.flushViaBeacon();
       };
       const onError = (event: unknown): void => {
+        if (!this.eventTransport.canCaptureDebug("frontend_exception")) return;
         captureNativeError(event, (error, context) => this.captureException(error, context));
       };
       const onUnhandledRejection = (event: unknown): void => {
+        if (!this.eventTransport.canCaptureDebug("frontend_exception")) return;
         captureNativeRejection(event, (error, context) => this.captureException(error, context));
       };
 
@@ -614,6 +620,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
+    if (config.breadcrumbsOnErrorOnly !== true && !this.eventTransport.canCaptureDebug("frontend_breadcrumb")) return;
     const protectedBreadcrumb = sanitizeTelemetry(breadcrumb, { additionalKeys: config.redactFields });
     if (!protectedBreadcrumb.ok || protectedBreadcrumb.value === null ||
         Array.isArray(protectedBreadcrumb.value) || typeof protectedBreadcrumb.value !== "object") return;
@@ -698,7 +705,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     directive: BrowserRemoteProbeDirective
   ): void {
     const config = this.config;
-    if (config === null) {
+    if (config === null || !this.eventTransport.canCaptureDebug("probe_event")) {
       return;
     }
     this.enqueueEvent(
@@ -749,6 +756,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       return;
     }
 
+    if (!this.eventTransport.canCaptureDebug("request_event", undefined, statusCode)) return;
     const rawUrl = typeof data["url"] === "string" && data["url"].length > 0 ? data["url"] : "/";
     const method = typeof data["method"] === "string" && data["method"].length > 0 ? data["method"] : "GET";
     const durationMs = typeof data["duration_ms"] === "number" && Number.isFinite(data["duration_ms"])
@@ -814,75 +822,61 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private enqueueEvent(event: EventEnvelope, countTowardSession = true): void {
-    const protectedInput = protectBrowserEvent(event, this.config?.redactFields ?? []);
-    if (protectedInput === null) return;
-    const beforeSendEvent = applyBrowserBeforeSend(protectedInput, this.config?.beforeSend);
-    if (beforeSendEvent === null) {
-      return;
-    }
-
-    const protectedResult = protectBrowserEvent(beforeSendEvent, this.config?.redactFields ?? []);
-    if (protectedResult === null) return;
-
-    const captureRuleResult = applyBrowserCaptureRules({
-      config: this.config,
-      event: protectedResult,
-      currentRoute: this.getCurrentRoute(),
-      now: new Date().toISOString()
-    });
-    if (captureRuleResult.breadcrumb !== null) {
-      this.addBreadcrumb(captureRuleResult.breadcrumb);
-    }
-    const resolvedEvent = captureRuleResult.event;
-    if (resolvedEvent === null) {
-      return;
-    }
-
-    if (!this.shouldCaptureBySampleRate(resolvedEvent)) {
-      return;
-    }
-
-    const suppressionKey = buildBrowserSuppressionKey(resolvedEvent);
-    if (suppressionKey !== null && !this.suppressionTracker.shouldCapture(suppressionKey, Date.now())) {
-      this.eventTransport.scheduleDebug();
-      return;
-    }
-
-    this.enqueueInternalEvent(resolvedEvent, countTowardSession, false);
+    this.admitDebugEvent(event, countTowardSession, true);
   }
 
   private enqueueAnalyticsEvent(event: BrowserAnalyticsEventEnvelope): void {
     this.eventTransport.enqueueAnalytics(event);
   }
 
-  private enqueueInternalEvent(event: DebugBundleBrowserTransportEvent, countTowardSession = true, applyBeforeSend = true): void {
+  private enqueueInternalEvent(event: DebugBundleBrowserTransportEvent, countTowardSession = true): void {
+    if (event.event_type !== "analytics_event") this.admitDebugEvent(event, countTowardSession, false);
+  }
+
+  private admitDebugEvent(event: EventEnvelope, countTowardSession: boolean, applyRules: boolean): void {
     const config = this.config;
-    if (config === null || this.eventTransport.debugRejected) {
-      return;
-    }
+    if (config === null || this.eventTransport.debugRejected) return;
+    const protectedInput = protectBrowserEvent(event, config.redactFields);
+    if (protectedInput === null) return;
+    this.pendingEventOptions.set(protectedInput, { applyRules, countTowardSession, capturedAt: Date.now() });
+    // Without an application hook retain the established immediate policy path.
+    // Hook-bearing events remain privacy-safe in the same bounded transport queue.
+    const resolved = config.beforeSend === undefined ? this.prepareDebugEvent(protectedInput) : protectedInput;
+    if (resolved !== null) this.eventTransport.enqueueDebug(resolved, config.beforeSend !== undefined);
+  }
 
-    if (applyBeforeSend && event.event_type !== "analytics_event") {
-      const protectedInput = protectBrowserEvent(event, config.redactFields);
-      if (protectedInput === null) return;
-      const beforeSendEvent = applyBrowserBeforeSend(protectedInput, config.beforeSend);
-      if (beforeSendEvent === null) {
-        return;
+  private prepareDebugEvent(event: DebugBundleBrowserTransportEvent): DebugBundleBrowserTransportEvent | null {
+    if (event.event_type === "analytics_event") return event;
+    const options = this.pendingEventOptions.get(event);
+    if (options === undefined) return event;
+    this.pendingEventOptions.delete(event);
+    const config = this.config;
+    if (config === null) return null;
+    const replacement = applyBrowserBeforeSend(event, config.beforeSend);
+    if (replacement === null || this.config !== config) return null;
+    const protectedResult = protectBrowserEvent(replacement, config.redactFields);
+    if (protectedResult === null) return null;
+    // A valid replacement cannot bypass authoritative level or session policy.
+    if (protectedResult.event_type === "log_event" &&
+        LOG_LEVEL_ORDER[normalizeLogLevel(protectedResult.payload.level)] < LOG_LEVEL_ORDER[config.logLevel]) return null;
+    if (options.countTowardSession && protectedResult.event_type !== "frontend_exception" &&
+        !this.shouldCaptureNonExceptionEvent()) return null;
+    let resolvedEvent = protectedResult;
+    if (options.applyRules) {
+      const result = applyBrowserCaptureRules({ config, event: protectedResult,
+        currentRoute: protectedResult.event_type === "frontend_exception" ? protectedResult.payload.route ?? null : null,
+        now: new Date(options.capturedAt).toISOString() });
+      if (result.breadcrumb !== null) this.addBreadcrumb(result.breadcrumb);
+      if (result.event === null || !this.shouldCaptureBySampleRate(result.event)) return null;
+      resolvedEvent = result.event;
+      const key = buildBrowserSuppressionKey(resolvedEvent);
+      if (key !== null && !this.suppressionTracker.shouldCapture(key, options.capturedAt)) {
+        this.eventTransport.scheduleDebug();
+        return null;
       }
-
-      event = beforeSendEvent;
     }
-
-    if (event.event_type !== "analytics_event") {
-      const protectedResult = protectBrowserEvent(event, config.redactFields);
-      if (protectedResult === null) return;
-      event = protectedResult;
-    }
-
-    this.eventTransport.enqueueDebug(event);
-    if (countTowardSession && event.event_type !== "frontend_exception") {
-      this.sessionEventCount += 1;
-    }
-
+    if (options.countTowardSession && resolvedEvent.event_type !== "frontend_exception") this.sessionEventCount += 1;
+    return resolvedEvent;
   }
 
   private shouldCaptureBySampleRate(event: EventEnvelope): boolean {
@@ -914,6 +908,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private flushViaBeacon(): void {
     this.analyticsController.prepareForUnload();
+    this.enqueueSuppressionAggregates();
     this.eventTransport.flushViaBeacon();
   }
 
@@ -964,30 +959,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     for (const aggregate of this.suppressionTracker.drainAggregates(Date.now())) {
-      this.enqueueInternalEvent(
-        this.createSdkEventEnvelope(config, {
-          schema_version: SDK_SCHEMA_VERSION,
-          event_type: "error_suppressed",
-          ...this.getProjectTokenFields(config),
-          sdk_name: SDK_NAME,
-          sdk_version: SDK_VERSION,
-          service: {
-            name: config.service,
-            runtime: "browser",
-            framework: null,
-            environment: config.environment
-          },
-          occurred_at: aggregate.lastSeen,
-          payload: {
-            fingerprint: aggregate.fingerprint,
-            suppressed_count: aggregate.suppressedCount,
-            window_seconds: aggregate.windowSeconds,
-            first_seen: aggregate.firstSeen,
-            last_seen: aggregate.lastSeen
-          }
-        }),
-        false
-      );
+      this.enqueueInternalEvent(createBrowserSuppressionEvent(config, aggregate), false);
     }
   }
 

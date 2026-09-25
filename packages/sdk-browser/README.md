@@ -64,7 +64,7 @@ Browser-native `window.error` and resource-load failures include sanitized `brow
 
 Global `unhandledrejection` captures include a bounded `rejection_reason` summary when the browser exposes the original reason. Error reasons preserve name/message, string reasons preserve a truncated preview, object reasons may preserve sanitized name/message plus type preview, and null/undefined reasons are represented explicitly.
 
-The Browser SDK exposes a synchronous `beforeSend` hook for app-owned final redaction or local suppression before an event is buffered. Use project capture rules first for known operational noise because they are centralized and auditable, and use `networkFilter` for network breadcrumb/request capture choices.
+The Browser SDK exposes a synchronous-return `beforeSend` hook for app-owned final redaction or local suppression. Version 3 defers invocation until capture returns and privacy-safe bounded admission; application callbacks must return promptly on the JavaScript event loop. Use project capture rules first for known operational noise because they are centralized and auditable, and use `networkFilter` for network breadcrumb/request capture choices.
 
 Network wrapping is designed to preserve normal browser behavior. The SDK supports `fetch()` calls with `string`, `URL`, and `Request` inputs, and preserves caller headers provided as `Headers`, header tuple arrays, or records. When trace propagation is enabled for a request, the SDK adds `X-DebugBundle-Trace-Id` to the effective header set without dropping existing headers such as `Authorization`.
 
@@ -81,7 +81,7 @@ Network wrapping is designed to preserve normal browser behavior. The SDK suppor
 | `redactFields` | common sensitive fields | Additional field names to redact. |
 | `sampleRate` | `1.0` | Per-event sampling rate. |
 | `sessionSampleRate` | `1.0` | Per-session capture sampling rate. |
-| `batchSize` | `10` | Events per batch before flushing. |
+| `batchSize` | `10` | Events per batch before flushing; each send is capped at 256 events so a stalled send retains room for higher-priority events within the 512-event debug queue. |
 | `flushInterval` | `3000` | Flush interval in milliseconds. |
 | `logLevel` | `warning` | Minimum captured browser log severity. |
 | `maxBreadcrumbs` | `10` | Breadcrumb ring-buffer size. |
@@ -96,9 +96,15 @@ Network wrapping is designed to preserve normal browser behavior. The SDK suppor
 | `maxProbeLabels` | `50` | Maximum distinct probe labels buffered in memory. |
 | `maxProbeEntriesPerLabel` | `10` | Maximum entries retained per probe label. |
 | `probeFlushOnError` | `true` | Attach buffered probe data to captured exceptions. |
-| `requestTimeoutMs` | `5000` | Transport timeout in milliseconds. |
+| `requestTimeoutMs` | `5000` | Built-in fetch and keepalive fallback deadline in milliseconds, capped at 60,000. Custom transports must honor their `timeout_ms` request field. |
+
 | `transport` | fetch transport | Custom transport function for tests or advanced routing. |
-| `beforeSend` | none | Synchronous hook that receives a fully built event before buffering; return an event to keep it or `null` to drop it locally. |
+| `beforeSend` | none | Synchronous-return hook deferred until after capture returns and bounded admission; return an event to keep it or `null` to drop it. |
+
+If the SDK is reconfigured while an old send is still pending, new events are discarded until that send settles. This bounds retained telemetry across configurations; custom transports should honor `timeout_ms` so recovery is prompt.
+Repeated unload callbacks share one pending keepalive fallback per transport lane; ordinary sends resume after it settles. A failed fallback leaves its events queued for ordinary retry while the page remains active.
+Duplicate-exception suppression summaries are included by automatic timer sends and page-unload delivery as well as explicit `flush()`.
+The debug queue has a 512-event/8-MiB cap. Public log and exception capture reject known full-queue pressure before event construction, application context reads, or `beforeSend`; the same priority policy still allows eligible incidents to replace unsent lower-priority events. Accepted hooks run after capture returns, and final serialization enforces the exact byte limit before the next hook is invoked. Under pressure it keeps exceptions and failed requests ahead of ordinary traffic and retains existing ERROR records instead of repeatedly replacing them with later equal-priority logs. Dropped or displaced debug events are counted in one metadata-only `error_suppressed` queue-pressure summary when capacity returns, at most once per 30 seconds. If a later exception burst evicts the unsent summary, its count is retained for the next report. A page that closes before recovery can lose this best-effort summary.
 
 `tracePropagationTargets` is separate from the relay `endpoint`. Same-origin application requests receive trace headers by default. For split frontend/backend deployments, add the backend API origin, such as `https://api.example.com`, when cross-origin first-party requests should receive `X-DebugBundle-Trace-Id` and be eligible for policy-driven request-failure promotion. Third-party absolute URLs are not traced by default.
 
@@ -133,7 +139,7 @@ Handled HTTP responses do not need to throw an exception to become request incid
 
 ### Local beforeSend hook
 
-Use `beforeSend` for app-owned local policy such as final redaction, tenant-specific suppression, or filtering a browser signal that should never leave the page. The hook runs after the SDK builds the event and before project capture rules, sampling, suppression, and transport.
+Use `beforeSend` for app-owned local policy such as final redaction, tenant-specific suppression, or filtering a browser signal that should never leave the page. Cheap level and policy checks and bounded admission run first. The hook then runs after capture returns, before final project capture rules, sampling, suppression, and transport. It executes on the JavaScript event loop, so the application callback must return promptly.
 
 ```ts
 debugbundle.init({
@@ -238,3 +244,7 @@ HTTP(S) stack locations and browser-event page/resource URLs omit credentials, q
 Resource failures retain their target and page evidence; the server derives resource titles and cross-route grouping without a new capture payload or Bundle version. Noise rules should match the exact resource host/path, service and environment. Treat tracker blocking as a possible cause, not proof of a browser extension or network blocker. Google sign-in and application assets should remain actionable unless an operator explicitly decides otherwise.
 
 Resource `first_party` evaluation compares the captured page and target origins (including scheme and port), rather than assuming every absolute URL is third-party. Absolute targets without a page origin stay unknown; root-relative targets remain same-origin. The SDK preserves external protocol-relative target hosts and strips credentials/query/fragment. Server enforcement remains authoritative for installed older SDKs; SDK-side drop/sample support can reduce transmission after compatible rules are adopted.
+
+### Version 3 callback timing
+
+Version 3 defers optional `beforeSend` callbacks until capture returns. Callbacks still execute on the browser event loop and must return promptly. Pending and finalized events share a bounded queue; overload may drop pending events before their hook runs. Unload delivery includes only finalized events, so call `await sdk.flush()` before intentional navigation when possible. See [the version 3 migration guide](https://github.com/debugbundle/debugbundle-js/blob/main/MIGRATION-3.0.md).
