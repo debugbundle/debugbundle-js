@@ -181,6 +181,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       captureRules: [],
       fetchImpl: getFetchSource(),
       transport: config.transport ?? createFetchTransport(),
+      requireAcknowledgement: config.transport === undefined && resolvedTransport.mode === "direct",
       transportMode: resolvedTransport.mode,
       ...(config.beforeSend === undefined ? {} : { beforeSend: config.beforeSend })
     };

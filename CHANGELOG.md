@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-09-25
+
+### Fixed
+
+- Require canonical acknowledgements for built-in direct browser ingestion while preserving bodyless custom-transport and legacy-relay compatibility.
+- Keep acknowledged events charged to the bounded queue while an overlapping sender still owns them, and prevent late retry responses from resurrecting acknowledged events.
+- Honor lifecycle rate-limit backoff, cap Retry-After at five minutes, stop after authorization rejection, and include existing keepalive requests in the shared explicit-flush deadline.
+- Share the 60-KiB lifecycle budget across debug and analytics, including repeated callbacks and pending requests. Accepted relay beacons retain their reservation because they expose no completion signal; ordinary delivery remains available.
+- Clarify mandatory default redaction and optional application-hook responsibility. Node is republished at the coordinated 3.0.2 version without a Node runtime implementation change.
+
 ## [3.0.1] - 2026-09-25
 
 ### Fixed

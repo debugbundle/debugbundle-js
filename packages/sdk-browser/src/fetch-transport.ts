@@ -21,9 +21,13 @@ export function boundedTransportTimeoutMs(requested: number): number {
 export function parseRetryAfter(value: string | null): number | undefined {
   if (value === null) return undefined;
   const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+  if (Number.isFinite(seconds)) return boundedRetryAfterMs(seconds * 1_000);
   const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : Math.max(0, parsed - Date.now());
+  return Number.isNaN(parsed) ? undefined : boundedRetryAfterMs(parsed - Date.now());
+}
+
+export function boundedRetryAfterMs(value: number | undefined): number {
+  return value === undefined || Number.isNaN(value) ? 1_000 : Math.min(300_000, Math.max(0, value));
 }
 
 export function createFetchTransport(): DebugBundleBrowserTransport {

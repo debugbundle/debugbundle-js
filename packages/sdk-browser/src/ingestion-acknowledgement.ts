@@ -18,10 +18,11 @@ export type BrowserAcknowledgementDecision =
 
 export function decideBrowserAcknowledgement(
   body: unknown,
-  batchLength: number
+  batchLength: number,
+  required = false
 ): BrowserAcknowledgementDecision {
   if (!hasAcknowledgementFields(body)) {
-    return { kind: "legacy" };
+    return required ? { kind: "protocol_failure", reason: "missing_acknowledgement" } : { kind: "legacy" };
   }
   const acknowledgement = body;
   if (

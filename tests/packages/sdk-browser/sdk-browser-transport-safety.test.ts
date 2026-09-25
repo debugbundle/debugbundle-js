@@ -345,7 +345,7 @@ describe("sdk-browser transport safety", () => {
     transport.flushViaBeacon();
     await Promise.resolve();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await transport.flush();
+    const flushing = transport.flush();
     expect(normalSend).not.toHaveBeenCalled();
     for (let index = 0; index < 512; index += 1) transport.enqueueDebug(event(`error-${index}`, "error"));
 
@@ -358,6 +358,7 @@ describe("sdk-browser transport safety", () => {
       .toBeLessThanOrEqual(512);
 
     releaseKeepalive({ status: 202 });
+    await flushing;
     await vi.waitFor(() => expect(retained.inFlightEvents.size).toBe(0));
     transport.reset();
   });

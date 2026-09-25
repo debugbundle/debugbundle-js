@@ -71,7 +71,7 @@ The package READMEs contain the full option tables. The short rule for this repo
 2. Runtime-derived defaults fill in omitted values such as environment or service fallback.
 3. capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
 
-`beforeSend` is available in both JS SDKs for app-owned local filtering or final redaction before an event is buffered. Return the event to continue shipping it, or return `null` to drop it locally. Project capture rules remain the preferred operational noise-control surface because they are centralized and auditable.
+`beforeSend` is optional in both JS SDKs for app-owned local filtering or final redaction before delivery. Mandatory sanitization protects admitted events before buffering without a hook. Version 3 invokes hooks after capture returns; valid replacements are sanitized again. Return the event to continue shipping it, or return `null` to drop it locally. Hooks run on the JavaScript event loop and must return promptly. Project capture rules remain the preferred operational noise-control surface because they are centralized and auditable.
 
 For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure `transportMode: "relay"`, a relay endpoint, plus service and environment names. Same-origin relay paths are inferred for compatibility; absolute backend relay URLs need explicit relay mode. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
 

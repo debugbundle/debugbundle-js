@@ -549,6 +549,7 @@ export interface ActiveConfig {
   captureRules: BrowserCaptureRule[];
   fetchImpl: BrowserFetch | null;
   transport: DebugBundleBrowserTransport;
+  requireAcknowledgement?: boolean;
   transportMode: BrowserTransportMode;
   beforeSend?: BrowserBeforeSendHook;
 }
