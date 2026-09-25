@@ -147,10 +147,12 @@ jobs:
       - name: Verify stable shared-package availability
         run: |
           for package_name in @debugbundle/shared-types @debugbundle/redaction; do
-            npm view "${package_name}@${RELEASE_VERSION}" version >/dev/null
+            dependency_version="$(PACKAGE_NAME="$package_name" node -p "require('./packages/sdk-node/package.json').dependencies[process.env.PACKAGE_NAME]")"
+            browser_version="$(PACKAGE_NAME="$package_name" node -p "require('./packages/sdk-browser/package.json').dependencies[process.env.PACKAGE_NAME]")"
+            test -n "$dependency_version"
+            test "$dependency_version" = "$browser_version"
+            npm view "${package_name}@${dependency_version}" version >/dev/null
           done
-        env:
-          RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
 
       - name: Run lint, typecheck, tests, and build
         run: |
