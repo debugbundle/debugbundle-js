@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-09-25
+
+### Fixed
+
+- Use authenticated keepalive fetch for direct browser ingestion during page lifecycle delivery. A credential-free beacon cannot satisfy the ingestion API's bearer-token requirement.
+- Keep browser lifecycle request bodies below 60 KiB. Relay beacons and keepalive requests send a bounded subset, retain the remainder for ordinary delivery while the page survives, and leave oversized individual events to the ordinary transport. A throwing relay beacon falls back to keepalive without escaping into the host page.
+- Correct browser delivery documentation to state the best-effort shutdown boundary. The Node package is republished at the coordinated 3.0.1 version without a Node runtime change.
+
 ## [3.0.0] - 2026-09-25
 
 ### Breaking changes

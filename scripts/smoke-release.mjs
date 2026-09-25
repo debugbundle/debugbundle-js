@@ -157,6 +157,7 @@ const relayRequests = [];
 let sawNodeMessageEvent = false;
 let sawBrowserExceptionEvent = false;
 let sawBrowserResourceErrorEvent = false;
+let sawBrowserDirectUnloadEvent = false;
 
 function defineGlobal(name, value) {
   Object.defineProperty(globalThis, name, {
@@ -234,6 +235,16 @@ const ingestionServer = createHttpServer(async (request, response) => {
         visibility_state: "visible"
       });
       sawBrowserResourceErrorEvent = true;
+    }
+
+    if (
+      event.sdk_name === "@debugbundle/sdk-browser" &&
+      event.event_type === "log_event" &&
+      event.payload?.message === "browser direct unload"
+    ) {
+      assert.equal(event.sdk_version, releaseVersion);
+      assert.equal(event.project_token, serverProjectToken);
+      sawBrowserDirectUnloadEvent = true;
     }
   }
 
@@ -316,6 +327,7 @@ assert.equal(nodeResponse.status, 200);
 await nodeSdk.flush();
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
+const directUnloadRequests = [];
 const windowListeners = new Map();
 const documentListeners = new Map();
 
@@ -356,6 +368,9 @@ defineGlobal("navigator", {
   maxTouchPoints: 0,
   connection: {
     effectiveType: "4g"
+  },
+  sendBeacon() {
+    throw new Error("direct_unload_must_not_use_beacon");
   }
 });
 defineGlobal("screen", {
@@ -366,6 +381,9 @@ defineGlobal("matchMedia", () => ({ matches: false }));
 defineGlobal("fetch", async (input, init = {}) => {
   const isRelativePath = typeof input === "string" && input.startsWith("/");
   const requestUrl = isRelativePath ? new URL(input, appOrigin).toString() : input;
+  if (requestUrl === \`\${ingestionOrigin}/v1/events\` && init.keepalive) {
+    directUnloadRequests.push({ headers: new Headers(init.headers ?? {}), body: init.body });
+  }
   const headers = new Headers(init.headers ?? {});
   if (isRelativePath) {
     headers.set("origin", appOrigin);
@@ -416,6 +434,32 @@ browserErrorHandler({
 await browserSdk.flush();
 browserSdk.dispose();
 
+const directBrowserSdk = createDebugBundleBrowserSdk();
+directBrowserSdk.init({
+  projectToken: serverProjectToken,
+  transportMode: "direct",
+  endpoint: \`\${ingestionOrigin}/v1/events\`,
+  service: "smoke-web",
+  environment: "smoke-test",
+  captureNetwork: false,
+  captureClicks: false,
+  captureRouteChanges: false,
+  captureConsole: false,
+  flushInterval: 60_000
+});
+directBrowserSdk.captureMessage("browser direct unload", "error");
+const pagehideHandler = windowListeners.get("pagehide");
+assert.equal(typeof pagehideHandler, "function");
+pagehideHandler({ persisted: false });
+for (let attempt = 0; attempt < 100 && !sawBrowserDirectUnloadEvent; attempt += 1) {
+  await new Promise(resolve => setTimeout(resolve, 25));
+}
+assert.equal(sawBrowserDirectUnloadEvent, true);
+assert.equal(directUnloadRequests.length, 1);
+assert.equal(directUnloadRequests[0].headers.get("authorization"), \`Bearer \${serverProjectToken}\`);
+assert.ok(Buffer.byteLength(directUnloadRequests[0].body) <= 60 * 1024);
+directBrowserSdk.dispose();
+
 defineGlobal("fetch", nativeFetch);
 nodeSdk.dispose();
 
@@ -432,6 +476,7 @@ assert.ok(ingestionRequests.length >= 2);
 assert.equal(sawNodeMessageEvent, true);
 assert.equal(sawBrowserExceptionEvent, true);
 assert.equal(sawBrowserResourceErrorEvent, true);
+assert.equal(sawBrowserDirectUnloadEvent, true);
 
 ingestionServer.closeAllConnections?.();
 appServer.closeAllConnections?.();

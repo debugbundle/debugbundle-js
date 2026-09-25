@@ -32,6 +32,8 @@ debugbundle.init({
 
 The browser SDK starts capture only after `init()` is called. Importing the package has no side effects.
 
+Lifecycle delivery is best effort. Relay mode uses a credential-free beacon when possible; direct-cloud mode uses authenticated `fetch(keepalive)` because ingestion requires a bearer header. Each unload request is limited to 60 KiB. Events that do not fit, or whose keepalive request fails, remain queued for ordinary delivery while the page stays active. Closing the page can still lose pending events.
+
 ## Transport Modes
 
 | Mode | Configuration | Use when |
@@ -102,7 +104,7 @@ Network wrapping is designed to preserve normal browser behavior. The SDK suppor
 | `beforeSend` | none | Synchronous-return hook deferred until after capture returns and bounded admission; return an event to keep it or `null` to drop it. |
 
 If the SDK is reconfigured while an old send is still pending, new events are discarded until that send settles. This bounds retained telemetry across configurations; custom transports should honor `timeout_ms` so recovery is prompt.
-Repeated unload callbacks share one pending keepalive fallback per transport lane; ordinary sends resume after it settles. A failed fallback leaves its events queued for ordinary retry while the page remains active.
+Repeated unload callbacks share one pending keepalive request per transport lane; ordinary sends resume after it settles. A failed request leaves its events queued for ordinary retry while the page remains active.
 Duplicate-exception suppression summaries are included by automatic timer sends and page-unload delivery as well as explicit `flush()`.
 The debug queue has a 512-event/8-MiB cap. Public log and exception capture reject known full-queue pressure before event construction, application context reads, or `beforeSend`; the same priority policy still allows eligible incidents to replace unsent lower-priority events. Accepted hooks run after capture returns, and final serialization enforces the exact byte limit before the next hook is invoked. Under pressure it keeps exceptions and failed requests ahead of ordinary traffic and retains existing ERROR records instead of repeatedly replacing them with later equal-priority logs. Dropped or displaced debug events are counted in one metadata-only `error_suppressed` queue-pressure summary when capacity returns, at most once per 30 seconds. If a later exception burst evicts the unsent summary, its count is retained for the next report. A page that closes before recovery can lose this best-effort summary.
 
@@ -129,7 +131,7 @@ debugbundle.analytics.marker("checkout.validation_failed", {
 });
 ```
 
-`marker()` emits a bounded `journey_marker` with a privacy-safe marker key and optional low-cardinality dimensions. `trackActions: true` additionally emits generic structural action keys such as `click.button` and `click.link`; it is independent from debug `captureClicks` and never retains target text, selectors, IDs, URLs, attributes, or form values. `trackFrictionSignals` defaults to true and emits only fixed `friction.repeated_click`, `friction.dead_click`, and `friction.backtrack` markers from bounded in-memory click timing and route reversal heuristics; it never serializes target-derived data. The SDK emits one `session_summary` before a non-persisted `pagehide` and reuses its existing beacon/keepalive flush path. It does not emit a summary when a page enters the back-forward cache.
+`marker()` emits a bounded `journey_marker` with a privacy-safe marker key and optional low-cardinality dimensions. `trackActions: true` additionally emits generic structural action keys such as `click.button` and `click.link`; it is independent from debug `captureClicks` and never retains target text, selectors, IDs, URLs, attributes, or form values. `trackFrictionSignals` defaults to true and emits only fixed `friction.repeated_click`, `friction.dead_click`, and `friction.backtrack` markers from bounded in-memory click timing and route reversal heuristics; it never serializes target-derived data. The SDK emits one `session_summary` before a non-persisted `pagehide` and uses the configured transport mode's bounded lifecycle delivery path. It does not emit a summary when a page enters the back-forward cache.
 
 For direct-cloud installs, `privacyMode: "standard"` keeps an opaque first-party anonymous visitor value in browser storage under a key derived from the SHA-256 digest of the public write-only project token. Events contain only a separate SHA-256-derived `visitor_id_hash`, enabling returning-visitor metrics without persisting or emitting the token or raw value. The SDK removes that value when consent is withdrawn or server settings force strict privacy. If browser storage or Web Crypto is unavailable, it safely falls back to session-only analytics. Relay installs remain session-only for visitor identity until the relay has an authenticated project-scope bootstrap; the relay/ingestion path still enforces project settings.
 

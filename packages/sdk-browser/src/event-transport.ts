@@ -87,6 +87,8 @@ const MAX_DEBUG_QUEUED_EVENTS = 512;
 const MAX_ANALYTICS_QUEUED_EVENTS = 256;
 const MAX_DEBUG_QUEUED_BYTES = 8 * 1024 * 1024;
 const MAX_ANALYTICS_QUEUED_BYTES = 4 * 1024 * 1024;
+// Leave room below the shared 64-KiB browser keepalive/beacon body limit.
+const MAX_UNLOAD_BODY_BYTES = 60 * 1024;
 const PRESSURE_REPORT_INTERVAL_MS = 30_000;
 
 function recordDebugPressure(lane: BrowserTransportLane): void {
@@ -548,24 +550,42 @@ export class BrowserEventTransport {
   private flushLaneViaBeacon(laneName: BrowserTransportLaneName): void {
     const config = this.config;
     const lane = this.getLane(laneName);
-    const navigatorSource = getNavigatorSource();
     if (config === null || lane.events.length === 0 || lane.rejected ||
-        navigatorSource === null || lane.keepalivePending || this.getRetired(laneName).size > 0) {
+        lane.keepalivePending || this.getRetired(laneName).size > 0) {
       return;
     }
 
     // Unload may transmit only finalized records. Running a pending application
     // hook here would bypass its deferred boundary and can hold page shutdown.
-    const pendingEvents = lane.events.filter(event => laneName !== "debug" || lane.prepared.has(event) ||
-      this.callbacks.prepareDebugEvent === undefined);
-    if (pendingEvents.length === 0) return;
+    const pendingEvents: DebugBundleBrowserTransportEvent[] = [];
+    let bodyBytes = buildBrowserTransportRequestBody(config.transportMode, []).length;
+    for (const event of lane.events) {
+      if (laneName === "debug" && !lane.prepared.has(event) && this.callbacks.prepareDebugEvent !== undefined) continue;
+      const bytes = eventBytes(lane, event);
+      if (bytes === null || bodyBytes + bytes + (pendingEvents.length === 0 ? 0 : 1) > MAX_UNLOAD_BODY_BYTES) continue;
+      pendingEvents.push(event);
+      bodyBytes += bytes + (pendingEvents.length === 1 ? 0 : 1);
+      if (pendingEvents.length >= 256) break;
+    }
+    if (pendingEvents.length === 0) {
+      // A large individual event needs the ordinary transport while the page is still active.
+      this.schedule(laneName, 0);
+      return;
+    }
     const body = buildBrowserTransportRequestBody(config.transportMode, pendingEvents);
+    if (new TextEncoder().encode(body).byteLength > MAX_UNLOAD_BODY_BYTES) {
+      this.schedule(laneName, 0);
+      return;
+    }
     const flushViaKeepalive = (): void => {
       if (config.fetchImpl === null) {
         void this.flushLane(laneName);
         return;
       }
-      if (typeof AbortController !== "function") return;
+      if (typeof AbortController !== "function") {
+        this.schedule(laneName, 0);
+        return;
+      }
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), boundedTransportTimeoutMs(config.requestTimeoutMs));
       lane.keepalivePending = true;
@@ -588,31 +608,49 @@ export class BrowserEventTransport {
         if (lane.inFlightEvents.size === 0) lane.beaconCommitted = false;
         if (lane.inFlightEvents.size === 0) this.getRetired(laneName).delete(lane);
         if (this.getLane(laneName) === lane && lane.events.length > 0 && !lane.rejected) {
-          this.schedule(laneName);
+          this.schedule(laneName, lane.events.length > pendingEvents.length ? 0 : undefined);
         }
       });
     };
 
-    // Unload delivery preserves the established beacon-first path; a declined or
-    // unavailable beacon falls back to keepalive fetch so acknowledgements can
-    // still be reconciled when the browser permits a response.
-    if (typeof navigatorSource.sendBeacon !== "function") {
+    // Direct ingestion requires a bearer header, which sendBeacon cannot set.
+    if (config.transportMode === "direct") {
       flushViaKeepalive();
       return;
     }
 
-    const beaconBody = typeof Blob === "function"
-      ? new Blob([body], { type: "application/json" })
-      : body;
-    if (navigatorSource.sendBeacon(config.endpoint, beaconBody)) {
-      lane.events = [];
-      lane.queuedBytes = 0;
-      invalidateAdmission(lane);
-      // A concurrent send still owns its snapshot; pause capture until it settles.
-      lane.beaconCommitted = lane.inFlightEvents.size > 0;
-      lane.nextRetryAt = null;
-      this.clearLaneTimer(lane);
+    const navigatorSource = getNavigatorSource();
+    // Relay beacons remain credential-free. A declined/unavailable beacon uses
+    // keepalive fetch so acknowledgements can be reconciled when possible.
+    if (typeof navigatorSource?.sendBeacon !== "function") {
+      flushViaKeepalive();
       return;
+    }
+
+    try {
+      const beaconBody = typeof Blob === "function"
+        ? new Blob([body], { type: "application/json" })
+        : body;
+      if (navigatorSource.sendBeacon(config.endpoint, beaconBody)) {
+        const selected = new Map<DebugBundleBrowserTransportEvent, number>();
+        for (const event of pendingEvents) selected.set(event, (selected.get(event) ?? 0) + 1);
+        lane.events = lane.events.filter(event => {
+          const remaining = selected.get(event) ?? 0;
+          if (remaining === 0) return true;
+          selected.set(event, remaining - 1);
+          return false;
+        });
+        lane.queuedBytes -= pendingEvents.reduce((total, event) => total + (lane.sizes.get(event) ?? 0), 0);
+        invalidateAdmission(lane);
+        // A concurrent send still owns its snapshot; pause capture until it settles.
+        lane.beaconCommitted = lane.inFlightEvents.size > 0;
+        lane.nextRetryAt = null;
+        this.clearLaneTimer(lane);
+        if (lane.events.length > 0 && !lane.beaconCommitted) this.schedule(laneName, 0);
+        return;
+      }
+    } catch {
+      // Browser beacon failures must never escape a page lifecycle listener.
     }
     flushViaKeepalive();
   }

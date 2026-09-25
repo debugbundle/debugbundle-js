@@ -14,10 +14,12 @@ Pending hooks and finalized events share the same 512-event/8-MiB debug queue, i
 
 Use `await sdk.flush()` before intentional navigation when hook-dependent delivery matters. Page-unload beacon delivery sends only finalized events; pending application hooks are not invoked from the unload handler, and those pending events may be lost. Flush waiting shares one deadline, using the configured request timeout clamped to 1–60,000 ms. Expiry stops waiting without releasing ownership of a still-running custom transport. Browser shutdown never guarantees delivery. Capture rules, breadcrumbs, analytics, acknowledgement/retry behavior and the browser relay remain supported.
 
+From 3.0.1, direct ingestion uses authenticated keepalive fetch on page exit; relay mode keeps credential-free beacons. Both lifecycle paths cap individual request bodies at 60 KiB and keep the remainder queued for ordinary delivery while the page remains active. An event larger than that limit needs an ordinary send. The browser may terminate before any pending request or queued event is delivered.
+
 ## Node delivery
 
 The existing bounded buffer owns pending hooks and transport work. A single sender finalizes each admitted event, charges its protected replacement before processing the next callback, and reuses finalized objects on retry. Final level, request/probe policy, capture rules, sampling and suppression still apply. Hook changes to valid event IDs remain supported. Reinitialization from a callback cannot send stale work through the new configuration. Hooks are no longer capture-time notifications; use explicit flush/shutdown when delivery needs to be awaited.
 
 ## Coordinated packages
 
-The Node and browser packages are version 3.0.0. Their core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` dependencies retain their separately versioned 2.1.0 release line; SDK packaging must not rewrite those dependencies to the SDK's major version. Publish and verify those prerequisites before the SDKs, and qualify WordPress against the built browser archive.
+The Node and browser packages share a coordinated 3.0 release line. Their core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` dependencies retain their separately versioned 2.1.0 release line; SDK packaging must not rewrite those dependencies to the SDK's major version. Publish and verify those prerequisites before the SDKs, and qualify WordPress against the built browser archive.

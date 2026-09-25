@@ -241,15 +241,17 @@ describe("sdk-browser transport", () => {
     expect(events.filter((event) => event.event_type === "error_suppressed")).toHaveLength(1);
   });
 
-  it("includes a pending duplicate-suppression summary in the unload beacon", async (): Promise<void> => {
-    const { sdk, globals } = browserFixtures.createSdk({ batchSize: 10 });
+  it("includes a pending duplicate-suppression summary in the relay unload beacon", async (): Promise<void> => {
+    const { sdk, globals } = browserFixtures.createSdk({
+      batchSize: 10, transportMode: "relay", endpoint: "/debugbundle/browser"
+    });
     browserFixtures.captureRepeatedException(sdk, "unload duplicate", 5);
 
     globals.windowTarget.dispatch("pagehide", {});
     expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
     const body = globals.sendBeacon.mock.calls[0]?.[1] as Blob | string;
     const serialized = typeof body === "string" ? body : await body.text();
-    const events = (JSON.parse(serialized) as { events: DebugBundleBrowserTransportEvent[] }).events;
+    const events = (JSON.parse(serialized) as { batch: DebugBundleBrowserTransportEvent[] }).batch;
     expect(events.filter((event) => event.event_type === "frontend_exception")).toHaveLength(3);
     expect(events.filter((event) => event.event_type === "error_suppressed")).toHaveLength(1);
   });
@@ -355,23 +357,30 @@ describe("sdk-browser transport", () => {
     expect(browserFixtures.createTransportEvents(transport, 0).map((event) => event.event_type)).toEqual(["log_event", "log_event"]);
   });
 
-  it("should use sendBeacon when the page is unloading", (): void => {
+  it("uses authenticated keepalive instead of an unauthenticated beacon for direct ingestion", async (): Promise<void> => {
     const { sdk, globals } = browserFixtures.createSdk();
 
     sdk.captureMessage("flush me on unload", "error");
-
     globals.windowTarget.dispatch("pagehide", {});
+    await browserFixtures.settleAsyncInit();
 
-    expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
-    expect(globals.sendBeacon.mock.calls[0]?.[0]).toBe("https://api.debugbundle.com/v1/events");
+    expect(globals.sendBeacon).not.toHaveBeenCalled();
+    expect(globals.fetchMock).toHaveBeenCalledWith("https://api.debugbundle.com/v1/events", expect.objectContaining({
+      method: "POST",
+      keepalive: true,
+      headers: {
+        authorization: "Bearer dbundle_proj_browser",
+        "content-type": "application/json"
+      }
+    }));
   });
 
-  it("should fall back to fetch keepalive when sendBeacon declines the unload flush", async (): Promise<void> => {
+  it("does not use a direct-ingestion beacon even when the browser would accept one", async (): Promise<void> => {
     const { sdk, globals } = browserFixtures.createSdk();
 
     await browserFixtures.settleAsyncInit();
     globals.fetchMock.mockClear();
-    globals.sendBeacon.mockReturnValue(false);
+    globals.sendBeacon.mockReturnValue(true);
 
     sdk.captureMessage("flush me with keepalive", "error");
     globals.windowTarget.dispatch("pagehide", {});
@@ -379,7 +388,7 @@ describe("sdk-browser transport", () => {
     await browserFixtures.settleAsyncInit();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
+    expect(globals.sendBeacon).not.toHaveBeenCalled();
     expect(globals.fetchMock).toHaveBeenCalledTimes(1);
     expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.debugbundle.com/v1/events");
     expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({

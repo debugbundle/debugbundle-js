@@ -362,6 +362,132 @@ describe("sdk-browser transport safety", () => {
     transport.reset();
   });
 
+  it("keeps relay beacons below the browser body limit and retains the rest for ordinary delivery", async (): Promise<void> => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal("navigator", { sendBeacon });
+    const send = vi.fn().mockResolvedValue({ status: 202 });
+    const transport = new BrowserEventTransport({
+      onDebugResponse: vi.fn(), onUnauthorized: vi.fn(), onAcknowledgementDiagnostic: vi.fn()
+    });
+    transport.configure({
+      batchSize: 256, flushInterval: 60_000,
+      endpoint: "/debugbundle/browser", transportMode: "relay",
+      requestTimeoutMs: 5_000, projectToken: null, transport: send
+    } as unknown as ActiveConfig);
+    // A custom hook may return the same object for more than one queued event.
+    const sharedEvent = { event_id: "relay-shared", event_type: "log_event",
+      payload: { level: "error", message: "x".repeat(8_000) }
+    } as DebugBundleBrowserTransportEvent;
+    for (let index = 0; index < 12; index += 1) transport.enqueueDebug(sharedEvent);
+
+    transport.flushViaBeacon();
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+    const body = sendBeacon.mock.calls[0]?.[1] as Blob;
+    expect(body.size).toBeLessThanOrEqual(64 * 1024);
+    const sent = JSON.parse(await body.text()) as { batch: DebugBundleBrowserTransportEvent[] };
+    expect(sent.batch.length).toBeGreaterThan(0);
+    expect(sent.batch.length).toBeLessThan(12);
+    const lane = (transport as unknown as { debug: { events: DebugBundleBrowserTransportEvent[] } }).debug;
+    expect(lane.events.length + sent.batch.length).toBe(12);
+    await transport.flush();
+    expect(send.mock.calls.flatMap(([request]) =>
+      (request as { events: DebugBundleBrowserTransportEvent[] }).events).length).toBe(12 - sent.batch.length);
+    transport.reset();
+  });
+
+  it("leaves an oversized individual unload event for ordinary delivery", async (): Promise<void> => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("navigator", { sendBeacon });
+    const send = vi.fn().mockResolvedValue({ status: 202 });
+    const transport = new BrowserEventTransport({
+      onDebugResponse: vi.fn(), onUnauthorized: vi.fn(), onAcknowledgementDiagnostic: vi.fn()
+    });
+    transport.configure({
+      batchSize: 256, flushInterval: 60_000,
+      endpoint: "/debugbundle/browser", transportMode: "relay",
+      requestTimeoutMs: 5_000, projectToken: null, fetchImpl, transport: send
+    } as unknown as ActiveConfig);
+    transport.enqueueDebug({ event_id: "large", event_type: "log_event",
+      payload: { level: "error", message: "x".repeat(70_000) }
+    } as DebugBundleBrowserTransportEvent);
+
+    transport.flushViaBeacon();
+    expect(sendBeacon).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const lane = (transport as unknown as { debug: { events: DebugBundleBrowserTransportEvent[] } }).debug;
+    expect(lane.events.map(event => event.event_id)).toEqual(["large"]);
+    await transport.flush();
+    expect(send).toHaveBeenCalledTimes(1);
+    transport.reset();
+  });
+
+  it("bounds authenticated direct keepalive and retains a failed chunk with the remaining events", async (): Promise<void> => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal("navigator", { sendBeacon });
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 503 });
+    let releaseSend!: (response: { status: number }) => void;
+    const heldSend = new Promise<{ status: number }>(resolve => { releaseSend = resolve; });
+    const send = vi.fn().mockReturnValueOnce(heldSend);
+    const transport = new BrowserEventTransport({
+      onDebugResponse: vi.fn(), onUnauthorized: vi.fn(), onAcknowledgementDiagnostic: vi.fn()
+    });
+    transport.configure({
+      batchSize: 256, flushInterval: 60_000,
+      endpoint: "https://example.test/v1/events", transportMode: "direct",
+      requestTimeoutMs: 5_000, projectToken: "dbundle_proj_browser",
+      fetchImpl, transport: send
+    } as unknown as ActiveConfig);
+    for (let index = 0; index < 12; index += 1) {
+      transport.enqueueDebug({ event_id: `direct-${index}`, event_type: "log_event",
+        payload: { level: "error", message: "x".repeat(8_000) }
+      } as DebugBundleBrowserTransportEvent);
+    }
+
+    transport.flushViaBeacon();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    expect(sendBeacon).not.toHaveBeenCalled();
+    const request = fetchImpl.mock.calls[0]?.[1] as {
+      body: string;
+      keepalive: boolean;
+      headers: Record<string, string>;
+    };
+    expect(new TextEncoder().encode(request.body).byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(request.keepalive).toBe(true);
+    expect(request.headers["authorization"]).toBe("Bearer dbundle_proj_browser");
+    const lane = (transport as unknown as { debug: { events: DebugBundleBrowserTransportEvent[] } }).debug;
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(lane.events).toHaveLength(12);
+    expect(send.mock.calls.flatMap(([sent]) =>
+      (sent as { events: DebugBundleBrowserTransportEvent[] }).events).length).toBe(12);
+    releaseSend({ status: 202 });
+    await vi.waitFor(() => expect(lane.events).toHaveLength(0));
+    transport.reset();
+  });
+
+  it("falls back to relay keepalive when sendBeacon throws", async (): Promise<void> => {
+    vi.stubGlobal("navigator", { sendBeacon: vi.fn(() => { throw new Error("beacon unavailable"); }) });
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 202 });
+    const transport = new BrowserEventTransport({
+      onDebugResponse: vi.fn(), onUnauthorized: vi.fn(), onAcknowledgementDiagnostic: vi.fn()
+    });
+    transport.configure({
+      batchSize: 256, flushInterval: 60_000,
+      endpoint: "/debugbundle/browser", transportMode: "relay",
+      requestTimeoutMs: 5_000, projectToken: null, fetchImpl, transport: vi.fn()
+    } as unknown as ActiveConfig);
+    transport.enqueueDebug({ event_id: "throwing-beacon", event_type: "log_event",
+      payload: { level: "error", message: "still delivered" }
+    } as DebugBundleBrowserTransportEvent);
+
+    expect(() => transport.flushViaBeacon()).not.toThrow();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST", keepalive: true, headers: { "content-type": "application/json" }
+    });
+    transport.reset();
+  });
+
   it("coalesces repeated unload fallback calls while keepalive fetch is held", async (): Promise<void> => {
     vi.stubGlobal("navigator", {});
     let releaseKeepalive!: (response: { status: number }) => void;
@@ -491,8 +617,8 @@ describe("sdk-browser transport safety", () => {
     });
     transport.configure({
       batchSize: 1, flushInterval: 60_000,
-      endpoint: "https://example.test/v1/events", transportMode: "direct",
-      requestTimeoutMs: 5_000, projectToken: "dbundle_proj_browser", transport: sender
+      endpoint: "/debugbundle/browser", transportMode: "relay",
+      requestTimeoutMs: 5_000, projectToken: null, transport: sender
     } as unknown as ActiveConfig);
     const event = (id: string) => ({
       event_id: id, event_type: "log_event", payload: { level: "error", message: id }
