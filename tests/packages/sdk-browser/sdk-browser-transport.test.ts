@@ -4,6 +4,42 @@ import * as browserFixtures from "../../helpers/sdk-browser-fixtures.js";
 import type { DebugBundleBrowserTransportEvent } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser transport", () => {
+  it.each([429, 503, 202, 203])("honors retry hints and recovers after %i", async status => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-26T00:00:00Z"));
+    const { sdk, transport } = browserFixtures.createSdk({ flushInterval: 60_000 });
+    try {
+      transport.mockResolvedValueOnce({ status, retry_after_ms: 1e100,
+        body: status === 202 ? { accepted: 2, rejected: 0, errors: [] } :
+          { accepted: 0, rejected: 1, errors: [{ index: 0, reason: "rate_limited" }] } });
+      sdk.captureLog("retain", "error");
+      await sdk.flush();
+      vi.setSystemTime(new Date("2026-09-26T00:04:59Z"));
+      await sdk.flush();
+      expect(transport).toHaveBeenCalledTimes(1);
+      expect(sdk.lastEventAt).toBeNull();
+      vi.setSystemTime(new Date("2026-09-26T00:05:01Z"));
+      await sdk.flush();
+      expect(transport).toHaveBeenCalledTimes(2);
+      expect(sdk.lastEventAt).not.toBeNull();
+    } finally { sdk.dispose(); vi.useRealTimers(); }
+  });
+
+  it.each([NaN, Infinity, -Infinity])("uses a finite fallback for custom retry hint %s", async hint => {
+    vi.useFakeTimers();
+    const { sdk, transport } = browserFixtures.createSdk({ flushInterval: 60_000 });
+    try {
+      transport.mockResolvedValueOnce({ status: 429, retry_after_ms: hint });
+      sdk.captureLog("retain", "error");
+      await sdk.flush();
+      await sdk.flush();
+      expect(transport).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 2_000);
+      await sdk.flush();
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally { sdk.dispose(); vi.useRealTimers(); }
+  });
+
   it("should only capture 4xx and 5xx network breadcrumbs by default", async (): Promise<void> => {
     const { sdk, transport, globals } = browserFixtures.createSdk();
 

@@ -68,6 +68,7 @@ import {
 } from "./types.js";
 import {
   buildSdkConfigEndpoint,
+  boundedRetryAfterMs, requiresIngestionAcknowledgement,
   detectRuntimeContext,
   detectProcessRuntimeFacts,
   ensureObject,
@@ -725,10 +726,10 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         if (this.generation !== generation) return;
 
         if (response.status >= 200 && response.status < 300) {
-          const acknowledgement = decideIngestionAcknowledgement(response.body, batch.length);
+          const acknowledgement = decideIngestionAcknowledgement(response.body, batch.length, requiresIngestionAcknowledgement(config.transport));
           if (acknowledgement.kind === "protocol_failure") {
             restoreBatch(batch);
-            this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
+            this.nextRetryAt = Date.now() + boundedRetryAfterMs(response.retry_after_ms);
             this._consecutiveFailures++;
             this.emitDiagnostic(
               "ingestion_acknowledgement_invalid",
@@ -762,7 +763,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
           }
           if (retryableEvents.length > 0) {
             restoreBatch(retryableEvents);
-            this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
+            this.nextRetryAt = Date.now() + boundedRetryAfterMs(response.retry_after_ms);
             this._consecutiveFailures++;
             return;
           }
@@ -773,8 +774,8 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
         restoreBatch(batch);
         this._consecutiveFailures++;
-        if (response.status === 429) {
-          this.nextRetryAt = Date.now() + (response.retry_after_ms ?? 1_000);
+        if (response.status === 429 || response.status >= 500 && response.retry_after_ms !== undefined) {
+          this.nextRetryAt = Date.now() + boundedRetryAfterMs(response.retry_after_ms);
         }
         return;
       } catch (caught) {

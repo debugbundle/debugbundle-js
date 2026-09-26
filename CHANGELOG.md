@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-09-26
+
+### Fixed
+
+- Honor service-failure Retry-After hints in Node and both browser delivery paths; preserve no-hint retry timing and use safe fallback for nonfinite custom hints.
+- Require a valid canonical acknowledgement from built-in HTTP delivery; retain the full batch and back off for missing or malformed responses. Preserve bodyless file and explicit custom transport compatibility.
+- Cap transport retry hints at five minutes before scheduling retries, including custom transport results.
+
 ## [3.0.2] - 2026-09-25
 
 ### Fixed

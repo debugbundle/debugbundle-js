@@ -10,6 +10,17 @@ const MAX_SANITIZE_STRING_LENGTH = 2_048;
 const MAX_SANITIZE_ARRAY_ITEMS = 50;
 const MAX_SANITIZE_OBJECT_KEYS = 50;
 const MAX_RETRY_AFTER_MS = 5 * 60 * 1_000;
+// Only SDK-owned HTTP transports require a canonical response; file/custom transports retain compatibility.
+const HTTP_TRANSPORTS = new WeakSet<DebugBundleTransport>();
+
+export function requiresIngestionAcknowledgement(transport: DebugBundleTransport): boolean {
+  return HTTP_TRANSPORTS.has(transport);
+}
+
+export function boundedRetryAfterMs(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(MAX_RETRY_AFTER_MS, Math.max(0, value)) : 1_000;
+}
 const TRUNCATED_MARKER = "[Truncated]";
 
 export interface ProcessRuntimeFacts {
@@ -133,7 +144,7 @@ export function normalizeSampleRate(value: number | undefined): number {
 }
 
 export function parseRetryAfter(value: string | null): number | undefined {
-  if (value === null) {
+  if (value === null || value.trim() === "") {
     return undefined;
   }
 
@@ -365,7 +376,7 @@ export async function fetchWithTimeout(
 }
 
 export function createFetchTransport(fetchImpl: typeof fetch, projectToken: string): DebugBundleTransport {
-  return async (request: DebugBundleTransportRequest): Promise<DebugBundleTransportResponse> => {
+  const transport = async (request: DebugBundleTransportRequest): Promise<DebugBundleTransportResponse> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), request.timeout_ms);
 
@@ -395,4 +406,6 @@ export function createFetchTransport(fetchImpl: typeof fetch, projectToken: stri
       clearTimeout(timeout);
     }
   };
+  HTTP_TRANSPORTS.add(transport);
+  return transport;
 }

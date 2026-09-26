@@ -84,6 +84,7 @@ describe("sdk-node utils", () => {
     expect(normalizeSampleRate(0.25)).toBe(0.25);
 
     expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter("   ")).toBeUndefined();
     expect(parseRetryAfter("1.5")).toBe(1500);
     expect(parseRetryAfter("3600")).toBe(300000);
     expect(parseRetryAfter("invalid")).toBeUndefined();

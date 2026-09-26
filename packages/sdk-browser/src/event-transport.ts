@@ -503,7 +503,7 @@ export class BrowserEventTransport {
       updateDetachedRetention(lane);
       invalidateAdmission(lane);
       this.callbacks.onUnauthorized(laneName, status, config.endpoint, body);
-    } else if (status === 429) {
+    } else if (status === 429 || status >= 500 && retryAfterMs !== undefined) {
       lane.nextRetryAt = Date.now() + boundedRetryAfterMs(retryAfterMs);
     }
   }

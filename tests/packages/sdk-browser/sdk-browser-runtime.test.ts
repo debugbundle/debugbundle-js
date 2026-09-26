@@ -176,6 +176,7 @@ describe("sdk-browser runtime helpers", () => {
     expect(boundedTransportTimeoutMs(0)).toBe(1);
     expect(boundedTransportTimeoutMs(100_000)).toBe(60_000);
     expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter("   ")).toBeUndefined();
     expect(parseRetryAfter("2")).toBe(2_000);
     expect(parseRetryAfter("-3")).toBe(0);
     expect(parseRetryAfter("not-a-date")).toBeUndefined();
