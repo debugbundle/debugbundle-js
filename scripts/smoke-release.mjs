@@ -49,9 +49,16 @@ async function main() {
     );
 
     installSmokeDependencies(tempDir);
-    writeFileSync(path.join(tempDir, "smoke.mjs"), buildSmokeScript({ releaseVersion, serverProjectToken }));
+    writeFileSync(path.join(tempDir, "smoke.mjs"), buildSmokeScript({
+      releaseVersion,
+      serverProjectToken,
+      semanticPacked: mode === "packed",
+      semanticOutputPath: process.env.DEBUGBUNDLE_SEMANTIC_SMOKE_OUTPUT?.trim() || null
+    }));
     runCommand(process.execPath, [path.join(tempDir, "smoke.mjs")], { cwd: tempDir });
-    console.log("installed Node/Browser delivery and privacy canaries passed");
+    console.log(mode === "packed"
+      ? "installed Node/Browser V1 and semantic delivery/privacy canaries passed"
+      : "installed Node/Browser delivery and privacy canaries passed");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -131,6 +138,8 @@ async function waitForPublishedPackages() {
 
 function buildSmokeScript(input) {
   return `import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { once } from "node:events";
 
@@ -141,6 +150,34 @@ import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 
 const releaseVersion = ${JSON.stringify(input.releaseVersion)};
 const serverProjectToken = ${JSON.stringify(input.serverProjectToken)};
+const semanticPacked = ${JSON.stringify(input.semanticPacked)};
+const semanticOutputPath = ${JSON.stringify(input.semanticOutputPath)};
+const semanticProjectId = "11111111-1111-4111-8111-111111111111";
+const semanticBrowserToken = "dbundle_proj_semantic_smoke";
+const semanticWriterToken = "dbundle_anl_" + "A".repeat(43);
+const semanticEvents = [];
+let semanticKnownIdentity = false;
+const digest = value => "sha256:" + createHash("sha256").update(value).digest("hex");
+const semanticCapability = principal => {
+  const now = Date.now();
+  const known = principal === "server_writer" && semanticKnownIdentity;
+  return { analytics_semantic: {
+    protocol: "2026-09-analytics-capabilities-01", project_id: semanticProjectId,
+    principal, server_time: new Date(now).toISOString(),
+    expires_at: new Date(now + 60_000).toISOString(), enabled: true, unavailable_reason: null,
+    schema_version: "2026-09-analytics-02",
+    scope: { kind: "project", project_id: semanticProjectId },
+    scope_revision: 1, catalog_revision: 1, namespace_revision: known ? 1 : null,
+    identity_scope: known ? { kind: "project", project_id: semanticProjectId } : null,
+    known_identity_allowed: known,
+    allowed_producers: [principal === "server_writer" ? "server" : "browser"],
+    allowed_purposes: [principal === "server_writer" ? "business_measurement" : "product_analytics"],
+    consent_required: false, privacy_mode: known ? "custom" : "strict", sample_rate: 1,
+    max_event_bytes: 16_384, max_batch_events: 256, max_batch_bytes: 262_144,
+    max_properties: 20, detailed_retention_days: 90, max_event_age_seconds: 604_800,
+    correction_seconds: 172_800, receipt_retention_days: 90, retry_after_max_ms: 300_000
+  } };
+};
 
 // The installed SDK handles application errors. A failing smoke assertion must
 // still terminate the test instead of becoming another captured SDK event.
@@ -168,6 +205,44 @@ function defineGlobal(name, value) {
 }
 
 const ingestionServer = createHttpServer(async (request, response) => {
+  if (semanticPacked && request.method === "GET" && request.url === "/v1/sdk/config") {
+    if (request.headers.authorization !== \`Bearer \${semanticWriterToken}\` &&
+      request.headers.authorization !== \`Bearer \${semanticBrowserToken}\`) {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+    const principal = request.headers.authorization === \`Bearer \${semanticWriterToken}\`
+      ? "server_writer" : "project_token";
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(semanticCapability(principal)));
+    return;
+  }
+  if (semanticPacked && request.method === "POST" && request.url === "/v1/analytics/deliver") {
+    assert.equal(request.headers.authorization, \`Bearer \${semanticWriterToken}\`);
+    const chunks = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    assert.equal(body.events.length, 1);
+    const event = body.events[0];
+    assert.equal(event.schema_version, "2026-09-analytics-02");
+    assert.equal(event.producer.kind, "server");
+    assert.equal(event.correlation.session_id, null);
+    assert.equal(event.payload.name, "account.created");
+    assert.equal(event.payload.money, null);
+    semanticEvents.push(event);
+    const now = Date.now();
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      protocol: "2026-09-analytics-delivery-01", project_id: semanticProjectId,
+      submitted: 1, accepted: 1, rejected: 0, errors: [],
+      accepted_events: [{ index: 0, event_id: event.event_id,
+        operation_id: event.operation_id, content_hash: digest(JSON.stringify(event)),
+        accepted_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 86_400_000).toISOString(), duplicate: false }]
+    }));
+    return;
+  }
   if (request.method !== "POST" || request.url !== "/v1/events") {
     response.statusCode = 404;
     response.end();
@@ -182,8 +257,19 @@ const ingestionServer = createHttpServer(async (request, response) => {
   const rawBody = Buffer.concat(chunks).toString("utf8");
   assert.doesNotMatch(rawBody, /PACKED_(?:SOURCE|HOOK)_SECRET/);
   const parsedBody = JSON.parse(rawBody);
-  assert.equal(request.headers.authorization, \`Bearer \${serverProjectToken}\`);
+  const isSemanticBrowser = semanticPacked && parsedBody.events[0]?.schema_version === "2026-09-analytics-02";
+  assert.equal(request.headers.authorization,
+    \`Bearer \${isSemanticBrowser ? semanticBrowserToken : serverProjectToken}\`);
   assert.ok(Array.isArray(parsedBody.events));
+  if (isSemanticBrowser) {
+    for (const event of parsedBody.events) {
+      assert.equal(event.producer.kind, "browser");
+      assert.equal(event.payload.purpose, "product_analytics");
+      assert.equal(event.payload.privacy.mode, "strict");
+      assert.equal(typeof event.correlation.session_id, "string");
+      semanticEvents.push(event);
+    }
+  }
 
   for (const event of parsedBody.events) {
     if (
@@ -459,6 +545,96 @@ assert.equal(directUnloadRequests.length, 1);
 assert.equal(directUnloadRequests[0].headers.get("authorization"), \`Bearer \${serverProjectToken}\`);
 assert.ok(Buffer.byteLength(directUnloadRequests[0].body) <= 60 * 1024);
 directBrowserSdk.dispose();
+
+if (semanticPacked) {
+  const semanticBrowserSdk = createDebugBundleBrowserSdk();
+  const semanticOccurredAt = Date.now();
+  semanticBrowserSdk.init({
+    projectToken: semanticBrowserToken,
+    transportMode: "direct",
+    endpoint: \`\${ingestionOrigin}/v1/events\`,
+    service: "smoke-web", environment: "smoke-test",
+    captureNetwork: false, captureClicks: false, captureRouteChanges: false,
+    captureConsole: false, flushInterval: 60_000,
+    analytics: { enabled: true, schemaVersion: "2026-09-analytics-02",
+      trackSessions: true, trackPageViews: true, trackRouteChanges: true,
+      trackActions: true, trackFrictionSignals: true,
+      routeTemplates: ["/smoke-browser", "/next-safe"] }
+  });
+  semanticBrowserSdk.analytics.track("signup.started", {}, {
+    eventRevision: 1, occurredAt: new Date(semanticOccurredAt - 120_000).toISOString()
+  });
+  for (let attempt = 0; attempt < 100 &&
+    semanticBrowserSdk.analytics.getStatus().semantic.state === "pending"; attempt += 1)
+    await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(semanticBrowserSdk.analytics.getStatus().semantic.state, "enabled");
+  semanticBrowserSdk.analytics.track("signup.completed", {}, {
+    eventRevision: 1, occurredAt: new Date(semanticOccurredAt - 60_000).toISOString()
+  });
+  await semanticBrowserSdk.flush();
+  const semanticClick = documentListeners.get("click");
+  assert.equal(typeof semanticClick, "function");
+  semanticClick({ target: { tagName: "BUTTON", id: "private-button-id" } });
+  const deadTarget = { tagName: "DIV", id: "private-dead-target" };
+  for (let index = 0; index < 3; index += 1)
+    semanticClick({ target: deadTarget });
+  await semanticBrowserSdk.flush();
+  globalThis.history.pushState({}, "", "/next-safe?token=secret#section");
+  await semanticBrowserSdk.flush();
+  const semanticPagehide = windowListeners.get("pagehide");
+  assert.equal(typeof semanticPagehide, "function");
+  semanticPagehide({ persisted: false });
+  for (let attempt = 0; attempt < 100 &&
+    semanticEvents.filter(event => event.producer.kind === "browser").length < 8; attempt += 1)
+    await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(semanticEvents.filter(event => event.producer.kind === "browser").length, 8);
+  semanticBrowserSdk.dispose();
+
+  const { createSemanticAnalyticsNodeDelivery } = await import("@debugbundle/sdk-node");
+  assert.equal(typeof createSemanticAnalyticsNodeDelivery, "function");
+  const writer = createSemanticAnalyticsNodeDelivery({
+    projectId: semanticProjectId, writerToken: semanticWriterToken,
+    endpoint: ingestionOrigin, serviceName: "smoke-api",
+    environment: "smoke-test", enabled: true
+  });
+  const prepared = await writer.prepare("account.created", {}, {
+    eventRevision: 1, operationId: digest("semantic-packed-smoke")
+  });
+  assert.equal(prepared.status, "prepared");
+  const delivered = await writer.deliver([prepared.record]);
+  assert.equal(delivered.status, "received");
+  assert.equal(delivered.receipt.accepted_events[0].event_id, prepared.record.event_id);
+  semanticKnownIdentity = true;
+  const knownPrepared = await writer.prepare("account.created", {}, {
+    eventRevision: 1, operationId: digest("semantic-packed-known-account"),
+    identity: { namespaceRevision: 1, userIdHash: digest("semantic-packed-user") }
+  });
+  assert.equal(knownPrepared.status, "prepared");
+  const knownDelivered = await writer.deliver([knownPrepared.record]);
+  assert.equal(knownDelivered.status, "received");
+  assert.equal(knownDelivered.receipt.accepted_events[0].event_id, knownPrepared.record.event_id);
+  assert.equal(semanticEvents.filter(event => event.correlation.user_id_hash !== null).length, 1);
+  assert.deepEqual(semanticEvents.map(event => event.payload.name).sort(),
+    ["signup.started", "signup.completed", "session.start", "page.view",
+      "route.change", "session.summary", "click.button", "friction.dead_click",
+      "account.created", "account.created"].sort());
+  const semanticBrowserEvents = semanticEvents.filter(event => event.producer.kind === "browser");
+  assert.equal(new Set(semanticBrowserEvents.map(event => event.correlation.session_id)).size, 1);
+  assert.equal(semanticEvents.find(event => event.payload.kind === "page_view")?.payload.route?.normalized_path,
+    "/smoke-browser");
+  assert.equal(semanticEvents.find(event => event.payload.kind === "route_change")?.payload.previous_route?.normalized_path,
+    "/smoke-browser");
+  assert.equal(semanticEvents.find(event => event.payload.kind === "session_summary")?.payload.session?.views, 2);
+  assert.equal(semanticEvents.find(event => event.payload.name === "click.button")?.payload.route?.normalized_path,
+    "/smoke-browser");
+  assert.equal(semanticEvents.find(event => event.payload.name === "friction.dead_click")?.payload.properties?.id,
+    undefined);
+  assert.equal(JSON.stringify(semanticEvents).includes("private-button-id"), false);
+  assert.equal(JSON.stringify(semanticEvents).includes("private-dead-target"), false);
+  assert.equal(semanticEvents.find(event => event.producer.kind === "server")?.correlation.session_id, null);
+  if (semanticOutputPath !== null)
+    writeFileSync(semanticOutputPath, JSON.stringify(semanticEvents) + "\\n", { flag: "w" });
+}
 
 defineGlobal("fetch", nativeFetch);
 nodeSdk.dispose();

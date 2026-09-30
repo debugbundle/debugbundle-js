@@ -1,4 +1,6 @@
 import { sanitizeTelemetry, type JsonValue } from "@debugbundle/redaction";
+import { SEMANTIC_ANALYTICS_SCHEMA_VERSION } from "@debugbundle/shared-types";
+import { boundedTransportTimeoutMs } from "./fetch-transport.js";
 
 import { parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { createInitialRemoteProbeState } from "./capture-helpers.js";
@@ -30,6 +32,7 @@ interface BrowserProbeControllerHost {
     directive: BrowserRemoteProbeDirective;
   }): void;
   applyRemoteAnalytics(config: BrowserRemoteAnalyticsConfig): void;
+  applySemanticCapability(payload: unknown): void;
 }
 
 export class BrowserProbeController {
@@ -37,6 +40,8 @@ export class BrowserProbeController {
   private remoteState: BrowserRemoteProbeState = createInitialRemoteProbeState();
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
+  private semanticConfigPromise: Promise<void> | null = null;
+  private semanticConfigController: AbortController | null = null;
 
   public constructor(private readonly host: BrowserProbeControllerHost) {}
 
@@ -46,10 +51,24 @@ export class BrowserProbeController {
 
   public initialize(): Promise<void> {
     this.pendingTriggerToken = consumeTriggerTokenFromLocation();
-    return this.refreshRemoteConfig();
+    return this.host.getConfig()?.requestsSemanticAnalyticsConfig
+      ? this.refreshSemanticConfig() : this.refreshRemoteConfig();
+  }
+
+  public refreshSemanticConfig(): Promise<void> {
+    if (this.semanticConfigPromise !== null) return this.semanticConfigPromise;
+    const pending = this.refreshRemoteConfig();
+    this.semanticConfigPromise = pending;
+    void pending.finally(() => {
+      if (this.semanticConfigPromise === pending) this.semanticConfigPromise = null;
+    });
+    return pending;
   }
 
   public reset(): void {
+    this.semanticConfigController?.abort();
+    this.semanticConfigController = null;
+    this.semanticConfigPromise = null;
     this.buffers = new Map<string, BrowserProbeBufferItem[]>();
     this.remoteState = createInitialRemoteProbeState();
     this.pendingTriggerToken = null;
@@ -123,23 +142,40 @@ export class BrowserProbeController {
       return;
     }
 
+    const controller = config.requestsSemanticAnalyticsConfig && typeof AbortController === "function"
+      ? new AbortController() : null;
+    this.semanticConfigController = controller;
+    const deadline = controller === null ? null : setTimeout(
+      () => controller.abort(), boundedTransportTimeoutMs(config.requestTimeoutMs)
+    );
     try {
       const response = await config.fetchImpl(deriveSdkConfigEndpoint(config.endpoint), {
         method: "GET",
+        ...(controller === null ? {} : { signal: controller.signal }),
         headers: {
           authorization: `Bearer ${config.projectToken}`,
-          ...(config.requestsAnalyticsConfig ? { "x-debugbundle-analytics-config": "1" } : {})
+          ...(config.requestsAnalyticsConfig ? { "x-debugbundle-analytics-config": "1" } : {}),
+          ...(config.requestsSemanticAnalyticsConfig ? { "x-debugbundle-analytics-schema": SEMANTIC_ANALYTICS_SCHEMA_VERSION } : {})
         }
       });
+      if (this.host.getConfig() !== config || controller?.signal.aborted) return;
+      if (config.requestsSemanticAnalyticsConfig && response.status !== 200) {
+        this.host.applySemanticCapability(null);
+        return;
+      }
       if (response.status === 304 || typeof response.json !== "function") {
+        if (config.requestsSemanticAnalyticsConfig) this.host.applySemanticCapability(null);
         return;
       }
 
       const payload = await response.json();
+      if (this.host.getConfig() !== config || controller?.signal.aborted) return;
       const analyticsConfig = parseRemoteAnalyticsConfigPayload(payload);
       if (analyticsConfig !== null) {
         this.host.applyRemoteAnalytics(analyticsConfig);
       }
+      // Apply restrictive settings before releasing any protected V2 startup work.
+      if (config.requestsSemanticAnalyticsConfig) this.host.applySemanticCapability(payload);
       const parsed = parseRemoteProbeConfigPayload(payload, Date.now());
       if (parsed !== null) {
         this.remoteState = parsed;
@@ -148,7 +184,12 @@ export class BrowserProbeController {
       }
       config.captureRules = parseRemoteCaptureRulesPayload(payload);
     } catch {
+      if (this.host.getConfig() === config && config.requestsSemanticAnalyticsConfig)
+        this.host.applySemanticCapability(null);
       return;
+    } finally {
+      if (deadline !== null) clearTimeout(deadline);
+      if (this.semanticConfigController === controller) this.semanticConfigController = null;
     }
   }
 

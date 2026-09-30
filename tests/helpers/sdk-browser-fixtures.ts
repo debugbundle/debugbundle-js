@@ -5,6 +5,7 @@ import { afterEach, beforeEach, vi } from "vitest";
 import { deriveProbeTriggerTokenKey, generateProbeTriggerToken } from "./probe-trigger-token.js";
 import {
   createDebugBundleBrowserSdk,
+  type BrowserAnalyticsEventEnvelope,
   type DebugBundleBrowserTransportEvent,
   type DebugBundleBrowserSdk,
   type DebugBundleBrowserTransportRequest
@@ -17,7 +18,7 @@ export type FrontendExceptionEvent = Extract<EventEnvelope, { event_type: "front
 export type FrontendBreadcrumbEvent = Extract<EventEnvelope, { event_type: "frontend_breadcrumb" }>;
 export type RequestEvent = Extract<EventEnvelope, { event_type: "request_event" }>;
 export type ProbeEvent = Extract<EventEnvelope, { event_type: "probe_event" }>;
-export type AnalyticsEvent = Extract<DebugBundleBrowserTransportEvent, { event_type: "analytics_event" }>;
+export type AnalyticsEvent = BrowserAnalyticsEventEnvelope;
 export const originalProbeTriggerSecret = process.env["DEBUGBUNDLE_PROBE_TRIGGER_SECRET"];
 
 export class FakeEventTarget {
@@ -91,7 +92,8 @@ export function createTransportEvents(transport: TransportMock, callIndex: numbe
 }
 
 export function getAnalyticsEvents(transport: TransportMock, callIndex = 0): AnalyticsEvent[] {
-  return createRawTransportEvents(transport, callIndex).filter((event): event is AnalyticsEvent => event.event_type === "analytics_event");
+  return createRawTransportEvents(transport, callIndex).filter((event): event is AnalyticsEvent =>
+    event.event_type === "analytics_event" && event.schema_version === "2026-07-analytics-01");
 }
 
 export function getFrontendExceptionEvent(event: EventEnvelope | undefined): FrontendExceptionEvent {

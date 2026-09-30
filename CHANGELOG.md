@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add a source-only, default-disabled Node semantic analytics candidate with an authenticated-capability-gated, bounded best-effort `track`/`flush` lane, explicit outbox `prepare`/`deliver`, correlation-only request scopes, and metadata-only `getStatus()`. Compiled source-only transaction and HTTP preparation recipes show application-owned outbox and request cleanup without adding SDK runtime code. It is separate from the installed debug client and requires the unreleased matching shared-type/redaction candidates and a future enabled server capability.
+- Add a source-only, direct browser semantic `track` candidate behind explicit V2 schema opt-in and authenticated capability. It reuses the bounded analytics transport/ACK lane, protects a small startup/expiry wait, refreshes on demand without polling, intersects local/remote sampling for one stable project/session decision, expires grants by monotonic elapsed time, and exposes metadata-only `analytics.getStatus()`. Explicit session/page/route, structural action and friction options provide partial automatic capture with safe static routes, closed client dimensions and optional protected first-touch acquisition. It never falls back to V1; default server capability remains disabled, and relay, connected identity, complete attribution and report quality remain unfinished.
+
+### Fixed
+
+- Preserve the protected browser semantic first touch after an indexed terminal rejection so a later eligible fact can carry it. Expose only the last valid indexed ACK's accepted/retryable/terminal counts in local semantic status; neither a queued fact nor uncertain delivery is reported as verified source coverage.
+- Qualify the shared redaction candidate against reserved analytics writer, relay-writer and one-time handoff credentials; semantic analytics remains opt-in and unavailable until its separate implementation gates pass.
+
+- Snapshot and sanitize browser analytics inputs before deferred retention; contain accessors/proxies, reject capture before traversing input when disabled or full, and preserve protected startup ordering.
+- Fence queued, retrying and lifecycle analytics on consent withdrawal or restrictive configuration changes. Abort supported in-flight keepalive requests without releasing ownership early; re-grant requires fresh identity/context. Debug capture remains independent.
+- Apply `trackReferrers: false` to campaign collection as well as the referrer. Mandatory built-in protection applies to analytics without a custom hook.
+
 ## [3.0.3] - 2026-09-26
 
 ### Fixed

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { BrowserSdk } from "../../../packages/sdk-browser/src/index.js";
+import { BrowserTransportDiagnostics } from "../../../packages/sdk-browser/src/transport-diagnostics.js";
 import {
   BrowserProbeController,
   matchesProbeLabelPattern,
@@ -9,6 +10,28 @@ import {
 import type { DebugBundleBrowserTransportRequest, DebugBundleBrowserTransportResponse } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser internals", () => {
+  it("keeps fallback transport diagnostics metadata-only and deduplicates terminal receipts", () => {
+    const previousConsole = globalThis.console;
+    const warn = vi.fn();
+    vi.stubGlobal("console", { warn });
+    try {
+      const diagnostics = new BrowserTransportDiagnostics();
+      diagnostics.unauthorized("analytics", 403, "/v1/events", {
+        error: "invalid_project_token", secret: "Bearer private"
+      });
+      diagnostics.acknowledgement("analytics", "terminal_rejection", "invalid_event");
+      diagnostics.acknowledgement("analytics", "terminal_rejection", "invalid_event");
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[0]?.[0]).toContain("(invalid_project_token)");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("Bearer private");
+      diagnostics.reset();
+      diagnostics.acknowledgement("analytics", "terminal_rejection", "invalid_event");
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.stubGlobal("console", previousConsole);
+    }
+  });
+
   it("should normalize primitive probe inputs and preserve object inputs", (): void => {
     expect(normalizeProbeInput(null)).toEqual({ value: null });
     expect(normalizeProbeInput([1, 2])).toEqual({ value: [1, 2] });
@@ -34,7 +57,8 @@ describe("sdk-browser internals", () => {
       isDebugRejected: () => false,
       isSessionSampledIn: () => true,
       emitProbeEvent: () => undefined,
-      applyRemoteAnalytics: () => undefined
+      applyRemoteAnalytics: () => undefined,
+      applySemanticCapability: () => undefined
     }) as unknown as {
       remoteState: {
         probesEnabled: boolean;

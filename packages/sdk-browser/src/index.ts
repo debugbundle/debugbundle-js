@@ -1,6 +1,8 @@
 import { sanitizeTelemetry } from "@debugbundle/redaction";
-import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { createEventEnvelope, SEMANTIC_ANALYTICS_SCHEMA_VERSION, type EventEnvelope } from "@debugbundle/shared-types";
 import { BrowserAnalyticsController } from "./analytics.js";
+import { createBrowserAnalyticsApi } from "./analytics-api.js";
+import { BrowserSemanticAnalyticsController } from "./semantic-analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
 import {
   isImmediateRequestIncidentStatus,
@@ -11,9 +13,10 @@ import {
 import { applyBrowserCaptureRules, buildBrowserSuppressionKey } from "./event-pipeline.js";
 import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hooks.js";
 import { captureNativeError, captureNativeRejection } from "./native-error-hooks.js";
-import { countFormFields, readNativeField, readStructuralTarget } from "./native-fields.js";
+import { countFormFields, readNativeField, readNativeFields, readStructuralTarget } from "./native-fields.js";
 import { createBrowserSuppressionEvent, EventSuppressionTracker } from "./suppression.js";
-import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
+import { BrowserEventTransport } from "./event-transport.js";
+import { BrowserTransportDiagnostics } from "./transport-diagnostics.js";
 import { BrowserProbeController } from "./probes.js";
 import { protectBrowserEvent } from "./privacy.js";
 import {
@@ -70,6 +73,7 @@ export type {
   DebugBundleBrowserInitConfig,
   DebugBundleBrowserSdk,
   DebugBundleBrowserAnalytics,
+  BrowserAnalyticsEventEnvelope,
   DebugBundleBrowserAnalyticsConfig,
   DebugBundleBrowserTransportEvent,
   BrowserRequestMetadata,
@@ -78,6 +82,7 @@ export type {
   DebugBundleBrowserTransportResponse
 } from "./types.js";
 export type { BrowserBeforeSendHook } from "./before-send.js";
+export type { SemanticBrowserStatus, SemanticBrowserTrackOptions } from "./semantic-analytics.js";
 
 export class BrowserSdk implements DebugBundleBrowserSdk {
   private config: ActiveConfig | null = null;
@@ -95,7 +100,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   private originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
   private sessionSampledIn = true;
   private sessionEventCount = 0;
-  private reportedAcknowledgementDiagnostics = new Set<string>();
+  private readonly transportDiagnostics = new BrowserTransportDiagnostics();
   private readonly pendingEventOptions = new WeakMap<EventEnvelope, { applyRules: boolean; countTowardSession: boolean; capturedAt: number }>();
   private readonly suppressionTracker = new EventSuppressionTracker();
   private readonly probeController = new BrowserProbeController({
@@ -103,28 +108,49 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     isDebugRejected: () => this.eventTransport.debugRejected,
     isSessionSampledIn: () => this.sessionSampledIn,
     emitProbeEvent: ({ label, data, directive }) => this.emitProbeEvent(label, data, directive),
-    applyRemoteAnalytics: (config) => this.analyticsController.applyRemoteSettings(config)
+    applyRemoteAnalytics: (config) => {
+      this.analyticsController.applyRemoteSettings(config);
+      this.semanticAnalyticsController.applyRemoteSettings(config);
+    },
+    applySemanticCapability: (payload) => this.semanticAnalyticsController.acceptCapability(payload)
   });
   private readonly eventTransport = new BrowserEventTransport({
     beforeDebugFlush: () => this.enqueueSuppressionAggregates(),
+    beforeAnalyticsFlush: () => this.semanticAnalyticsController.beforeDispatch(),
     prepareDebugEvent: (event) => this.prepareDebugEvent(event),
     onDebugResponse: (payload) => this.probeController.updateFromIngestionResponse(payload),
     onUnauthorized: (lane, statusCode, endpoint, body) => {
-      this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
+      this.transportDiagnostics.unauthorized(lane, statusCode, endpoint, body);
     },
     onAcknowledgementDiagnostic: (lane, code, detail) => {
-      this.reportAcknowledgementDiagnostic(lane, code, detail);
-    }
+      this.transportDiagnostics.acknowledgement(lane, code, detail);
+    },
+    onSemanticTerminalRejection: (eventIds) => this.semanticAnalyticsController.onTerminalRejection(eventIds),
+    onSemanticReceipt: (receipt) => this.semanticAnalyticsController.onReceipt(receipt)
   });
   private readonly analyticsController = new BrowserAnalyticsController({
     getConfig: () => this.config,
     getDeviceInfo: () => this.deviceInfo,
     getCurrentRoute: () => this.getCurrentRoute(),
     getSessionId: () => this.browserSessionId ?? createBrowserTraceId(),
-    enqueue: (event) => this.enqueueAnalyticsEvent(event)
+    enqueue: (event) => this.enqueueAnalyticsEvent(event),
+    revoke: () => this.eventTransport.revokeAnalytics(),
+    canCapture: () => this.eventTransport.canCaptureAnalytics()
+  });
+  private readonly semanticAnalyticsController = new BrowserSemanticAnalyticsController({
+    getSessionId: () => this.browserSessionId ?? createBrowserTraceId(),
+    getDeviceInfo: () => this.deviceInfo,
+    canCapture: () => this.eventTransport.canCaptureAnalytics(),
+    canReservePending: (count, bytes) => this.eventTransport.canReservePendingAnalytics(count, bytes),
+    enqueue: (event) => this.eventTransport.enqueueAnalytics(event),
+    revoke: () => this.eventTransport.revokeAnalytics(),
+    requestCapabilityRefresh: () => { void this.probeController.refreshSemanticConfig(); }
   });
 
-  public readonly analytics = this.analyticsController.api;
+  public readonly analytics = createBrowserAnalyticsApi(
+    this.analyticsController.api, this.semanticAnalyticsController,
+    () => this.config?.requestsSemanticAnalyticsConfig === true
+  );
 
   private get remoteProbeState(): BrowserRemoteProbeState {
     return this.probeController.state;
@@ -178,6 +204,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       probeFlushOnError: normalizeBoolean(config.probeFlushOnError, true),
       requestTimeoutMs: normalizePositiveNumber(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
       requestsAnalyticsConfig: config.analytics?.enabled === true,
+      requestsSemanticAnalyticsConfig: config.analytics?.enabled === true && config.analytics.schemaVersion === SEMANTIC_ANALYTICS_SCHEMA_VERSION,
       captureRules: [],
       fetchImpl: getFetchSource(),
       transport: config.transport ?? createFetchTransport(),
@@ -197,8 +224,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       this.config.projectToken !== null &&
       this.config.fetchImpl !== null;
     this.analyticsController.configure(config.analytics, { deferCapture: deferAnalyticsCapture });
+    this.semanticAnalyticsController.configure(this.config, config.analytics);
     const remoteInitialization = this.probeController.initialize();
     this.installBrowserHooks();
+    this.semanticAnalyticsController.captureInitialLifecycle();
     if (deferAnalyticsCapture) {
       const activeConfig = this.config;
       this.analyticsInitialization = remoteInitialization.finally(() => {
@@ -389,10 +418,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     this.config = null;
     this.sessionSampledIn = true;
     this.sessionEventCount = 0;
-    this.reportedAcknowledgementDiagnostics.clear();
+    this.transportDiagnostics.reset();
     this.suppressionTracker.reset();
     this.probeController.reset();
     this.analyticsController.reset();
+    this.semanticAnalyticsController.reset();
 
     while (this.registeredListeners.length > 0) {
       this.registeredListeners.pop()?.();
@@ -431,58 +461,13 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
   }
 
-  private reportUnauthorizedTransportFailure(
-    lane: BrowserTransportLaneName,
-    statusCode: 401 | 403,
-    endpoint: string,
-    body: unknown
-  ): void {
-    const consoleSource = getConsoleSource();
-    if (consoleSource === null) {
-      return;
-    }
-
-    const bodyRecord = normalizeUnknownRecord(body);
-    const errorCode = typeof bodyRecord["error"] === "string" && bodyRecord["error"].length > 0 ? bodyRecord["error"] : null;
-    const detail = errorCode === null ? "" : ` (${errorCode})`;
-    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
-    const message =
-      `DebugBundle ${laneLabel} disabled after ingestion returned ${statusCode} for ${endpoint}. ` +
-      `Check the project token or relay configuration${detail}.`;
-
-    if (typeof consoleSource.error === "function") {
-      consoleSource.error(message);
-      return;
-    }
-
-    consoleSource.warn?.(message);
-  }
-
-  private reportAcknowledgementDiagnostic(
-    lane: BrowserTransportLaneName,
-    code: "invalid" | "terminal_rejection",
-    detail: string
-  ): void {
-    const key = `${lane}:${code}:${detail}`;
-    if (this.reportedAcknowledgementDiagnostics.has(key)) {
-      return;
-    }
-    this.reportedAcknowledgementDiagnostics.add(key);
-    const consoleSource = getConsoleSource();
-    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
-    consoleSource?.warn?.(
-      code === "invalid"
-        ? `DebugBundle ${laneLabel} retained events after an invalid ingestion acknowledgement (${detail}).`
-        : `DebugBundle ${laneLabel} removed terminally rejected events (${detail}).`
-    );
-  }
-
   private installBrowserHooks(): void {
     const windowSource = getWindowSource();
     if (windowSource !== null) {
       const onPageHide = (event: unknown): void => {
         if (readNativeField(event, "persisted") !== true) {
           this.analyticsController.captureSessionSummary();
+          this.semanticAnalyticsController.captureSessionSummary();
         }
         this.flushViaBeacon();
       };
@@ -510,12 +495,16 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         const captureDebugClick = this.config?.captureClicks === true;
         const captureAnalyticsAction = this.analyticsController.shouldCaptureStructuralActions();
         const captureAnalyticsFriction = this.analyticsController.shouldCaptureFrictionSignals();
-        if (!captureDebugClick && !captureAnalyticsAction && !captureAnalyticsFriction) {
+        const captureSemanticAction = this.semanticAnalyticsController.shouldCaptureStructuralActions();
+        const captureSemanticFriction = this.semanticAnalyticsController.shouldCaptureFrictionSignals();
+        if (!captureDebugClick && !captureAnalyticsAction && !captureAnalyticsFriction &&
+          !captureSemanticAction && !captureSemanticFriction) {
           return;
         }
 
         const targetIdentity = readNativeField(event, "target");
-        const target = readStructuralTarget(targetIdentity);
+        const target = captureDebugClick ? readStructuralTarget(targetIdentity)
+          : readNativeFields(targetIdentity, ["tagName", "role", "type"]);
         if (captureDebugClick) {
           const selector = buildSelector(target);
           if (selector !== null) {
@@ -532,8 +521,14 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
         if (captureAnalyticsAction) {
           this.analyticsController.captureStructuralAction(target);
         }
+        if (captureSemanticAction) {
+          this.semanticAnalyticsController.captureStructuralAction(target);
+        }
         if (captureAnalyticsFriction) {
           this.analyticsController.captureFrictionClick(target, targetIdentity);
+        }
+        if (captureSemanticFriction) {
+          this.semanticAnalyticsController.captureFrictionClick(target, targetIdentity);
         }
       };
 
@@ -554,6 +549,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       };
 
       const onVisibilityChange = (): void => {
+        this.semanticAnalyticsController.captureVisibilityChange(documentSource.visibilityState);
         if (documentSource.visibilityState === "hidden") {
           this.flushViaBeacon();
         }
@@ -646,6 +642,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
   }
 
   private captureRouteChange(url?: string | URL | null): void {
+    this.semanticAnalyticsController.captureRouteChange(url);
     if (this.config?.captureRouteChanges !== true) {
       return;
     }

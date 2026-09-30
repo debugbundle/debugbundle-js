@@ -47,6 +47,86 @@ debugbundle.probe("checkout.cart", { itemCount: cart.items.length });
 await debugbundle.flush();
 ```
 
+## Candidate semantic analytics capture and outbox delivery (unreleased source)
+
+The source candidate exports a separate, default-disabled server analytics client. It does not change the installed debug `init()`, capture, or `flush()`. It requires an explicitly issued `dbundle_anl_` server writer credential and a current project-only capability; a space-scoped grant is rejected before capture or delivery. `prepare` locally finalizes a nonfinancial business milestone with a caller-owned stable opaque operation hash; it makes no network request and does not own a transaction. The application stores the returned record with its business change, then its outbox worker calls `deliver`. Manual `track` is a separate best-effort path for observations that do not need the application's durable outbox. Server business events are sessionless and do not enter the first browser session funnel. `withContext({traceId?, deployId?})` provides an isolated correlation-only request scope. Per-fact `identity` accepts only protected references under a configured project namespace; `deliver` checks the fresh authenticated namespace and known-identity grant before sending. The application derives references on its backend with the canonical keyed HMAC contract and never passes raw identifiers or the key to this SDK. Subject erasure and the complete identity release gate remain open, so the default API capability is disabled and this candidate cannot deliver to the default service. Automatic capture and framework binding remain open.
+
+The [typed transaction/outbox recipe](examples/semantic-outbox.ts) is compiled with the candidate SDK source. Its store interface must be implemented with the application's database: account creation and prepared-record insertion share one transaction. Delivery records accepted indexes and marks terminally rejected rows for review using a compare-and-set on the prepared content hash; rate and quota rejections stay pending. The sample's policy lets account creation succeed when preparation is unavailable, leaving an instrumentation gap that reports cannot treat as verified source coverage. The recipe is not part of the shipped SDK runtime.
+
+The [source-only HTTP preparation recipe](examples/semantic-http.ts) compiles against the same candidate. An application handler passes its authenticated measurement decision, and the recipe accepts only a UUID v4 trace header before creating a request scope. It exposes `prepare` only: resetting the scope after the handler would discard unsent best-effort `track` work. Prepared outbox records remain application-owned and can be inserted with the business transaction. This does not authenticate an application user or enable known identity; Express/Fastify adapters and their installed-mode checks remain open.
+
+For a known user fact, the application derives a protected `userIdHash` from its authenticated user on its backend and supplies the current configured `namespaceRevision` in that fact's `identity` option. `prepare` can run offline; `deliver` rechecks the current server capability, so a rotated namespace leaves the old prepared record unresolved for the application's outbox policy. An anonymous-only reference uses `anonymousIdHash` and standard privacy. The SDK never derives identity from a global debug context.
+
+```ts
+await analytics.prepare("account.created", { signup_method: "email" }, {
+  eventRevision: 1,
+  operationId,
+  identity: { namespaceRevision, userIdHash } // Protected sha256: HMAC reference.
+});
+```
+
+```ts
+import { createSemanticAnalyticsNodeDelivery } from "@debugbundle/sdk-node";
+import type { SemanticAnalyticsNodeDelivery } from "@debugbundle/sdk-node";
+import type { AnalyticsPreparedEvent, AnalyticsDeliveryReceipt } from "@debugbundle/shared-types";
+
+async function prepareAccountCreated(
+  analytics: SemanticAnalyticsNodeDelivery,
+  operationId: string,
+  persistWithBusinessTransaction: (record: AnalyticsPreparedEvent) => Promise<void>
+): Promise<void> {
+  const result = await analytics.prepare("account.created", { signup_method: "email" }, {
+    eventRevision: 1,
+    operationId // Stable sha256: hash of an opaque business-operation key.
+  });
+  if (result.status === "prepared") await persistWithBusinessTransaction(result.record);
+  // The application's instrumentation policy handles unavailable preparation.
+}
+
+async function deliverPending(
+  analytics: SemanticAnalyticsNodeDelivery,
+  outboxRecords: AnalyticsPreparedEvent[],
+  persistReceiptAndResolveIndexes: (receipt: AnalyticsDeliveryReceipt) => Promise<void>
+): Promise<void> {
+  // Load finalized records after the business transaction commits.
+  const result = await analytics.deliver(outboxRecords);
+  if (result.status === "received") {
+    // Acknowledge accepted indexes; quarantine terminal errors; retry only rate/quota errors.
+    await persistReceiptAndResolveIndexes(result.receipt);
+  }
+  // An unavailable result leaves every record owned by the application.
+}
+
+const projectId = process.env.DEBUGBUNDLE_PROJECT_ID;
+const writerToken = process.env.DEBUGBUNDLE_ANALYTICS_WRITER_TOKEN;
+const analytics = projectId && writerToken
+  ? createSemanticAnalyticsNodeDelivery({
+      projectId, writerToken, serviceName: "accounts-api", environment: "production", enabled: true
+    })
+  : null;
+// Pass this writer to the two application-owned functions above when non-null.
+```
+
+For a best-effort server observation, explicitly negotiate first and inspect `getStatus()` before calling `track`. This call never returns a durable receipt; use `prepare`/`deliver` for business facts that must survive process loss.
+
+```ts
+async function recordBestEffortAccountCreated(operationId: string): Promise<void> {
+  await analytics?.refreshCapability();
+  const request = analytics?.withContext({ traceId: "safe-trace-reference" });
+  request?.track("account.created", { signup_method: "email" }, {
+    eventRevision: 1,
+    operationId // Stable opaque sha256: business-operation hash.
+  });
+  await analytics?.flush(); // One bounded attempt for queued best-effort records.
+}
+```
+
+Each request scope owns only its unsent volatile records. `request.setConsent(false)` synchronously removes that scope's pending records; another request's records remain queued. `request.reset()` clears its correlation context and leaves that facade inert. A revoked scope cannot dispatch after an in-progress capability refresh, but bytes already sent cannot be recalled. Scoped `prepare` uses the scope's trace/deploy values even if a call supplies different ones; the application still owns any prepared record it has committed to its outbox. Invalid context or getters yield an inert scope. This is correlation only: no session, user or account identity is inferred. The scope does not own a sender; use the parent `flush()` or `deliver()` as appropriate.
+
+`track` does not traverse application properties until an authenticated, enabled server capability has been checked and remains current. Wall time and monotonic elapsed time both bound that grant; a clock rollback cannot extend it. It finalizes the same protected nonfinancial record locally, then holds at most 256 records / 4 MiB for five minutes in a volatile lane. That lifetime also expires by monotonic elapsed time. It schedules a send after one second. A valid indexed receipt removes accepted and terminally rejected records; only rate and quota rejections remain for bounded retry. If a refreshed capability lowers the size limit, a record that cannot fit by itself is discarded so it cannot block smaller queued records; local status records `capacity_exceeded`. Process exit can still lose this lane; it does not own an application transaction or replace an outbox.
+
+`prepare` requires a business event name, declared event revision and stable `sha256:` operation reference, validates protected properties/measurements, and returns an immutable record or a fixed unavailable reason. Optional service and environment default to `node-service` and `NODE_ENV` (or `development`), matching the installed debug SDK defaults. `deliver` checks record integrity, destination, expiry, privacy and a fresh authenticated semantic capability before one bounded HTTP attempt. A protected known-user fact requires the same active namespace and known-identity permission in that capability. It returns a canonical indexed receipt only when the server acknowledges the original batch; a local timeout or protocol failure returns `unavailable`. `getStatus()` reports local enablement, volatile queue count/bytes, in-flight state, last observed capability state, a fixed failure reason, and bounded accepted/retryable/terminal counts from the last valid receipt. These are local historical observations, contain no event or identity values, and do not claim current server authority. Financial facts remain withheld. The outbox path has no SDK-owned retry queue or file aggregation path, and concurrent explicit delivery calls return `capacity_exceeded`. Browser and relay code must never receive this credential. Candidate shared-types and redaction packages must be linked locally for source verification; the published 2.1.0 dependency does not yet contain this V2 contract.
+
 ## Configuration
 
 | Option | Default | Purpose |

@@ -1,6 +1,15 @@
 export { DebugBundleNodeSdk, createDebugBundleSdk, debugbundle } from "./core.js";
 export { createFileTransport, type FileTransportOptions } from "./file-transport.js";
 export {
+  createSemanticAnalyticsNodeDelivery,
+  type SemanticAnalyticsNodeDelivery,
+  type SemanticAnalyticsNodeDeliveryConfig,
+  type SemanticAnalyticsNodeStatus,
+  type SemanticAnalyticsNodePrepareOptions,
+  type SemanticAnalyticsNodeContext,
+  type SemanticAnalyticsNodeScope
+} from "./semantic-analytics-delivery.js";
+export {
   SDK_NAME,
   SDK_VERSION,
   SDK_SCHEMA_VERSION,

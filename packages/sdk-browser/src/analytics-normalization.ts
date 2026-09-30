@@ -65,10 +65,11 @@ export interface StandardAnalyticsVisitor {
 
 export async function resolveStandardAnalyticsVisitor(
   projectToken: string,
-  onStorageKeyResolved?: (storageKey: string) => void
+  onStorageKeyResolved?: (storageKey: string) => void,
+  isCurrent: () => boolean = () => true
 ): Promise<StandardAnalyticsVisitor | null> {
   const projectScopeHash = await hashAnalyticsValue(projectToken);
-  if (projectScopeHash === null) {
+  if (projectScopeHash === null || !isCurrent()) {
     return null;
   }
 
@@ -80,7 +81,7 @@ export async function resolveStandardAnalyticsVisitor(
   onStorageKeyResolved?.(storageKey);
 
   const visitorIdHash = await hashAnalyticsValue(`${projectScopeHash}:${visitorId}`);
-  return visitorIdHash === null ? null : { storageKey, visitorIdHash };
+  return visitorIdHash === null || !isCurrent() ? null : { storageKey, visitorIdHash };
 }
 
 export function removeStoredAnalyticsVisitor(storageKey: string): void {
@@ -195,7 +196,8 @@ export function buildAnalyticsDimensions(
   customDimensions: BrowserAnalyticsCustomDimensions
 ): BrowserAnalyticsDimensions {
   const language = normalizeLocale(device?.language ?? null);
-  const locationSource = getLocationSource();
+  // A disabled acquisition setting rejects before reading either source.
+  const locationSource = trackReferrers ? getLocationSource() : null;
   const params = new URLSearchParams(typeof locationSource?.search === "string" ? locationSource.search.replace(/^\?/, "") : "");
   return {
     auth_state: normalizeAuthState(customDimensions["auth_state"]),

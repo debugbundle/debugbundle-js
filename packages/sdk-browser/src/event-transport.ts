@@ -1,5 +1,10 @@
 import { getNavigatorSource } from "./runtime.js";
-import { boundedRetryAfterMs, boundedTransportTimeoutMs, buildBrowserTransportRequestBody, parseRetryAfter } from "./fetch-transport.js";
+import {
+  boundedRetryAfterMs,
+  boundedTransportTimeoutMs,
+  buildBrowserTransportRequestBody,
+  parseRetryAfter
+} from "./fetch-transport.js";
 import { decideBrowserAcknowledgement } from "./ingestion-acknowledgement.js";
 import { createBrowserSuppressionEvent } from "./suppression.js";
 import type {
@@ -7,42 +12,56 @@ import type {
   BrowserAnalyticsEventEnvelope,
   DebugBundleBrowserTransportEvent
 } from "./types.js";
+import type { SemanticAnalyticsEvent } from "@debugbundle/shared-types";
 
 export type BrowserTransportLaneName = "debug" | "analytics";
 
-interface BrowserTransportLane {
-  events: DebugBundleBrowserTransportEvent[];
-  prepared: WeakSet<DebugBundleBrowserTransportEvent>;
-  preparing: boolean;
-  preparationTimer: ReturnType<typeof setTimeout> | null;
-  inFlightEvents: Map<DebugBundleBrowserTransportEvent, number>;
-  beaconCommitted: boolean;
-  keepalivePending: boolean;
-  keepalivePromise: Promise<void> | null;
-  detachedCount: number;
-  detachedBytes: number;
-  queuedBytes: number;
-  sizes: WeakMap<DebugBundleBrowserTransportEvent, number>;
-  flushPromise: Promise<void> | null;
-  flushScheduled: boolean;
-  flushRequestedDuringSend: boolean;
-  timer: ReturnType<typeof setTimeout> | null;
-  nextRetryAt: number | null;
-  consecutiveFailures: number;
-  rejected: boolean;
-  lastEventAt: number | null;
-  pressureCount: number;
-  pressureFirstAt: number | null;
-  pressureLastAt: number | null;
-  lastPressureReportAt: number | null;
-  queueVersion: number;
-  evictableVersion: number;
-  evictableMask: number;
+function boundSemanticBatch(
+  candidates: DebugBundleBrowserTransportEvent[],
+  maxEvents: number,
+  maxBytes: number
+): DebugBundleBrowserTransportEvent[] {
+  const selected: DebugBundleBrowserTransportEvent[] = [];
+  let bytes = new TextEncoder().encode('{"events":[]}').byteLength;
+  for (const event of candidates) {
+    const next = new TextEncoder().encode(JSON.stringify(event)).byteLength;
+    if (selected.length >= maxEvents || bytes + next + (selected.length > 0 ? 1 : 0) > maxBytes) break;
+    selected.push(event);
+    bytes += next + (selected.length > 1 ? 1 : 0);
+  }
+  return selected;
 }
+
+import {
+  type BrowserTransportLane,
+  createLane,
+  MAX_DEBUG_QUEUED_EVENTS,
+  MAX_ANALYTICS_QUEUED_EVENTS,
+  MAX_DEBUG_QUEUED_BYTES,
+  MAX_ANALYTICS_QUEUED_BYTES,
+  MAX_UNLOAD_BODY_BYTES,
+  PRESSURE_REPORT_INTERVAL_MS,
+  recordDebugPressure,
+  recordDebugDrop,
+  invalidateAdmission,
+  hasEvictableEvent,
+  capturePriority,
+  eventBytes,
+  retainSend,
+  releaseSend,
+  updateDetachedRetention,
+  admitEvent,
+  reconcileLeadingEvents,
+  readResponseBody,
+  getTransportHeaders
+} from "./event-transport-state.js";
 
 interface BrowserEventTransportCallbacks {
   beforeDebugFlush?(): void;
-  prepareDebugEvent?(event: DebugBundleBrowserTransportEvent): DebugBundleBrowserTransportEvent | null;
+  beforeAnalyticsFlush?(): void;
+  prepareDebugEvent?(
+    event: DebugBundleBrowserTransportEvent
+  ): DebugBundleBrowserTransportEvent | null;
   onDebugResponse(payload: unknown): void;
   onUnauthorized(
     lane: BrowserTransportLaneName,
@@ -55,194 +74,8 @@ interface BrowserEventTransportCallbacks {
     code: "invalid" | "terminal_rejection",
     detail: string
   ): void;
-}
-
-function createLane(): BrowserTransportLane {
-  return {
-    events: [],
-    prepared: new WeakSet(),
-    preparing: false,
-    preparationTimer: null,
-    inFlightEvents: new Map(),
-    beaconCommitted: false,
-    keepalivePending: false,
-    keepalivePromise: null,
-    detachedCount: 0,
-    detachedBytes: 0,
-    queuedBytes: 0,
-    sizes: new WeakMap(),
-    flushPromise: null,
-    flushScheduled: false,
-    flushRequestedDuringSend: false,
-    timer: null,
-    nextRetryAt: null,
-    consecutiveFailures: 0,
-    rejected: false,
-    lastEventAt: null,
-    pressureCount: 0,
-    pressureFirstAt: null,
-    pressureLastAt: null,
-    lastPressureReportAt: null,
-    queueVersion: 0,
-    evictableVersion: -1,
-    evictableMask: 0
-  };
-}
-
-const MAX_DEBUG_QUEUED_EVENTS = 512;
-const MAX_ANALYTICS_QUEUED_EVENTS = 256;
-const MAX_DEBUG_QUEUED_BYTES = 8 * 1024 * 1024;
-const MAX_ANALYTICS_QUEUED_BYTES = 4 * 1024 * 1024;
-// One instance shares this budget across both lanes and outstanding requests.
-const MAX_UNLOAD_BODY_BYTES = 60 * 1024;
-const PRESSURE_REPORT_INTERVAL_MS = 30_000;
-
-function recordDebugPressure(lane: BrowserTransportLane): void {
-  const now = Date.now();
-  lane.pressureCount = Math.min(Number.MAX_SAFE_INTEGER, lane.pressureCount + 1);
-  lane.pressureFirstAt ??= now;
-  lane.pressureLastAt = now;
-}
-
-function recordDebugDrop(lane: BrowserTransportLane, event: DebugBundleBrowserTransportEvent): void {
-  if (event.event_type !== "error_suppressed" || event.payload.fingerprint !== "browser-queue-pressure") {
-    recordDebugPressure(lane);
-    return;
-  }
-  const count = event.payload.suppressed_count;
-  const first = Date.parse(event.payload.first_seen);
-  const last = Date.parse(event.payload.last_seen);
-  if (!Number.isSafeInteger(count) || count <= 0 || !Number.isFinite(first) || !Number.isFinite(last)) return;
-  lane.pressureCount = Math.min(Number.MAX_SAFE_INTEGER, lane.pressureCount + count);
-  lane.pressureFirstAt = lane.pressureFirstAt === null ? first : Math.min(lane.pressureFirstAt, first);
-  lane.pressureLastAt = lane.pressureLastAt === null ? last : Math.max(lane.pressureLastAt, last);
-  // This report never reached the sender; its previous 30-second slot is still available.
-  lane.lastPressureReportAt = null;
-}
-
-function invalidateAdmission(lane: BrowserTransportLane): void {
-  lane.queueVersion = (lane.queueVersion + 1) % 1_000_000_000;
-}
-
-function hasEvictableEvent(lane: BrowserTransportLane, maxPriority: number): boolean {
-  if (lane.evictableVersion !== lane.queueVersion) {
-    lane.evictableMask = 0;
-    for (const candidate of lane.events) {
-      if (!lane.inFlightEvents.has(candidate)) lane.evictableMask |= 1 << eventPriority(candidate);
-    }
-    lane.evictableVersion = lane.queueVersion;
-  }
-  return (lane.evictableMask & ((1 << (maxPriority + 1)) - 1)) !== 0;
-}
-
-function capturePriority(kind: DebugBundleBrowserTransportEvent["event_type"], level?: string, status?: number): number {
-  if (kind === "frontend_exception" || kind === "backend_exception") return 3;
-  if (kind === "error_suppressed") return 2;
-  if (kind === "log_event") return level === "error" || level === "critical" ? 2 : 0;
-  if (kind === "request_event" && status !== undefined && status >= 400) return 2;
-  return 1;
-}
-
-function eventPriority(event: DebugBundleBrowserTransportEvent): number {
-  return capturePriority(event.event_type,
-    event.event_type === "log_event" ? event.payload.level : undefined,
-    event.event_type === "request_event" ? event.payload.response_status : undefined);
-}
-
-function eventBytes(lane: BrowserTransportLane, event: DebugBundleBrowserTransportEvent): number | null {
-  const cached = lane.sizes.get(event);
-  if (cached !== undefined) return cached;
-  try {
-    const json = JSON.stringify(event);
-    if (json === undefined) return null;
-    const bytes = new TextEncoder().encode(json).byteLength;
-    lane.sizes.set(event, bytes);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
-function retainSend(lane: BrowserTransportLane, events: readonly DebugBundleBrowserTransportEvent[]): void {
-  for (const event of events) {
-    lane.inFlightEvents.set(event, (lane.inFlightEvents.get(event) ?? 0) + 1);
-  }
-  invalidateAdmission(lane);
-}
-
-function releaseSend(lane: BrowserTransportLane, events: readonly DebugBundleBrowserTransportEvent[]): void {
-  for (const event of events) {
-    const retained = lane.inFlightEvents.get(event) ?? 0;
-    if (retained <= 1) lane.inFlightEvents.delete(event);
-    else lane.inFlightEvents.set(event, retained - 1);
-  }
-  updateDetachedRetention(lane);
-  invalidateAdmission(lane);
-}
-
-/** Acknowledged records remain charged while another sender still owns them. */
-function updateDetachedRetention(lane: BrowserTransportLane): void {
-  const queued = new Set(lane.events);
-  lane.detachedCount = 0;
-  lane.detachedBytes = 0;
-  for (const event of lane.inFlightEvents.keys()) {
-    if (queued.has(event)) continue;
-    lane.detachedCount += 1;
-    lane.detachedBytes += lane.sizes.get(event) ?? 0;
-  }
-}
-
-function admitEvent(
-  lane: BrowserTransportLane,
-  event: DebugBundleBrowserTransportEvent,
-  limit: number,
-  maxBytes: number,
-  preferRetained = false,
-  onDrop?: (dropped: DebugBundleBrowserTransportEvent) => void
-): boolean {
-  const incomingPriority = eventPriority(event);
-  const allowEqualPriorityEviction = !preferRetained && incomingPriority < 2;
-  const maxVictimPriority = incomingPriority - (allowEqualPriorityEviction ? 0 : 1);
-  if (lane.events.length + lane.detachedCount >= limit && !hasEvictableEvent(lane, maxVictimPriority)) {
-    onDrop?.(event);
-    return false;
-  }
-  const bytes = eventBytes(lane, event);
-  if (bytes === null || bytes > maxBytes) {
-    onDrop?.(event);
-    return false;
-  }
-  if (lane.queuedBytes + lane.detachedBytes + bytes > maxBytes && !hasEvictableEvent(lane, maxVictimPriority)) {
-    onDrop?.(event);
-    return false;
-  }
-
-  while (lane.events.length + lane.detachedCount >= limit || lane.queuedBytes + lane.detachedBytes + bytes > maxBytes) {
-    let victimIndex = -1;
-    let victimPriority = incomingPriority;
-    for (let index = 0; index < lane.events.length; index += 1) {
-      if (lane.inFlightEvents.has(lane.events[index]!)) continue;
-      const priority = eventPriority(lane.events[index]!);
-      if (priority < victimPriority || (allowEqualPriorityEviction && priority === victimPriority && victimIndex < 0)) {
-        victimIndex = index;
-        victimPriority = priority;
-      }
-    }
-    if (victimIndex < 0) {
-      onDrop?.(event);
-      return false;
-    }
-    const [victim] = lane.events.splice(victimIndex, 1);
-    if (victim !== undefined) {
-      lane.queuedBytes -= lane.sizes.get(victim) ?? 0;
-      invalidateAdmission(lane);
-      onDrop?.(victim);
-    }
-  }
-  lane.events.push(event);
-  lane.queuedBytes += bytes;
-  invalidateAdmission(lane);
-  return true;
+  onSemanticTerminalRejection?(eventIds: readonly string[]): void;
+  onSemanticReceipt?(receipt: { accepted: number; retryable: number; terminal: number }): void;
 }
 
 export class BrowserEventTransport {
@@ -283,11 +116,19 @@ export class BrowserEventTransport {
   }
 
   /** Reject known queue exhaustion before callers construct events or invoke hooks. */
-  public canCaptureDebug(kind: DebugBundleBrowserTransportEvent["event_type"], level?: string, status?: number): boolean {
+  public canCaptureDebug(
+    kind: DebugBundleBrowserTransportEvent["event_type"],
+    level?: string,
+    status?: number
+  ): boolean {
     const lane = this.debug;
-    if (this.config === null || lane.rejected || lane.beaconCommitted || this.retiredDebug.size > 0) return false;
-    if (lane.events.length + lane.detachedCount < MAX_DEBUG_QUEUED_EVENTS &&
-        lane.queuedBytes + lane.detachedBytes < MAX_DEBUG_QUEUED_BYTES) return true;
+    if (this.config === null || lane.rejected || lane.beaconCommitted || this.retiredDebug.size > 0)
+      return false;
+    if (
+      lane.events.length + lane.detachedCount < MAX_DEBUG_QUEUED_EVENTS &&
+      lane.queuedBytes + lane.detachedBytes < MAX_DEBUG_QUEUED_BYTES
+    )
+      return true;
     const priority = capturePriority(kind, level, status);
     // Match admission: lower-priority traffic rotates; incident evidence never
     // displaces an equal-priority event or a batch still owned by a sender.
@@ -308,33 +149,78 @@ export class BrowserEventTransport {
       lane.preparationTimer = null;
       if (this.debug !== lane) return;
       this.prepareDebugEvents(lane, 32);
-      if (lane.events.some(event => !lane.prepared.has(event))) this.schedulePreparation(lane);
+      if (lane.events.some((event) => !lane.prepared.has(event))) this.schedulePreparation(lane);
     }, 0);
   }
 
-  public enqueueAnalytics(event: BrowserAnalyticsEventEnvelope): void {
-    this.enqueue("analytics", event);
+  public enqueueAnalytics(event: BrowserAnalyticsEventEnvelope | SemanticAnalyticsEvent): boolean {
+    return this.enqueue("analytics", event);
+  }
+
+  public canCaptureAnalytics(): boolean {
+    const lane = this.analytics;
+    return (
+      this.config !== null &&
+      !lane.rejected &&
+      !lane.beaconCommitted &&
+      this.retiredAnalytics.size === 0 &&
+      lane.events.length + lane.detachedCount < MAX_ANALYTICS_QUEUED_EVENTS &&
+      lane.queuedBytes + lane.detachedBytes < MAX_ANALYTICS_QUEUED_BYTES
+    );
+  }
+
+  public canReservePendingAnalytics(count: number, bytes: number): boolean {
+    const lane = this.analytics;
+    return this.config !== null && !lane.rejected && !lane.beaconCommitted &&
+      this.retiredAnalytics.size === 0 &&
+      lane.events.length + lane.detachedCount + count <= MAX_ANALYTICS_QUEUED_EVENTS &&
+      lane.queuedBytes + lane.detachedBytes + bytes <= MAX_ANALYTICS_QUEUED_BYTES;
+  }
+
+  /** Retire unsent analytics without freeing snapshots still owned by a sender. */
+  public revokeAnalytics(): void {
+    const lane = this.analytics;
+    this.clearLaneTimer(lane);
+    if (lane.inFlightEvents.size > 0) this.retiredAnalytics.add(lane);
+    lane.events = [];
+    lane.queuedBytes = 0;
+    updateDetachedRetention(lane);
+    invalidateAdmission(lane);
+    this.analytics = createLane();
+    lane.keepaliveController?.abort();
+    // Lifecycle reservations are instance-wide and survive consent changes.
   }
 
   public flush(): Promise<void> {
-    if (this.debug.events.length === 0 && this.analytics.events.length === 0 && this.debug.pressureCount === 0 &&
-        this.debug.flushPromise === null && this.analytics.flushPromise === null &&
-        !this.debug.keepalivePending && !this.analytics.keepalivePending) return Promise.resolve();
+    if (
+      this.debug.events.length === 0 &&
+      this.analytics.events.length === 0 &&
+      this.debug.pressureCount === 0 &&
+      this.debug.flushPromise === null &&
+      this.analytics.flushPromise === null &&
+      !this.debug.keepalivePending &&
+      !this.analytics.keepalivePending
+    )
+      return Promise.resolve();
     if (this.flushCycle !== null) return this.flushCycle;
     const deadline = boundedTransportTimeoutMs(this.config?.requestTimeoutMs ?? 5_000);
     let finish!: () => void;
-    const result = new Promise<void>(resolve => { finish = resolve; });
+    const result = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     this.flushCycle = result;
     const timer = setTimeout(finish, deadline);
     // Keep this shared cycle even after its deadline until the owned sender
     // settles. Repeated flush calls cannot create extra timers/waiter chains.
     void (async () => {
       await Promise.all([this.flushLaneToIdle("debug"), this.flushLaneToIdle("analytics")]);
-    })().catch(() => undefined).finally(() => {
-      clearTimeout(timer);
-      if (this.flushCycle === result) this.flushCycle = null;
-      finish();
-    });
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        clearTimeout(timer);
+        if (this.flushCycle === result) this.flushCycle = null;
+        finish();
+      });
     return result;
   }
 
@@ -344,10 +230,21 @@ export class BrowserEventTransport {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const lane = this.getLane(laneName);
       const before = lane.events.length;
-      if (before === 0 && lane.pressureCount === 0 && lane.flushPromise === null && !lane.keepalivePending) return;
+      if (
+        before === 0 &&
+        lane.pressureCount === 0 &&
+        lane.flushPromise === null &&
+        !lane.keepalivePending
+      )
+        return;
       await this.flushLane(laneName);
-      if (this.getLane(laneName) !== lane || lane.events.length === 0 ||
-          lane.events.length >= before || lane.nextRetryAt !== null) return;
+      if (
+        this.getLane(laneName) !== lane ||
+        lane.events.length === 0 ||
+        lane.events.length >= before ||
+        lane.nextRetryAt !== null
+      )
+        return;
     }
   }
 
@@ -378,35 +275,47 @@ export class BrowserEventTransport {
     this.config = null;
   }
 
-  private enqueue(laneName: BrowserTransportLaneName, event: DebugBundleBrowserTransportEvent): void {
+  private enqueue(
+    laneName: BrowserTransportLaneName,
+    event: DebugBundleBrowserTransportEvent
+  ): boolean {
     const config = this.config;
     const lane = this.getLane(laneName);
-    if (config === null || lane.rejected || lane.beaconCommitted || this.getRetired(laneName).size > 0) {
-      return;
+    if (
+      config === null ||
+      lane.rejected ||
+      lane.beaconCommitted ||
+      this.getRetired(laneName).size > 0
+    ) {
+      return false;
     }
 
-    admitEvent(lane, event,
+    const admitted = admitEvent(
+      lane,
+      event,
       laneName === "debug" ? MAX_DEBUG_QUEUED_EVENTS : MAX_ANALYTICS_QUEUED_EVENTS,
       laneName === "debug" ? MAX_DEBUG_QUEUED_BYTES : MAX_ANALYTICS_QUEUED_BYTES,
-      false, laneName === "debug" ? (dropped) => recordDebugDrop(lane, dropped) : undefined);
+      false,
+      laneName === "debug" ? (dropped) => recordDebugDrop(lane, dropped) : undefined
+    );
     if (lane.events.length >= Math.min(config.batchSize, 256)) {
-      if (lane.flushScheduled) return;
+      if (lane.flushScheduled) return admitted;
       lane.flushScheduled = true;
       queueMicrotask(() => {
         if (this.getLane(laneName) !== lane) return;
         lane.flushScheduled = false;
         void this.flushLane(laneName);
       });
-      return;
+      return admitted;
     }
     this.schedule(laneName);
+    return admitted;
   }
 
   private async flushLane(laneName: BrowserTransportLaneName): Promise<void> {
     const config = this.config;
     const lane = this.getLane(laneName);
-    if (config === null || lane.rejected ||
-        this.getRetired(laneName).size > 0) {
+    if (config === null || lane.rejected || this.getRetired(laneName).size > 0) {
       return;
     }
     if (lane.keepalivePending) return lane.keepalivePromise ?? undefined;
@@ -418,8 +327,17 @@ export class BrowserEventTransport {
       return;
     }
 
+    if (laneName === "analytics") {
+      try { this.callbacks.beforeAnalyticsFlush?.(); } catch { return; }
+      if (this.getLane(laneName) !== lane) return;
+    }
+
     if (laneName === "debug") {
-      try { this.callbacks.beforeDebugFlush?.(); } catch { /* SDK callbacks cannot disrupt delivery. */ }
+      try {
+        this.callbacks.beforeDebugFlush?.();
+      } catch {
+        /* SDK callbacks cannot disrupt delivery. */
+      }
       this.enqueuePressureReport(lane, config);
     }
     if (lane.events.length === 0) return;
@@ -427,8 +345,16 @@ export class BrowserEventTransport {
     this.clearLaneTimer(lane);
     if (laneName === "debug") this.prepareDebugEvents(lane, Math.min(config.batchSize, 256));
     if (this.getLane(laneName) !== lane || lane.preparing) return;
-    const events = lane.events.filter(event => laneName !== "debug" || lane.prepared.has(event))
+    const candidates = lane.events
+      .filter((event) => laneName !== "debug" || lane.prepared.has(event))
       .slice(0, Math.min(config.batchSize, 256));
+    const events = laneName === "analytics" && config.requestsSemanticAnalyticsConfig
+      ? boundSemanticBatch(candidates, config.semanticBatchEvents ?? 1, config.semanticBatchBytes ?? 256 * 1024)
+      : candidates;
+    if (events.length === 0 && candidates.length > 0 && config.requestsSemanticAnalyticsConfig) {
+      this.revokeAnalytics();
+      return;
+    }
     if (events.length === 0) {
       if (lane.events.length > 0) this.schedule(laneName, 0);
       return;
@@ -436,7 +362,9 @@ export class BrowserEventTransport {
     retainSend(lane, events);
     let acknowledged = false;
     let finishSend!: () => void;
-    const completion = new Promise<void>(resolve => { finishSend = resolve; });
+    const completion = new Promise<void>((resolve) => {
+      finishSend = resolve;
+    });
     // Reserve ownership before any custom sender can throw or reenter. Assigning
     // after invocation can overwrite synchronous cleanup with a stale promise.
     lane.flushPromise = completion;
@@ -464,7 +392,14 @@ export class BrowserEventTransport {
           return;
         }
 
-        this.reconcileFailure(laneName, lane, config, response.status, response.body, response.retry_after_ms);
+        this.reconcileFailure(
+          laneName,
+          lane,
+          config,
+          response.status,
+          response.body,
+          response.retry_after_ms
+        );
       } catch {
         lane.consecutiveFailures += 1;
       } finally {
@@ -476,10 +411,13 @@ export class BrowserEventTransport {
         lane.flushRequestedDuringSend = false;
         if (this.getLane(laneName) === lane && !lane.rejected) {
           if (lane.events.length > 0 || flushRequestedDuringSend) {
-            const retryDelay = lane.nextRetryAt === null
-              ? flushRequestedDuringSend || acknowledged && lane.events.length >= Math.min(config.batchSize, 256)
-                ? 0 : undefined
-              : Math.max(0, lane.nextRetryAt - Date.now());
+            const retryDelay =
+              lane.nextRetryAt === null
+                ? flushRequestedDuringSend ||
+                  (acknowledged && lane.events.length >= Math.min(config.batchSize, 256))
+                  ? 0
+                  : undefined
+                : Math.max(0, lane.nextRetryAt - Date.now());
             this.schedule(laneName, retryDelay);
           } else if (laneName === "debug" && lane.pressureCount > 0) {
             const nextReportAt = (lane.lastPressureReportAt ?? 0) + PRESSURE_REPORT_INTERVAL_MS;
@@ -487,13 +425,21 @@ export class BrowserEventTransport {
           }
         }
       }
-    })().catch(() => undefined).finally(finishSend);
+    })()
+      .catch(() => undefined)
+      .finally(finishSend);
 
     return completion;
   }
 
-  private reconcileFailure(laneName: BrowserTransportLaneName, lane: BrowserTransportLane, config: ActiveConfig,
-    status: number, body: unknown, retryAfterMs?: number): void {
+  private reconcileFailure(
+    laneName: BrowserTransportLaneName,
+    lane: BrowserTransportLane,
+    config: ActiveConfig,
+    status: number,
+    body: unknown,
+    retryAfterMs?: number
+  ): void {
     lane.consecutiveFailures += 1;
     if (status === 401 || status === 403) {
       lane.rejected = true;
@@ -503,7 +449,7 @@ export class BrowserEventTransport {
       updateDetachedRetention(lane);
       invalidateAdmission(lane);
       this.callbacks.onUnauthorized(laneName, status, config.endpoint, body);
-    } else if (status === 429 || status >= 500 && retryAfterMs !== undefined) {
+    } else if (status === 429 || (status >= 500 && retryAfterMs !== undefined)) {
       lane.nextRetryAt = Date.now() + boundedRetryAfterMs(retryAfterMs);
     }
   }
@@ -515,12 +461,18 @@ export class BrowserEventTransport {
       for (let prepared = 0; prepared < limit; prepared += 1) {
         // Keep only one original/replacement pair alive. Retaining a batch of
         // originals while hooks expand replacements would escape the byte cap.
-        const original = lane.events.find(event => !lane.prepared.has(event) && !lane.inFlightEvents.has(event));
+        const original = lane.events.find(
+          (event) => !lane.prepared.has(event) && !lane.inFlightEvents.has(event)
+        );
         if (original === undefined) break;
         let replacement: DebugBundleBrowserTransportEvent | null = original;
-        try { replacement = this.callbacks.prepareDebugEvent?.(original) ??
-          (this.callbacks.prepareDebugEvent === undefined ? original : null); }
-        catch { replacement = null; }
+        try {
+          replacement =
+            this.callbacks.prepareDebugEvent?.(original) ??
+            (this.callbacks.prepareDebugEvent === undefined ? original : null);
+        } catch {
+          replacement = null;
+        }
         if (this.debug !== lane) return;
         const index = lane.events.indexOf(original);
         if (index < 0) continue; // Reentrant capture may have evicted this event.
@@ -529,14 +481,24 @@ export class BrowserEventTransport {
         invalidateAdmission(lane);
         if (replacement === null) continue;
         lane.prepared.add(replacement);
-        if (admitEvent(lane, replacement, MAX_DEBUG_QUEUED_EVENTS, MAX_DEBUG_QUEUED_BYTES,
-          true, dropped => recordDebugDrop(lane, dropped))) {
+        if (
+          admitEvent(
+            lane,
+            replacement,
+            MAX_DEBUG_QUEUED_EVENTS,
+            MAX_DEBUG_QUEUED_BYTES,
+            true,
+            (dropped) => recordDebugDrop(lane, dropped)
+          )
+        ) {
           // Preserve admission order without assuming replacement IDs are unique.
           lane.events.pop();
           lane.events.splice(Math.min(index, lane.events.length), 0, replacement);
         }
       }
-    } finally { lane.preparing = false; }
+    } finally {
+      lane.preparing = false;
+    }
   }
 
   private schedule(laneName: BrowserTransportLaneName, delayMs?: number): void {
@@ -553,9 +515,14 @@ export class BrowserEventTransport {
   }
 
   private enqueuePressureReport(lane: BrowserTransportLane, config: ActiveConfig): void {
-    if (lane.pressureCount === 0 || lane.pressureFirstAt === null || lane.pressureLastAt === null) return;
+    if (lane.pressureCount === 0 || lane.pressureFirstAt === null || lane.pressureLastAt === null)
+      return;
     const now = Date.now();
-    if (lane.lastPressureReportAt !== null && now - lane.lastPressureReportAt < PRESSURE_REPORT_INTERVAL_MS) return;
+    if (
+      lane.lastPressureReportAt !== null &&
+      now - lane.lastPressureReportAt < PRESSURE_REPORT_INTERVAL_MS
+    )
+      return;
     if (lane.events.length >= MAX_DEBUG_QUEUED_EVENTS) return;
 
     try {
@@ -580,26 +547,48 @@ export class BrowserEventTransport {
   }
 
   private flushLaneViaBeacon(laneName: BrowserTransportLaneName): void {
+    if (laneName === "analytics") {
+      try { this.callbacks.beforeAnalyticsFlush?.(); } catch { return; }
+    }
     const config = this.config;
     const lane = this.getLane(laneName);
-    if (config === null || lane.events.length === 0 || lane.rejected ||
-        lane.keepalivePending || this.getRetired(laneName).size > 0 ||
-        lane.nextRetryAt !== null && Date.now() < lane.nextRetryAt) {
+    if (
+      config === null ||
+      lane.events.length === 0 ||
+      lane.rejected ||
+      lane.keepalivePending ||
+      this.getRetired(laneName).size > 0 ||
+      (lane.nextRetryAt !== null && Date.now() < lane.nextRetryAt)
+    ) {
       return;
     }
 
     // Unload may transmit only finalized records. Running a pending application
     // hook here would bypass its deferred boundary and can hold page shutdown.
     const pendingEvents: DebugBundleBrowserTransportEvent[] = [];
-    const availableBytes = MAX_UNLOAD_BODY_BYTES - this.keepaliveBytes - this.beaconBytes;
+    const availableBytes = Math.min(
+      MAX_UNLOAD_BODY_BYTES - this.keepaliveBytes - this.beaconBytes,
+      laneName === "analytics" && config.requestsSemanticAnalyticsConfig
+        ? (config.semanticBatchBytes ?? 256 * 1024) : MAX_UNLOAD_BODY_BYTES
+    );
     let bodyBytes = buildBrowserTransportRequestBody(config.transportMode, []).length;
     for (const event of lane.events) {
-      if (laneName === "debug" && !lane.prepared.has(event) && this.callbacks.prepareDebugEvent !== undefined) continue;
+      if (
+        laneName === "debug" &&
+        !lane.prepared.has(event) &&
+        this.callbacks.prepareDebugEvent !== undefined
+      )
+        continue;
       const bytes = eventBytes(lane, event);
-      if (bytes === null || bodyBytes + bytes + (pendingEvents.length === 0 ? 0 : 1) > availableBytes) continue;
+      if (
+        bytes === null ||
+        bodyBytes + bytes + (pendingEvents.length === 0 ? 0 : 1) > availableBytes
+      )
+        continue;
       pendingEvents.push(event);
       bodyBytes += bytes + (pendingEvents.length === 1 ? 0 : 1);
-      if (pendingEvents.length >= 256) break;
+      if (pendingEvents.length >= (laneName === "analytics" && config.requestsSemanticAnalyticsConfig
+        ? (config.semanticBatchEvents ?? 1) : 256)) break;
     }
     if (pendingEvents.length === 0) {
       // A large individual event needs the ordinary transport while the page is still active.
@@ -622,37 +611,67 @@ export class BrowserEventTransport {
         return;
       }
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), boundedTransportTimeoutMs(config.requestTimeoutMs));
+      const timeout = setTimeout(
+        () => controller.abort(),
+        boundedTransportTimeoutMs(config.requestTimeoutMs)
+      );
       lane.keepalivePending = true;
+      lane.keepaliveController = controller;
       this.keepaliveBytes += requestBytes;
       retainSend(lane, pendingEvents);
-      lane.keepalivePromise = Promise.resolve().then(() => config.fetchImpl!(config.endpoint, {
-        method: "POST", headers: getTransportHeaders(config), body, keepalive: true,
-        signal: controller.signal
-      })).then(async (response) => {
-        if (this.getLane(laneName) !== lane) return;
-        const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
-        if (response.status >= 200 && response.status < 300) {
-          const responseBody = await readResponseBody(response);
-          if (controller.signal.aborted) return;
-          this.reconcileSuccessfulResponse(laneName, lane, pendingEvents, responseBody, retryAfterMs, config.transportMode === "direct");
-          this.clearLaneTimer(lane);
-        } else {
-          this.reconcileFailure(laneName, lane, config, response.status, undefined, retryAfterMs);
-        }
-      }).catch(() => undefined).finally(() => {
-        clearTimeout(timeout);
-        this.keepaliveBytes -= requestBytes;
-        releaseSend(lane, pendingEvents);
-        lane.keepalivePending = false;
-        lane.keepalivePromise = null;
-        if (lane.inFlightEvents.size === 0) lane.beaconCommitted = false;
-        if (lane.inFlightEvents.size === 0) this.getRetired(laneName).delete(lane);
-        if (this.getLane(laneName) === lane && lane.events.length > 0 && !lane.rejected) {
-          this.schedule(laneName, lane.nextRetryAt === null ? lane.events.length > pendingEvents.length ? 0 : undefined
-            : Math.max(0, lane.nextRetryAt - Date.now()));
-        }
-      });
+      lane.keepalivePromise = Promise.resolve()
+        .then(() => {
+          // Consent/configuration can change between body preparation and dispatch.
+          if (this.getLane(laneName) !== lane || controller.signal.aborted) return null;
+          return config.fetchImpl!(config.endpoint, {
+            method: "POST",
+            headers: getTransportHeaders(config),
+            body,
+            keepalive: true,
+            signal: controller.signal
+          });
+        })
+        .then(async (response) => {
+          if (response === null) return;
+          if (this.getLane(laneName) !== lane) return;
+          const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
+          if (response.status >= 200 && response.status < 300) {
+            const responseBody = await readResponseBody(response);
+            if (controller.signal.aborted) return;
+            this.reconcileSuccessfulResponse(
+              laneName,
+              lane,
+              pendingEvents,
+              responseBody,
+              retryAfterMs,
+              config.transportMode === "direct"
+            );
+            this.clearLaneTimer(lane);
+          } else {
+            this.reconcileFailure(laneName, lane, config, response.status, undefined, retryAfterMs);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          clearTimeout(timeout);
+          this.keepaliveBytes -= requestBytes;
+          releaseSend(lane, pendingEvents);
+          lane.keepalivePending = false;
+          lane.keepalivePromise = null;
+          lane.keepaliveController = null;
+          if (lane.inFlightEvents.size === 0) lane.beaconCommitted = false;
+          if (lane.inFlightEvents.size === 0) this.getRetired(laneName).delete(lane);
+          if (this.getLane(laneName) === lane && lane.events.length > 0 && !lane.rejected) {
+            this.schedule(
+              laneName,
+              lane.nextRetryAt === null
+                ? lane.events.length > pendingEvents.length
+                  ? 0
+                  : undefined
+                : Math.max(0, lane.nextRetryAt - Date.now())
+            );
+          }
+        });
     };
 
     // Direct ingestion requires a bearer header, which sendBeacon cannot set.
@@ -672,20 +691,22 @@ export class BrowserEventTransport {
     this.beaconBytes += requestBytes;
     let accepted = false;
     try {
-      const beaconBody = typeof Blob === "function"
-        ? new Blob([body], { type: "application/json" })
-        : body;
+      const beaconBody =
+        typeof Blob === "function" ? new Blob([body], { type: "application/json" }) : body;
       if (navigatorSource.sendBeacon(config.endpoint, beaconBody)) {
         accepted = true;
         const selected = new Map<DebugBundleBrowserTransportEvent, number>();
         for (const event of pendingEvents) selected.set(event, (selected.get(event) ?? 0) + 1);
-        lane.events = lane.events.filter(event => {
+        lane.events = lane.events.filter((event) => {
           const remaining = selected.get(event) ?? 0;
           if (remaining === 0) return true;
           selected.set(event, remaining - 1);
           return false;
         });
-        lane.queuedBytes -= pendingEvents.reduce((total, event) => total + (lane.sizes.get(event) ?? 0), 0);
+        lane.queuedBytes -= pendingEvents.reduce(
+          (total, event) => total + (lane.sizes.get(event) ?? 0),
+          0
+        );
         updateDetachedRetention(lane);
         invalidateAdmission(lane);
         // A concurrent send still owns its snapshot; pause capture until it settles.
@@ -720,7 +741,11 @@ export class BrowserEventTransport {
     requireAcknowledgement = false
   ): void {
     if (this.getLane(laneName) !== lane) return;
-    const acknowledgement = decideBrowserAcknowledgement(body, events.length, requireAcknowledgement);
+    const acknowledgement = decideBrowserAcknowledgement(
+      body,
+      events.length,
+      requireAcknowledgement
+    );
     if (acknowledgement.kind === "protocol_failure") {
       lane.consecutiveFailures += 1;
       lane.nextRetryAt = Date.now() + boundedRetryAfterMs(retryAfterMs);
@@ -742,8 +767,30 @@ export class BrowserEventTransport {
       .map((index) => events[index])
       .filter((event): event is DebugBundleBrowserTransportEvent => event !== undefined);
     reconcileLeadingEvents(lane, events, retryableEvents);
+    if (laneName === "analytics" && this.config?.requestsSemanticAnalyticsConfig === true) {
+      try {
+        this.callbacks.onSemanticReceipt?.({
+          accepted: acknowledgement.accepted,
+          retryable: acknowledgement.retryableIndices.length,
+          terminal: acknowledgement.terminalErrors.length
+        });
+      } catch {
+        // Receipt diagnostics cannot interrupt the sender's queue reconciliation.
+      }
+    }
     if (acknowledgement.terminalErrors.length > 0) {
-      const reasons = [...new Set(acknowledgement.terminalErrors.map((error) => error.reason))].join(",");
+      if (laneName === "analytics" && this.config?.requestsSemanticAnalyticsConfig === true) {
+        const eventIds = acknowledgement.terminalErrors.flatMap(({ index }) => {
+          const eventId = events[index]?.event_id;
+          return typeof eventId === "string" ? [eventId] : [];
+        });
+        try { this.callbacks.onSemanticTerminalRejection?.(eventIds); } catch {
+          // Application capture must never interrupt acknowledgement reconciliation.
+        }
+      }
+      const reasons = [
+        ...new Set(acknowledgement.terminalErrors.map((error) => error.reason))
+      ].join(",");
       this.callbacks.onAcknowledgementDiagnostic(laneName, "terminal_rejection", reasons);
     }
     if (acknowledgement.accepted > 0) {
@@ -764,46 +811,4 @@ export class BrowserEventTransport {
       lane.timer = null;
     }
   }
-}
-
-function reconcileLeadingEvents(
-  lane: BrowserTransportLane,
-  events: DebugBundleBrowserTransportEvent[],
-  retainedEvents: DebugBundleBrowserTransportEvent[]
-): void {
-  const selected = new Map<DebugBundleBrowserTransportEvent, number>();
-  const retries = new Map<DebugBundleBrowserTransportEvent, number>();
-  for (const event of events) selected.set(event, (selected.get(event) ?? 0) + 1);
-  for (const event of retainedEvents) retries.set(event, (retries.get(event) ?? 0) + 1);
-  const queued: DebugBundleBrowserTransportEvent[] = [];
-  const retryable: DebugBundleBrowserTransportEvent[] = [];
-  // Only retain records still queued. An overlapping sender may already have
-  // acknowledged them; a stale retryable response cannot resurrect those records.
-  for (const event of lane.events) {
-    const count = selected.get(event) ?? 0;
-    if (count === 0) { queued.push(event); continue; }
-    selected.set(event, count - 1);
-    const retryCount = retries.get(event) ?? 0;
-    if (retryCount > 0) { retryable.push(event); retries.set(event, retryCount - 1); }
-  }
-  lane.events = [...retryable, ...queued];
-  lane.queuedBytes = lane.events.reduce((total, event) => total + (lane.sizes.get(event) ?? 0), 0);
-  updateDetachedRetention(lane);
-  invalidateAdmission(lane);
-}
-
-async function readResponseBody(response: { json?: () => Promise<unknown> }): Promise<unknown> {
-  if (typeof response.json !== "function") {
-    return undefined;
-  }
-  return response.json().catch(() => undefined);
-}
-
-function getTransportHeaders(config: ActiveConfig): Record<string, string> {
-  return config.projectToken === null
-    ? { "content-type": "application/json" }
-    : {
-        "content-type": "application/json",
-        authorization: `Bearer ${config.projectToken}`
-      };
 }

@@ -1,6 +1,7 @@
 import packageJson from "../package.json" with { type: "json" };
-import type { EventEnvelope } from "@debugbundle/shared-types";
+import type { EventEnvelope, SemanticAnalyticsEvent } from "@debugbundle/shared-types";
 import type { BrowserBeforeSendHook } from "./before-send.js";
+import type { SemanticBrowserStatus, SemanticBrowserTrackOptions } from "./semantic-analytics.js";
 export type { EventEnvelope };
 
 export const SDK_NAME = "@debugbundle/sdk-browser";
@@ -237,7 +238,7 @@ export interface BrowserAnalyticsEventEnvelope {
   };
 }
 
-export type DebugBundleBrowserTransportEvent = EventEnvelope | BrowserAnalyticsEventEnvelope;
+export type DebugBundleBrowserTransportEvent = EventEnvelope | BrowserAnalyticsEventEnvelope | SemanticAnalyticsEvent;
 
 export interface BrowserBreadcrumb {
   ts: string;
@@ -431,11 +432,14 @@ export interface DebugBundleBrowserInitConfig {
 
 export interface DebugBundleBrowserAnalyticsConfig {
   enabled?: boolean;
+  schemaVersion?: "2026-09-analytics-02";
   privacyMode?: BrowserAnalyticsPrivacyMode;
   consentRequired?: boolean;
   trackPageViews?: boolean;
   trackRouteChanges?: boolean;
   trackSessions?: boolean;
+  /** Exact static pathname allowlist for V2 automatic page and route events. */
+  routeTemplates?: string[];
   trackReferrers?: boolean;
   trackActions?: boolean;
   trackFrictionSignals?: boolean;
@@ -449,9 +453,10 @@ export interface DebugBundleBrowserAnalyticsPageViewInput {
 }
 
 export interface DebugBundleBrowserAnalytics {
+  getStatus(): { mode: "legacy"; semantic: null } | { mode: "semantic"; semantic: SemanticBrowserStatus };
   setConsent(value: boolean): void;
   pageView(input?: DebugBundleBrowserAnalyticsPageViewInput): void;
-  track(name: string, dimensions?: Record<string, unknown>): void;
+  track(name: string, dimensions?: Record<string, unknown>, options?: SemanticBrowserTrackOptions): void;
   funnel(name: string, step: string, dimensions?: Record<string, unknown>): void;
   convert(name: string, dimensions?: Record<string, unknown>): void;
   marker(name: string, dimensions?: Record<string, unknown>): void;
@@ -546,6 +551,9 @@ export interface ActiveConfig {
   probeFlushOnError: boolean;
   requestTimeoutMs: number;
   requestsAnalyticsConfig: boolean;
+  requestsSemanticAnalyticsConfig?: boolean;
+  semanticBatchEvents?: number;
+  semanticBatchBytes?: number;
   captureRules: BrowserCaptureRule[];
   fetchImpl: BrowserFetch | null;
   transport: DebugBundleBrowserTransport;
