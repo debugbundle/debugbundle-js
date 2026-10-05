@@ -95,6 +95,22 @@ describe("browser lifecycle delivery", () => {
     expect(fixture.lane().events).toHaveLength(0);
   });
 
+  it("does not retry an in-flight analytics event after consent withdrawal", async () => {
+    const pending = deferred<{ status: number }>();
+    const send = vi.fn().mockImplementation(() => pending.promise);
+    const fixture = setup({ batchSize: 1, transport: send });
+    fixture.transport.enqueueAnalytics(event("before-withdrawal") as Parameters<typeof fixture.transport.enqueueAnalytics>[0]);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+
+    fixture.transport.clearAnalytics();
+    pending.resolve({ status: 503 });
+    await vi.waitFor(() => expect((fixture.transport as unknown as { retiredAnalytics: Set<unknown> }).retiredAnalytics.size).toBe(0));
+    fixture.transport.flushViaBeacon();
+    await fixture.transport.flush();
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("honors an existing rate-limit deadline on repeated lifecycle callbacks", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ status: 429 });
     const fixture = setup({ transport: async () => ({ status: 429, retry_after_ms: 300_000 }), fetchImpl });

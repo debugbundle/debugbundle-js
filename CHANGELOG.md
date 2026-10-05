@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-05
+
+### Added
+
+- Export `createAnalyticsFlowClient` from the Browser SDK for public project acquisition and activation flows, with ordered steps, expiring cross-origin handoffs, tab-scoped continuity, and programmatic capture controls.
+- Bound flow requests, queued operations, and response bodies; reject unsafe attribution before transport and return safe inactive clients for invalid initialization.
+
+### Fixed
+
+- Clear queued browser analytics and prevent retry or lifecycle replay after consent withdrawal, while preserving independent debug capture.
+- Republish the Node SDK at the coordinated 3.1.0 version without changing its runtime behavior or adding backend flow helpers.
+
 ## [3.0.3] - 2026-09-26
 
 ### Fixed

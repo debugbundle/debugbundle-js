@@ -75,6 +75,7 @@ export class BrowserAnalyticsController {
       getCurrentRoute(): string | null;
       getSessionId(): string;
       enqueue(event: BrowserAnalyticsEventEnvelope): void;
+      clearQueuedAnalytics(): void;
     }
   ) {}
 
@@ -85,6 +86,8 @@ export class BrowserAnalyticsController {
         this.active.consentExplicitlySet = true;
         if (!value) {
           this.clearStandardVisitor(this.active);
+          this.active.pendingCaptures = [];
+          this.host.clearQueuedAnalytics();
         } else if (this.active.captureReady) {
           void this.initializeStandardVisitor(this.active);
         }
@@ -256,6 +259,8 @@ export class BrowserAnalyticsController {
     if (active.consentRequired && !active.consentExplicitlySet) {
       active.consentGranted = false;
       this.clearStandardVisitor(active);
+      active.pendingCaptures = [];
+      this.host.clearQueuedAnalytics();
     }
     active.trackPageViews = active.trackPageViews && remote.capturePageViews;
     active.trackRouteChanges = active.trackRouteChanges && remote.captureRouteChanges;
@@ -264,6 +269,8 @@ export class BrowserAnalyticsController {
     active.trackFrictionSignals = active.trackFrictionSignals && remote.captureFrictionSignals;
     if (!active.enabled) {
       this.clearStandardVisitor(active);
+      active.pendingCaptures = [];
+      this.host.clearQueuedAnalytics();
     }
   }
 

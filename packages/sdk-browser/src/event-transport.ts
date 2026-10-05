@@ -316,6 +316,17 @@ export class BrowserEventTransport {
     this.enqueue("analytics", event);
   }
 
+  /** Consent withdrawal drops unsent analytics and prevents stale sender results from scheduling retries. */
+  public clearAnalytics(): void {
+    const lane = this.analytics;
+    this.clearLaneTimer(lane);
+    if (lane.inFlightEvents.size > 0) this.retiredAnalytics.add(lane);
+    lane.events = [];
+    lane.queuedBytes = 0;
+    invalidateAdmission(lane);
+    this.analytics = createLane();
+  }
+
   public flush(): Promise<void> {
     if (this.debug.events.length === 0 && this.analytics.events.length === 0 && this.debug.pressureCount === 0 &&
         this.debug.flushPromise === null && this.analytics.flushPromise === null &&

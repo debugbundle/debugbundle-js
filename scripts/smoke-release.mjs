@@ -137,7 +137,8 @@ import { once } from "node:events";
 import express from "express";
 import { createDebugBundleSdk } from "@debugbundle/sdk-node";
 import { debugBundleRelay } from "@debugbundle/sdk-node/relay/express";
-import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
+import { createDebugBundleBrowserSdk, createAnalyticsFlowClient } from "@debugbundle/sdk-browser";
+assert.equal(typeof createAnalyticsFlowClient, "function", "public flow factory export");
 
 const releaseVersion = ${JSON.stringify(input.releaseVersion)};
 const serverProjectToken = ${JSON.stringify(input.serverProjectToken)};

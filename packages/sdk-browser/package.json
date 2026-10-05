@@ -1,6 +1,6 @@
 {
   "name": "@debugbundle/sdk-browser",
-  "version": "3.0.3",
+  "version": "3.1.0",
   "private": false,
   "type": "module",
   "license": "Apache-2.0",

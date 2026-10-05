@@ -121,7 +121,8 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     getDeviceInfo: () => this.deviceInfo,
     getCurrentRoute: () => this.getCurrentRoute(),
     getSessionId: () => this.browserSessionId ?? createBrowserTraceId(),
-    enqueue: (event) => this.enqueueAnalyticsEvent(event)
+    enqueue: (event) => this.enqueueAnalyticsEvent(event),
+    clearQueuedAnalytics: () => this.eventTransport.clearAnalytics()
   });
 
   public readonly analytics = this.analyticsController.api;
@@ -969,3 +970,6 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 export function createDebugBundleBrowserSdk(): DebugBundleBrowserSdk {
   return new BrowserSdk();
 }
+
+export { createAnalyticsFlowClient } from "./analytics-flows.js";
+export type { AnalyticsFlowClient, AnalyticsFlowClientOptions } from "./analytics-flows.js";

@@ -521,6 +521,26 @@ describe("sdk-browser", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it("drops queued analytics on consent withdrawal while retaining debug delivery", async (): Promise<void> => {
+    const { sdk, transport, globals } = browserFixtures.createSdk({
+      endpoint: "/debugbundle/browser",
+      flushInterval: 60_000,
+      batchSize: 256,
+      analytics: { enabled: true, consentRequired: true, trackPageViews: false, trackSessions: false }
+    });
+    sdk.analytics.setConsent(true);
+    sdk.analytics.track("signup.intent");
+    sdk.analytics.setConsent(false);
+    sdk.captureMessage("debug remains available", "error");
+    await sdk.flush();
+    globals.windowTarget.dispatch("pagehide", { persisted: true });
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(browserFixtures.createRawTransportEvents(transport, 0).map((event) => event.event_type))
+      .toEqual(["log_event"]);
+    expect(globals.sendBeacon).not.toHaveBeenCalled();
+  });
+
   it("applies restrictive remote analytics settings without affecting debug capture", async (): Promise<void> => {
     const globals = browserFixtures.installBrowserGlobals();
     globals.fetchMock.mockResolvedValueOnce({
