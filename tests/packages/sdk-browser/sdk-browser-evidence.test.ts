@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { normalizeBrowserErrorEvent } from "../../../packages/sdk-browser/src/runtime.js";
 import { snapshotBrowserEvidence } from "../../../packages/sdk-browser/src/exception-evidence.js";
+const nativeCauseSupported = typeof Object.getOwnPropertyDescriptor(Error, "isError")?.value === "function";
 it("prefers the selected responsive resource and sanitises its URL", () => {
   expect(normalizeBrowserErrorEvent({ target: { tagName: "IMG", src: "https://cdn.example/fallback.png", currentSrc: "https://cdn.example/selected.webp?secret=value#fragment" } }).target?.source_url).toBe("https://cdn.example/selected.webp");
 });
@@ -8,31 +9,33 @@ afterEach(() => vi.restoreAllMocks());
 it("retains bounded native cause data without invoking cause accessors or custom formatters", () => {
   const inner = new Error("inner"), outer = new Error("outer", { cause: inner });
   const evidence = snapshotBrowserEvidence(outer, { name: "Error", message: "outer", stack: "Error: outer\nrun@https://app.example/app.js?token=secret:5:6" });
-  expect(evidence?.nodes[0]?.relationships).toEqual([{ kind: "cause", target_id: 1 }]);
+  expect(evidence?.nodes[0]?.relationships).toEqual(nativeCauseSupported ? [{ kind: "cause", target_id: 1 }] : []);
+  if (!nativeCauseSupported) expect(evidence?.unavailable_reason).toBe("unsupported");
   expect(evidence?.nodes[0]?.frames[0]).toMatchObject({ function: "run", file: "https://app.example/app.js", line: 5, column: 6 });
   const getter = vi.fn(() => new Error("must not call"));
   Object.defineProperty(outer, "cause", { get: getter });
-  expect(snapshotBrowserEvidence(outer, { name: "Error", message: "outer", stack: "unavailable" })?.unavailable_reason).toBe("unsafe");
+  expect(snapshotBrowserEvidence(outer, { name: "Error", message: "outer", stack: "unavailable" })?.unavailable_reason).toBe(nativeCauseSupported ? "unsafe" : "unsupported");
   expect(getter).not.toHaveBeenCalled();
 });
 it("labels a message without a runtime trace as unavailable and bounds cyclic causes", () => {
   const error = new Error("failure"); Object.defineProperty(error, "cause", { value: error });
   const evidence = snapshotBrowserEvidence(error, { name: "Error", message: "failure", stack: "unavailable" });
   expect(evidence?.nodes[0]).toMatchObject({ stack: null, trace_origin: "unavailable", frames: [] });
-  expect(evidence?.truncated).toBe(true);
+  expect(evidence?.truncated).toBe(nativeCauseSupported);
+  if (!nativeCauseSupported) expect(evidence?.unavailable_reason).toBe("unsupported");
 });
 it("does not format a cause through custom prototype accessors", () => {
   const getter = vi.fn(() => "custom name"), cause = new Error("inner");
   Object.setPrototypeOf(cause, Object.create(Error.prototype, { name: { get: getter } }) as object);
   const root = new Error("outer", { cause });
   const graph = snapshotBrowserEvidence(root, { name: "Error", message: "outer", stack: "unavailable" });
-  expect(getter).not.toHaveBeenCalled(); expect(graph?.unavailable_reason).toBe("unsafe");
+  expect(getter).not.toHaveBeenCalled(); expect(graph?.unavailable_reason).toBe(nativeCauseSupported ? "unsafe" : "unsupported");
 });
 it("does not coerce object-valued native error fields while extracting a cause", () => {
   const coercion = vi.fn(() => "custom"), cause = new Error("inner");
   Object.defineProperty(cause, "message", { value: { toString: coercion } });
   const graph = snapshotBrowserEvidence(new Error("outer", { cause }), { name: "Error", message: "outer", stack: "unavailable" });
-  expect(coercion).not.toHaveBeenCalled(); expect(graph?.unavailable_reason).toBe("unsafe");
+  expect(coercion).not.toHaveBeenCalled(); expect(graph?.unavailable_reason).toBe(nativeCauseSupported ? "unsafe" : "unsupported");
 });
 it("retains a supported engine's native cause stack without invoking application stack accessors", () => {
   const formatter = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace"), limit = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
@@ -41,11 +44,16 @@ it("retains a supported engine's native cause stack without invoking application
   try {
     const cause = new Error("native cause");
     const graph = snapshotBrowserEvidence(new Error("outer", { cause }), { name: "Error", message: "outer", stack: "unavailable" });
-    expect(graph?.nodes[1]?.trace_origin).toBe("runtime_reported");
-    expect(graph?.nodes[1]?.frames.length).toBeGreaterThan(0);
+    if (nativeCauseSupported) {
+      expect(graph?.nodes[1]?.trace_origin).toBe("runtime_reported");
+      expect(graph?.nodes[1]?.frames.length).toBeGreaterThan(0);
+    } else {
+      expect(graph).toMatchObject({ unavailable_reason: "unsupported", nodes: [{ name: "Error", message: "outer" }] });
+      expect(graph?.nodes).toHaveLength(1);
+    }
     const getter = vi.fn(() => "must not invoke");
     Object.defineProperty(cause, "stack", { get: getter });
-    expect(snapshotBrowserEvidence(new Error("outer", { cause }), { name: "Error", message: "outer", stack: "unavailable" })?.unavailable_reason).toBe("unsafe");
+    expect(snapshotBrowserEvidence(new Error("outer", { cause }), { name: "Error", message: "outer", stack: "unavailable" })?.unavailable_reason).toBe(nativeCauseSupported ? "unsafe" : "unsupported");
     expect(getter).not.toHaveBeenCalled();
   } finally {
     if (formatter) Object.defineProperty(Error, "prepareStackTrace", formatter); else Reflect.deleteProperty(Error, "prepareStackTrace");
