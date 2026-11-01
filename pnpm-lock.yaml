@@ -110,7 +110,7 @@ packages:
     resolution: {integrity: sha512-9oJ1cXZl5qBs746KYRqgZV+ggLw8O8UONkPVK2A+8Z/TtRljqhw5GuhVLuCnml2TIU3vemuuSAiHVrcUmXRorg==}
 
   '@debugbundle/shared-types@3.0.0':
-    resolution: {integrity: sha512-71OQW9OJ1695MlwgUnK6HH+JD8JsofnSLlT+3ZxEbTCVHsCJNXcJlLZnhcbPcmNIB+D8eZwAXA8JnD59ESpkQQ==}
+    resolution: {integrity: sha512-aXm3r0V5/huk62jW9jQdcifDwGCsawidlJkYojIf4IoT/9ZBPwR0XLyvQa/Wlt23AmLbK8xxlbJmia2l/Yx7gQ==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
