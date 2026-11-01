@@ -1,6 +1,8 @@
 import { createBrowserRelay, type BrowserRelayOptions } from "./relay.js";
 
 type ExpressRelayRequest = {
+  url?: string;
+  originalUrl?: string;
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
   body?: unknown;
@@ -51,6 +53,7 @@ export function debugBundleRelay(options: BrowserRelayOptions = {}) {
 
   return async (request: ExpressRelayRequest, response: ExpressRelayResponse): Promise<void> => {
     const relayResponse = await relay({
+      ...((request.originalUrl ?? request.url) === undefined ? {} : { url: request.originalUrl ?? request.url }),
       ...(request.method === undefined ? {} : { method: request.method }),
       ...(request.headers === undefined ? {} : { headers: request.headers }),
       body: serializeRelayBody(request.body),

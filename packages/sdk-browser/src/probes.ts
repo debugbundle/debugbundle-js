@@ -1,4 +1,5 @@
 import { sanitizeTelemetry, type JsonValue } from "@debugbundle/redaction";
+import { ResolvedCapturePolicySchema } from "@debugbundle/shared-types";
 
 import { parseRemoteCaptureRulesPayload } from "./capture-rules.js";
 import { createInitialRemoteProbeState } from "./capture-helpers.js";
@@ -12,6 +13,9 @@ import {
   parseRemoteProbeConfigPayload
 } from "./runtime.js";
 import { validateBrowserTriggerToken } from "./trigger-token.js";
+import { browserEvidenceEndpoint } from "./evidence-controller.js";
+import { boundedTransportTimeoutMs } from "./fetch-transport.js";
+import { readBoundedBrowserJson } from "./response-json.js";
 import type {
   ActiveConfig,
   BrowserProbeBufferItem,
@@ -19,6 +23,18 @@ import type {
   BrowserRemoteProbeDirective,
   BrowserRemoteProbeState
 } from "./types.js";
+
+const evidencePolicySchema = ResolvedCapturePolicySchema.partial();
+/** Legacy config parsing stays permissive. Capability proof additionally
+ * requires valid declared policy fields and an HTTP success response. */
+function validEvidenceConfig(payload: unknown, status: number): boolean {
+  if (status < 200 || status >= 300 || payload === null || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  for (const field of ["probes_enabled", "remote_probes_enabled"])
+    if (record[field] !== undefined && typeof record[field] !== "boolean") return false;
+  if (record["active_probes"] !== undefined && !Array.isArray(record["active_probes"])) return false;
+  return record["capture_policy"] == null || evidencePolicySchema.safeParse(record["capture_policy"]).success;
+}
 
 interface BrowserProbeControllerHost {
   getConfig(): ActiveConfig | null;
@@ -30,6 +46,7 @@ interface BrowserProbeControllerHost {
     directive: BrowserRemoteProbeDirective;
   }): void;
   applyRemoteAnalytics(config: BrowserRemoteAnalyticsConfig): void;
+  observeEvidence?(payload: unknown, valid?: boolean): void;
 }
 
 export class BrowserProbeController {
@@ -37,6 +54,7 @@ export class BrowserProbeController {
   private remoteState: BrowserRemoteProbeState = createInitialRemoteProbeState();
   private pendingTriggerToken: string | null = null;
   private activeTriggerDirective: BrowserRemoteProbeDirective | null = null;
+  private configAbort: AbortController | null = null;
 
   public constructor(private readonly host: BrowserProbeControllerHost) {}
 
@@ -50,6 +68,7 @@ export class BrowserProbeController {
   }
 
   public reset(): void {
+    this.configAbort?.abort(); this.configAbort = null;
     this.buffers = new Map<string, BrowserProbeBufferItem[]>();
     this.remoteState = createInitialRemoteProbeState();
     this.pendingTriggerToken = null;
@@ -122,10 +141,14 @@ export class BrowserProbeController {
     if (config === null || config.fetchImpl === null || config.transportMode !== "direct" || config.projectToken === null) {
       return;
     }
+    if (typeof AbortController !== "function") return;
+    const controller = new AbortController(); this.configAbort = controller;
+    const timeout = setTimeout(() => controller.abort(), boundedTransportTimeoutMs(config.requestTimeoutMs));
 
     try {
-      const response = await config.fetchImpl(deriveSdkConfigEndpoint(config.endpoint), {
+      const response = await config.fetchImpl(browserEvidenceEndpoint(deriveSdkConfigEndpoint(config.endpoint)), {
         method: "GET",
+        signal: controller.signal,
         headers: {
           authorization: `Bearer ${config.projectToken}`,
           ...(config.requestsAnalyticsConfig ? { "x-debugbundle-analytics-config": "1" } : {})
@@ -135,7 +158,12 @@ export class BrowserProbeController {
         return;
       }
 
-      const payload = await response.json();
+      // Custom fetch adapters without native streams retain their established
+      // JSON/readiness timing; real HTTP bodies use the bounded reader.
+      const payload = response.body === undefined ? await response.json() : await readBoundedBrowserJson(response, controller.signal);
+      if (controller.signal.aborted) return;
+      if (this.host.getConfig() !== config) return;
+      if (payload === undefined) { this.host.observeEvidence?.(undefined); return; }
       const analyticsConfig = parseRemoteAnalyticsConfigPayload(payload);
       if (analyticsConfig !== null) {
         this.host.applyRemoteAnalytics(analyticsConfig);
@@ -146,10 +174,12 @@ export class BrowserProbeController {
         this.pruneExpiredDirectives(Date.now());
         await this.activatePendingTriggerToken();
       }
+      if (this.host.getConfig() !== config) return;
+      this.host.observeEvidence?.(payload, validEvidenceConfig(payload, response.status));
       config.captureRules = parseRemoteCaptureRulesPayload(payload);
     } catch {
       return;
-    }
+    } finally { clearTimeout(timeout); if (this.configAbort === controller) this.configAbort = null; }
   }
 
   private pruneExpiredDirectives(nowMs: number): void {

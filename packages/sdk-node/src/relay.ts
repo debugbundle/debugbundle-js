@@ -3,252 +3,20 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { z } from "zod";
+import { BROWSER_RELAY_EVENT_TYPES, BrowserRelayEventSchema, type BrowserRelayEventType, type BrowserRelayEvent } from "./relay-schemas.js";
+import { RelayEvidencePath, requestsRelayEvidence } from "./relay-evidence.js";
+import { protectNodeEvent } from "./privacy.js";
 
 import { createFileTransport, resolveDefaultLocalEventsDir } from "./file-transport.js";
 import type { DebugBundleProjectMode, DebugBundleTransport } from "./types.js";
 import { createFetchTransport } from "./utils.js";
-import { EventEnvelopeSchema, type EventEnvelope } from "@debugbundle/shared-types";
+import { EventEnvelopeSchema, type EventEnvelope, type EvidenceCapabilities } from "@debugbundle/shared-types";
 import { sanitizeTelemetry } from "@debugbundle/redaction";
 
 const DEFAULT_BROWSER_RELAY_MAX_BODY_BYTES = 256 * 1024;
 const DEFAULT_BROWSER_RELAY_RATE_LIMIT_PER_MINUTE = 60;
 const BROWSER_SDK_NAME = "@debugbundle/sdk-browser";
 const RELAY_SPOOL_DELIVERED_MARKER_SUFFIX = ".delivered";
-
-const BROWSER_RELAY_EVENT_TYPES = [
-  "frontend_exception",
-  "error_suppressed",
-  "frontend_breadcrumb",
-  "request_event",
-  "probe_event",
-  "analytics_event"
-] as const;
-
-type BrowserRelayEventType = (typeof BROWSER_RELAY_EVENT_TYPES)[number];
-
-const ServiceSchema = z.object({
-  name: z.string().min(1),
-  runtime: z.string().min(1).nullable().optional(),
-  framework: z.string().min(1).nullable().optional(),
-  environment: z.string().min(1)
-});
-
-const CorrelationSchema = z.object({
-  request_id: z.string().nullable(),
-  trace_id: z.string().nullable(),
-  session_id: z.string().nullable(),
-  user_id_hash: z.string().nullable()
-});
-
-const AnalyticsCorrelationSchema = z.object({
-  session_id: z.string().min(1).max(128),
-  visitor_id_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/i).nullable(),
-  user_id_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/i).nullable(),
-  trace_id: z.string().min(1).max(128).nullable(),
-  deploy_id: z.string().min(1).max(128).nullable()
-});
-
-const AnalyticsRouteSchema = z.object({
-  path: z.string().min(1).max(2048),
-  normalized_path: z.string().min(1).max(2048),
-  title: z.string().max(200).nullable()
-});
-
-const AnalyticsPayloadSchema = z.object({
-  kind: z.enum([
-    "session_start",
-    "page_view",
-    "route_change",
-    "action",
-    "funnel_step",
-    "conversion",
-    "journey_marker",
-    "session_summary"
-  ]),
-  privacy: z.object({
-    mode: z.enum(["strict", "standard", "custom"]),
-    consent_granted: z.boolean()
-  }),
-  session: z.object({
-    duration_ms: z.number().int().min(0).max(86_400_000),
-    pageviews: z.number().int().min(0).max(100_000)
-  }).optional(),
-  signal: z.object({
-    action_key: z.string().nullable(),
-    funnel_key: z.string().nullable(),
-    step_key: z.string().nullable(),
-    conversion_key: z.string().nullable(),
-    marker_key: z.string().nullable()
-  }).optional(),
-  route: AnalyticsRouteSchema.nullable().optional(),
-  previous_route: AnalyticsRouteSchema.nullable().optional(),
-  dimensions: z.record(z.string(), z.unknown()),
-  custom_dimensions: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
-});
-
-const FrontendBreadcrumbPayloadSchema = z.object({
-  breadcrumb_type: z.enum(["route_change", "click", "form_submit", "console_log", "network_request"]),
-  route: z.string().min(1).nullable().optional(),
-  data: z.record(z.string(), z.unknown())
-});
-
-const FrontendExceptionBreadcrumbSchema = FrontendBreadcrumbPayloadSchema.extend({
-  ts: z.string().datetime()
-});
-
-const DeviceInfoSchema = z.object({
-  user_agent: z.string().nullable(),
-  os: z.object({
-    name: z.string().nullable(),
-    version: z.string().nullable()
-  }),
-  device_type: z.enum(["desktop", "mobile", "tablet", "unknown"]),
-  screen: z.object({
-    width: z.number().int().nonnegative(),
-    height: z.number().int().nonnegative()
-  }),
-  viewport: z.object({
-    width: z.number().int().nonnegative(),
-    height: z.number().int().nonnegative()
-  }),
-  device_pixel_ratio: z.number().positive().nullable(),
-  touch_capable: z.boolean().nullable(),
-  language: z.string().nullable(),
-  connection_type: z.string().nullable(),
-  color_scheme_preference: z.enum(["light", "dark", "no-preference"]).nullable()
-});
-
-const InlineProbeDataSchema = z.object({
-  version: z.literal(1),
-  items: z.array(
-    z.object({
-      label: z.string().min(1),
-      data: z.record(z.string(), z.unknown()),
-      timestamp: z.string().datetime(),
-      activation_id: z.string().uuid().nullable()
-    })
-  )
-});
-
-const BrowserExceptionEventSchema = z.object({
-  kind: z.enum(["window_error", "resource_error"]),
-  message: z.string().nullable(),
-  file_name: z.string().nullable(),
-  line_number: z.number().int().nonnegative().nullable(),
-  column_number: z.number().int().nonnegative().nullable(),
-  target: z
-    .object({
-      tag_name: z.string().nullable(),
-      source_url: z.string().nullable(),
-      attributes: z.object({
-        rel: z.string().optional(),
-        as: z.string().optional(),
-        type: z.string().optional(),
-        media: z.string().optional(),
-        cross_origin: z.string().optional(),
-        async: z.boolean().optional(),
-        defer: z.boolean().optional(),
-        integrity_present: z.boolean().optional()
-      }).optional()
-    })
-    .nullable(),
-  page: z.object({
-    url: z.string().nullable(),
-    referrer: z.string().nullable(),
-    ready_state: z.enum(["loading", "interactive", "complete"]).nullable(),
-    visibility_state: z.enum(["visible", "hidden", "prerender", "unloaded"]).nullable()
-  }).optional(),
-  opaque: z.boolean()
-});
-
-const FrontendExceptionPayloadSchema = z.object({
-  name: z.string().min(1),
-  message: z.string().min(1),
-  stack: z.string().min(1),
-  route: z.string().min(1).nullable().optional(),
-  browser: z.object({
-    name: z.string().min(1),
-    version: z.string().min(1)
-  }),
-  breadcrumbs: z.array(FrontendExceptionBreadcrumbSchema).optional(),
-  device: DeviceInfoSchema.nullable().optional(),
-  browser_event: BrowserExceptionEventSchema.optional(),
-  dom_context: z.object({
-    mode: z.literal("lightweight"),
-    html_excerpt: z.string().min(1)
-  }).nullable().optional(),
-  probe_data: InlineProbeDataSchema.optional()
-});
-
-const ErrorSuppressedPayloadSchema = z.object({
-  fingerprint: z.string().min(1),
-  suppressed_count: z.number().int().nonnegative(),
-  window_seconds: z.number().int().positive(),
-  first_seen: z.string().datetime(),
-  last_seen: z.string().datetime()
-});
-
-const RequestEventPayloadSchema = z.object({
-  method: z.string().min(1),
-  path: z.string().min(1),
-  query: z.record(z.string(), z.unknown()),
-  headers: z.record(z.string(), z.unknown()),
-  body: z.unknown().nullable().optional(),
-  response_status: z.number().int().nonnegative(),
-  duration_ms: z.number().nonnegative(),
-  route_template: z.string().min(1).nullable().optional(),
-  response_headers: z.record(z.string(), z.unknown()).optional(),
-  response_body: z.unknown().optional()
-});
-
-const ProbeEventPayloadSchema = z.object({
-  label: z.string().min(1),
-  data: z.record(z.string(), z.unknown()),
-  activation_id: z.string().uuid().nullable(),
-  probe_label_pattern: z.string().min(1)
-});
-
-const BrowserRelayEnvelopeBaseSchema = z.object({
-  schema_version: z.string().min(1),
-  event_id: z.string().uuid(),
-  event_type: z.enum(BROWSER_RELAY_EVENT_TYPES),
-  sdk_name: z.string().min(1).optional(),
-  sdk_version: z.string().min(1),
-  service: ServiceSchema,
-  occurred_at: z.string().datetime(),
-  correlation: CorrelationSchema.optional()
-});
-
-const BrowserRelayEventSchema = z.discriminatedUnion("event_type", [
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("frontend_exception"),
-    payload: FrontendExceptionPayloadSchema
-  }),
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("error_suppressed"),
-    payload: ErrorSuppressedPayloadSchema
-  }),
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("frontend_breadcrumb"),
-    payload: FrontendBreadcrumbPayloadSchema
-  }),
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("request_event"),
-    payload: RequestEventPayloadSchema
-  }),
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("probe_event"),
-    payload: ProbeEventPayloadSchema
-  }),
-  BrowserRelayEnvelopeBaseSchema.extend({
-    event_type: z.literal("analytics_event"),
-    correlation: AnalyticsCorrelationSchema,
-    payload: AnalyticsPayloadSchema
-  })
-]);
-
-type BrowserRelayEvent = z.infer<typeof BrowserRelayEventSchema>;
-type BrowserRelayForwardEvent = BrowserRelayEvent & { project_token: string };
 
 const BrowserRelayRequestBodySchema = z.object({
   batch: z.array(z.unknown())
@@ -257,6 +25,7 @@ const BrowserRelayRequestBodySchema = z.object({
 const STRIPPED_REQUEST_HEADERS = new Set(["authorization", "cookie", "x-api-key"]);
 
 export interface BrowserRelayRequest {
+  url?: string;
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
   body: string | Uint8Array;
@@ -277,10 +46,13 @@ export interface BrowserRelayResponse {
     accepted: number;
     rejected: number;
     errors: string[];
+    evidence_errors?: Array<{ index: number; reason: string }>;
+    evidence_capabilities?: EvidenceCapabilities;
   };
 }
 
 export interface BrowserRelayOptions {
+  evidenceCapabilities?: EvidenceCapabilities;
   allowedOrigins?: string[];
   durableWrite?: boolean;
   environment?: string;
@@ -394,11 +166,11 @@ function isAcceptedRelayContentType(contentType: string | undefined): boolean {
   return normalized.includes("application/json");
 }
 
-function buildCorsHeaders(origin: string): Record<string, string> {
+function buildCorsHeaders(origin: string, evidence = false): Record<string, string> {
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "POST, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": evidence ? "content-type, x-debugbundle-evidence" : "content-type",
     "access-control-max-age": "600",
     vary: "Origin"
   };
@@ -462,6 +234,7 @@ function toBrowserRelayEvent(
 }
 
 function protectRelayEvent(event: BrowserRelayEvent): BrowserRelayEvent | null {
+  if (event.event_type !== "analytics_event") return protectNodeEvent(event as EventEnvelope, []) as BrowserRelayEvent | null;
   for (const value of [event.schema_version, event.sdk_name, event.sdk_version,
     ...Object.values(event.correlation ?? {})]) {
     if (typeof value !== "string") continue;
@@ -483,19 +256,21 @@ function resolveDefaultRelaySpoolDir(cwd: string = process.cwd()): string {
   return path.join(cwd, ".debugbundle", "local", "browser-relay-spool");
 }
 
-function attachProjectToken(events: BrowserRelayEvent[], projectToken: string): BrowserRelayForwardEvent[] {
-  return events.map((event) => ({ ...event, project_token: projectToken }));
-}
-
 function markSpoolFileDelivered(writtenFilePath: string): void {
   try {
-    fs.writeFileSync(`${writtenFilePath}${RELAY_SPOOL_DELIVERED_MARKER_SUFFIX}`, "", "utf8");
+    const original = fs.lstatSync(writtenFilePath);
+    if (!original.isFile() || original.isSymbolicLink()) return;
+    const descriptor = fs.openSync(`${writtenFilePath}${RELAY_SPOOL_DELIVERED_MARKER_SUFFIX}`,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY |
+        (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0), 0o600);
+    fs.closeSync(descriptor);
   } catch {
     // Durable acceptance already happened at the spool write; marker creation is maintenance metadata only.
   }
 }
 
 export function createBrowserRelay(options: BrowserRelayOptions = {}): (request: BrowserRelayRequest) => Promise<BrowserRelayResponse> {
+  const evidence = new RelayEvidencePath(options.evidenceCapabilities);
   const now = options.now ?? (() => new Date());
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_BROWSER_RELAY_MAX_BODY_BYTES;
   const onAccept = options.onAccept ?? (() => undefined);
@@ -510,38 +285,37 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
       : createFetchTransport(fetchImpl, options.projectToken);
 
   const forwardConnectedEvents = async (
-    events: BrowserRelayEvent[]
-  ): Promise<{ configured: boolean; succeeded: boolean }> => {
+    events: BrowserRelayEvent[], discover: boolean
+  ): Promise<{ configured: boolean; succeeded: boolean; complete: boolean }> => {
     if (connectedCloudTransport === null || options.endpoint === undefined || options.projectToken === undefined) {
       return {
         configured: false,
-        succeeded: false
+        succeeded: false,
+        complete: false
       };
     }
 
-    const forwardResult = await connectedCloudTransport({
-      endpoint: options.endpoint,
-      headers: {},
-      events: attachProjectToken(events, options.projectToken) as EventEnvelope[],
-      timeout_ms: 5_000
-    }).catch(() => null);
+    const result = await evidence.forward({ events, transport: connectedCloudTransport, endpoint: options.endpoint,
+      projectToken: options.projectToken, discover }).catch(() => ({ succeeded: false, complete: false }));
 
     return {
       configured: true,
-      succeeded: forwardResult !== null && forwardResult.status >= 200 && forwardResult.status < 300
+      ...result
     };
   };
 
   return async (request: BrowserRelayRequest): Promise<BrowserRelayResponse> => {
     const receivedAt = now();
     const headers = getNormalizedHeaders(request.headers);
+    const discoverEvidence = requestsRelayEvidence(request.url, headers);
     const sourceOrigin = getSourceOrigin(headers);
 
     if (!isOriginAllowed(sourceOrigin, headers, options.allowedOrigins)) {
       return { status: 403 };
     }
 
-    const corsHeaders = sourceOrigin === null ? undefined : buildCorsHeaders(sourceOrigin);
+    const corsHeaders = sourceOrigin === null ? undefined : buildCorsHeaders(sourceOrigin,
+      headers["access-control-request-headers"]?.toLowerCase().split(",").some(value => value.trim() === "x-debugbundle-evidence"));
     const withHeaders = (response: BrowserRelayResponse): BrowserRelayResponse => {
       if (corsHeaders === undefined) {
         return response;
@@ -610,6 +384,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
 
     const acceptedEvents: BrowserRelayEvent[] = [];
     const errors: string[] = [];
+    const canonicalErrors: Array<{ index: number; reason: string }> = [];
 
     const candidates = parsedBody.batch;
 
@@ -620,6 +395,7 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           : undefined;
 
       if (typeof rawEventType !== "string" || !BROWSER_RELAY_EVENT_TYPES.includes(rawEventType as BrowserRelayEventType)) {
+        canonicalErrors.push({ index, reason: "invalid_event" });
         errors.push(`batch[${index}]: Unsupported browser relay event type ${String(rawEventType)}.`);
         continue;
       }
@@ -632,12 +408,18 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
           })
         );
         if (protectedEvent === null) {
+          canonicalErrors.push({ index, reason: "invalid_event" });
           errors.push(`batch[${index}]: Privacy sanitation failed.`);
           continue;
         }
-        acceptedEvents.push(protectedEvent);
+        let supported = evidence.prepare(protectedEvent);
+        if (supported !== null && connectedCloudTransport !== null && options.endpoint !== undefined && options.projectToken !== undefined)
+          supported = evidence.prepareForward(supported, options.projectToken);
+        if (supported === null) { canonicalErrors.push({ index, reason: "invalid_event" }); errors.push(`batch[${index}]: Unsupported evidence context.`); continue; }
+        acceptedEvents.push(supported);
       } catch (error) {
         if (error instanceof z.ZodError) {
+          canonicalErrors.push({ index, reason: "invalid_event" });
           errors.push(`batch[${index}]: ${getIssueMessage(error)}`);
           continue;
         }
@@ -685,14 +467,14 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
             return withHeaders({ status: 500 });
           }
 
-          const forwardResult = await forwardConnectedEvents(acceptedEvents);
+          const forwardResult = await forwardConnectedEvents(acceptedEvents, discoverEvidence);
           if (forwardResult.configured && !forwardResult.succeeded) {
             // Keep the spool on disk for later recovery; the relay has already durably accepted the batch.
-          } else if (forwardResult.succeeded && spoolWriteResult.writtenFilePath !== undefined) {
+          } else if (forwardResult.complete && spoolWriteResult.writtenFilePath !== undefined) {
             markSpoolFileDelivered(spoolWriteResult.writtenFilePath);
           }
         } else {
-          const forwardResult = await forwardConnectedEvents(acceptedEvents);
+          const forwardResult = await forwardConnectedEvents(acceptedEvents, discoverEvidence);
           if (!forwardResult.configured || !forwardResult.succeeded) {
             return withHeaders({ status: 500 });
           }
@@ -710,11 +492,12 @@ export function createBrowserRelay(options: BrowserRelayOptions = {}): (request:
     }
 
     return withHeaders({
-      status: errors.length === 0 ? 202 : 400,
+      status: discoverEvidence || errors.length === 0 ? 202 : 400,
       body: {
         accepted: acceptedEvents.length,
         rejected: errors.length,
-        errors
+        errors,
+        ...(discoverEvidence ? { evidence_capabilities: evidence.descriptor, evidence_errors: canonicalErrors } : {})
       }
     });
   };

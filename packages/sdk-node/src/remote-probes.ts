@@ -171,6 +171,8 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
   const captureRequestEvents = asString(record["capture_request_events"]);
   const captureBreadcrumbs = asString(record["capture_breadcrumbs"]);
   const captureProbeEvents = asString(record["capture_probe_events"]);
+  const captureDiagnosticContext = record["capture_diagnostic_context"];
+  if (captureDiagnosticContext !== undefined && typeof captureDiagnosticContext !== "boolean") return null;
   const immediateClientErrorStatuses = parseImmediateClientErrorStatuses(record["immediate_client_error_statuses"]);
   const immediateClientErrorPathRules = parseImmediateClientErrorPathRules(record["immediate_client_error_path_rules"]);
 
@@ -196,6 +198,7 @@ export function parseCapturePolicy(value: unknown): CapturePolicy | null {
     captureRequestEvents: captureRequestEvents as CapturePolicy["captureRequestEvents"],
     captureBreadcrumbs: captureBreadcrumbs as CapturePolicy["captureBreadcrumbs"],
     captureProbeEvents: captureProbeEvents as CapturePolicy["captureProbeEvents"],
+    ...(captureDiagnosticContext === undefined ? {} : { captureDiagnosticContext }),
     immediateClientErrorStatuses,
     immediateClientErrorPathRules
   };

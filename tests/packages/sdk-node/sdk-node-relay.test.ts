@@ -572,6 +572,7 @@ describe("createBrowserRelay", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "debugbundle-relay-spool-"));
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
       status: 202,
+      json: async () => ({ accepted: 1, rejected: 0, errors: [] }),
       headers: {
         get: vi.fn().mockReturnValue(null)
       }
@@ -689,6 +690,7 @@ describe("createBrowserRelay", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "debugbundle-relay-low-latency-"));
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
       status: 202,
+      json: async () => ({ accepted: 1, rejected: 0, errors: [] }),
       headers: {
         get: vi.fn().mockReturnValue(null)
       }

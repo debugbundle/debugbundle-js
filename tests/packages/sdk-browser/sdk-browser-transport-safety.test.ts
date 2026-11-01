@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { EventEnvelope } from "@debugbundle/shared-types";
+import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 
 import { createSdk, createTransportEvents } from "../../helpers/sdk-browser-fixtures.js";
 
@@ -7,6 +7,15 @@ import { BrowserEventTransport } from "../../../packages/sdk-browser/src/event-t
 import type { ActiveConfig, DebugBundleBrowserTransportEvent } from "../../../packages/sdk-browser/src/types.js";
 
 describe("sdk-browser transport safety", () => {
+  it("does not grant proof from a malformed acknowledgement", async () => {
+    const { sdk, transport } = createSdk({ batchSize: 1000 });
+    transport.mockResolvedValue({ status: 202, body: { accepted: 99, rejected: 0, errors: [], evidence_capabilities: { version: 1, features: ["exception_evidence_v1"] } } });
+    try {
+      sdk.captureLog("legacy first", "error"); await sdk.flush();
+      const controller = (sdk as unknown as { evidence: { proof: { supports(feature: string): boolean } } }).evidence;
+      expect(controller.proof.supports("exception_evidence_v1")).toBe(false);
+    } finally { sdk.dispose(); }
+  });
   it("retries after a custom transport synchronously throws", async () => {
     const { sdk, transport } = createSdk({ batchSize: 1 });
     transport.mockImplementationOnce(() => { throw new Error("synchronous application transport failure"); });
@@ -720,14 +729,15 @@ describe("sdk-browser transport safety", () => {
       transport: send
     } as unknown as ActiveConfig);
 
-    const largeMessage = "x".repeat(1024 * 1024);
-    for (let index = 0; index < 20; index += 1) {
-      transport.enqueueDebug({
-        event_id: `large-${index}`,
-        event_type: "log_event",
-        payload: { level: "warning", message: largeMessage }
-      } as DebugBundleBrowserTransportEvent);
+    const context = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`detail${index}`, "x".repeat(16000)]));
+    for (let index = 0; index < 80; index += 1) {
+      transport.enqueueDebug(createEventEnvelope({ event_type: "log_event",
+        service: { name: "test", environment: "test" }, context,
+        payload: { level: "warning", message: `large-${index}`, attributes: {} } }));
     }
+    const lane = (transport as unknown as { debug: { queuedBytes: number; events: unknown[] } }).debug;
+    expect(lane.queuedBytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+    expect(lane.events.length).toBeLessThan(80);
     await transport.flush();
 
     const sent = (send.mock.calls[0]?.[0] as { events: DebugBundleBrowserTransportEvent[] }).events;

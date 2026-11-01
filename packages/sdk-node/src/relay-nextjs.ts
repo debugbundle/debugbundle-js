@@ -17,6 +17,7 @@ export function createNextjsRelayHandler(options: BrowserRelayOptions = {}) {
 
   return async (request: Request): Promise<Response> => {
     const relayResponse = await relay({
+      url: request.url,
       method: request.method,
       headers: getRelayHeaders(request),
       body: await request.text(),

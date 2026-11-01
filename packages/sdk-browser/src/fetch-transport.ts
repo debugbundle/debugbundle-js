@@ -6,6 +6,7 @@ import {
   type DebugBundleBrowserTransportEvent,
   type DebugBundleBrowserTransportResponse
 } from "./types.js";
+import { readBoundedBrowserJson } from "./response-json.js";
 
 export function getFetchSource(): BrowserFetch | null {
   const candidate = (globalThis as Record<string, unknown>)["fetch"];
@@ -49,9 +50,7 @@ export function createFetchTransport(): DebugBundleBrowserTransport {
       });
 
       const retryAfterMs = parseRetryAfter(response.headers?.get("Retry-After") ?? null);
-      const body = typeof response.json === "function"
-        ? await response.json().catch(() => undefined)
-        : undefined;
+      const body = await readBoundedBrowserJson(response, controller.signal);
       if (controller.signal.aborted) throw new Error("transport timeout");
 
       return {

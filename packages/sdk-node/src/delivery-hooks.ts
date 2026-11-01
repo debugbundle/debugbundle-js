@@ -2,6 +2,8 @@ import type { EventEnvelope } from "@debugbundle/shared-types";
 import type { BoundedEventBuffer } from "./buffer-admission.js";
 import { applyNodeBeforeSendEvent, applyNodeCaptureRules, shouldCaptureNodeLog, shouldCaptureNodeSample, buildNodeSuppressionKey, normalizeLogLevel } from "./event-support.js";
 import { protectNodeEvent } from "./privacy.js";
+import { isFileTransport } from "./file-transport.js";
+import { fitNodeWireEvent } from "./wire-batch.js";
 import { shouldCaptureNodeRequestEvent } from "./request-policy.js";
 import type { EventSuppressionTracker } from "./suppression.js";
 import type { ActiveConfig, RemoteProbeConfigSnapshot } from "./types.js";
@@ -12,7 +14,9 @@ function prepareReplacement(event: EventEnvelope, config: ActiveConfig,
   remote: RemoteProbeConfigSnapshot, diagnostic: Diagnostic): EventEnvelope | null {
   const replacement = applyNodeBeforeSendEvent(event, config.beforeSend, diagnostic);
   if (replacement === null) return null;
-  const safe = protectNodeEvent(replacement, config.redactFields);
+  let safe = protectNodeEvent(replacement, config.redactFields);
+  if (safe === null) return null;
+  if (!isFileTransport(config.transport)) safe = fitNodeWireEvent(safe);
   if (safe === null) return null;
   if (safe.event_type === "log_event" && !shouldCaptureNodeLog(config, remote.capturePolicy, normalizeLogLevel(safe.payload.level))) return null;
   if (safe.event_type === "request_event" && !shouldCaptureNodeRequestEvent(remote.capturePolicy,
@@ -37,6 +41,8 @@ export function finalizeNodeBatch(input: {
   ownership(): { count: number; bytes: number };
   adjustOwnership(count: number, bytes: number): void;
   diagnostic: Diagnostic;
+  reconcile?(original: EventEnvelope, replacement: EventEnvelope | null): EventEnvelope | null;
+  evicted?: (events: EventEnvelope[]) => void;
 }): void {
   for (let index = 0; index < input.batch.length; index++) {
     if (!input.current()) return;
@@ -56,7 +62,9 @@ export function finalizeNodeBatch(input: {
     const held = input.ownership();
     const bytes = output === null ? null : input.buffer.fitDetached(output,
       input.config.maxBufferedEvents - held.count + 1,
-      input.config.maxBufferedBytes - held.bytes + originalBytes);
+      input.config.maxBufferedBytes - held.bytes + originalBytes, input.evicted);
+    if (bytes === null) output = null;
+    if (input.reconcile !== undefined) output = input.reconcile(original, output);
     if (output === null || bytes === null) {
       input.batch.splice(index--, 1);
       input.adjustOwnership(-1, -originalBytes);

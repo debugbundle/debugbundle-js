@@ -21,6 +21,10 @@ export function decideBrowserAcknowledgement(
   batchLength: number,
   required = false
 ): BrowserAcknowledgementDecision {
+  // Opted-in relays retain their historical string errors and add canonical
+  // indexed errors. Direct ingestion already uses indexed errors at the root.
+  if (body !== null && typeof body === "object" && !Array.isArray(body) && "evidence_errors" in body)
+    body = { ...body, errors: (body as Record<string, unknown>)["evidence_errors"] };
   if (!hasAcknowledgementFields(body)) {
     return required ? { kind: "protocol_failure", reason: "missing_acknowledgement" } : { kind: "legacy" };
   }

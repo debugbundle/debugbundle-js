@@ -13,6 +13,22 @@ Requires Node.js 22 or newer.
 
 Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
 
+## Evidence candidate (unreleased)
+
+The source candidate adds bounded native `Error.cause`/`AggregateError` evidence, normalized frames and owned request/command/job context. `captureExceptionEvidence` defaults to true, but additional fields are emitted only after complete-path capability proof. Existing config and ACK requests opt in with `debugbundle_evidence=1`; absent, invalid or downgraded support restores the legacy error shape. Native accessors, proxies and custom stack formatters are not executed for new inspection. Fatal capture has a smaller budget and bypasses application hooks.
+
+Explicit recovery requires `captureRecoveryObservations: true`, verified `recovery_v1` support and capture-policy permission. Use fresh UUID v4 `failureRef` and `attemptId` values, never user IDs or URLs. Pass the reference with the original capture context, then call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })`. An active `runWithOperationContext({ kind: "job" | "command" | "request", name?, limitMs? }, callback)` supplies the operation scope. Without an active scope, provide an explicit operation/page scope. The callback's result/error is preserved; concurrent operations are isolated and elapsed time is monotonic. Existing Express/Fastify/Next request owners end on completion/close.
+
+States are `attempt_started`, `attempt_completed`, `attempt_failed`, `recovery_observed`, and `failure_persisted`. Only the application's explicit `recovery_observed` establishes recovery; HTTP 200 and attempt completion do not. Optional fields are a technical `operation` label, `statusCode`, and `durationMs`. No arbitrary diagnostic data is accepted. Normal privacy, rules, sampling, ACK/retry and queue policy still apply. Diagnostic tracking accounts at most 50 failure scopes, five attempts and 20 observations per failure and 64 KiB including pending offline payloads/metadata. Canonical `beforeSend` identity/type replacements remain supported and transfer that ownership.
+
+`evidenceCapabilities: { version: 1, features: [...] }` is an explicit assertion that every receiver/relay/local reader supports the listed features, not a version guess or policy override. Subsequent discovery can revoke it. Browser relay handlers have the same optional pin, preserve strict evidence fields and intersect with verified downstream support. Opted-in relay replies retain legacy string `errors` and add indexed `evidence_errors`. Only a negotiated `invalid_event` rejection can retry a stripped original error; policy/security rejections and standalone contexts never use that fallback. Local-only/file transport needs an explicitly verified reader pin.
+
+HTTP batches count actual UTF-8 JSON and their wrapper against the receiver's 256 KiB limit. Finalized tails return to the existing bounded queue with their hook cache; acknowledgements refer only to the submitted chunk. Optional metadata shrinks first. A valid hook replacement that still cannot fit is withheld, preserving application redaction; only invalid or throwing hooks use the established original fallback. Built-in local file transport retains its existing larger-event semantics. Evicted recovery observations release their pending diagnostic ownership.
+
+Relays count server metadata before forwarding, split downstream chunks and share one monotonic five-second forwarding deadline. Native upstream HTTP requires a canonical acknowledgement even for a legacy browser request. A durable spool receives a private, exclusively created delivery marker only after complete canonical acceptance of every chunk; missing/partial replies and pre-existing marker symlinks leave retained files intact. Server tokens are excluded from `onAccept` callbacks.
+
+These APIs are not yet a published release. Runtime-floor, installed-framework and packaged-artifact qualification belongs to the coordinated release train.
+
 ## Installation
 
 ```bash

@@ -3,6 +3,7 @@ import { createBrowserRelay, type BrowserRelayOptions } from "./relay.js";
 const DEFAULT_RELAY_ROUTE_PATH = "/debugbundle/browser";
 
 type FastifyRelayRequest = {
+  url?: string;
   method?: string;
   headers?: Record<string, string | string[] | undefined>;
   body?: unknown;
@@ -62,6 +63,7 @@ export function debugBundleRelayPlugin(
     const request = requestInput as FastifyRelayRequest;
     const reply = replyInput as FastifyRelayReply;
     const relayResponse = await relay({
+      ...(request.url === undefined ? {} : { url: request.url }),
       method: request.method ?? "POST",
       ...(request.headers === undefined ? {} : { headers: request.headers }),
       body: serializeRelayBody(request.body),

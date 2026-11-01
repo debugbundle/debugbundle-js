@@ -150,7 +150,7 @@ describe("sdk-browser capture", () => {
     await browserFixtures.settleAsyncInit();
 
     expect(globals.fetchMock).toHaveBeenCalledTimes(1);
-    expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.debugbundle.com/v1/sdk/config");
+    expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.debugbundle.com/v1/sdk/config?debugbundle_evidence=1");
     expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "GET",
       headers: {

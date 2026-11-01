@@ -1,6 +1,6 @@
 import packageJson from "../package.json" with { type: "json" };
 import type { JsonObject, JsonValue } from "@debugbundle/redaction";
-import type { EventEnvelope } from "@debugbundle/shared-types";
+import type { EventEnvelope, EvidenceCapabilities, EvidenceScope, RecoveryObservation } from "@debugbundle/shared-types";
 import type { NodeBeforeSendHook } from "./before-send.js";
 
 export const SDK_NAME = "@debugbundle/sdk-node";
@@ -43,6 +43,7 @@ export interface ImmediateClientErrorPathRule {
 }
 
 export interface CapturePolicy {
+  captureDiagnosticContext?: boolean;
   preset: string;
   captureLogs: CaptureLogs;
   captureRequestEvents: CaptureRequestEvents;
@@ -187,9 +188,27 @@ export interface CaptureResponseInput {
 }
 
 export interface CaptureExceptionContext {
+  failureRef?: string;
+  evidenceScope?: EvidenceScope;
   handled?: boolean;
   request?: CaptureRequestInput;
   response?: CaptureResponseInput;
+  correlation?: Partial<CorrelationFields>;
+}
+
+export interface NodeOperationOptions {
+  kind: "request" | "command" | "job";
+  name?: string;
+  limitMs?: number;
+}
+export interface CaptureRecoveryInput {
+  failureRef: string;
+  evidenceScope?: EvidenceScope;
+  attemptId: string;
+  state: RecoveryObservation["state"];
+  operation?: string;
+  statusCode?: number;
+  durationMs?: number;
   correlation?: Partial<CorrelationFields>;
 }
 
@@ -210,6 +229,9 @@ export interface ProbeOptions {
 export type ModuleResolver = (moduleName: string) => string;
 
 export interface DebugBundleNodeInitConfig {
+  evidenceCapabilities?: EvidenceCapabilities;
+  captureExceptionEvidence?: boolean;
+  captureRecoveryObservations?: boolean;
   projectToken?: string;
   environment?: string;
   service?: string;
@@ -241,6 +263,8 @@ export interface DebugBundleNodeInitConfig {
 }
 
 export interface ActiveConfig {
+  captureExceptionEvidence?: boolean;
+  captureRecoveryObservations?: boolean;
   projectToken: string;
   environment: string;
   service: string;
@@ -307,7 +331,8 @@ export interface FrameworkSdkBridge {
   captureException(error: unknown, context?: CaptureExceptionContext): void;
   captureRequest(request: CaptureRequestInput, response: CaptureResponseInput, context?: CaptureRequestContext): void;
   shouldInstrumentRequest?(request: CaptureRequestInput): boolean;
-  runWithRequestContext?<Result>(request: CaptureRequestInput, callback: () => Result): Result;
+  runWithRequestContext?<Result>(request: CaptureRequestInput, callback: () => Result, owner?: object): Result;
+  finishRequestContext?(owner: object): void;
 }
 
 export type NextApiHandler<Request, Response, Result> = (req: Request, res: Response) => Result | Promise<Result>;

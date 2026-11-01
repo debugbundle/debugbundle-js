@@ -1,3 +1,4 @@
+import { watchNodeRequestEnd } from "./request-lifecycle.js";
 import type {
   CaptureRequestInput,
   CaptureResponseInput,
@@ -75,7 +76,7 @@ export function createExpressMiddleware(sdk: FrameworkSdkBridge): (
     logger?: unknown;
     log?: unknown;
   },
-  res: { statusCode?: number; end?: (...args: unknown[]) => unknown },
+  res: { statusCode?: number; end?: (...args: unknown[]) => unknown; once?: (event: string, listener: () => void) => unknown; off?: (event: string, listener: () => void) => unknown },
   next: (error?: unknown) => void
 ) => void {
   return (req, res, next): void => {
@@ -89,6 +90,7 @@ export function createExpressMiddleware(sdk: FrameworkSdkBridge): (
     const run = sdk.runWithRequestContext?.bind(sdk) ?? ((_: CaptureRequestInput, callback: () => void) => callback());
 
     run(requestSnapshot, () => {
+      const lifecycle = watchNodeRequestEnd(sdk, req, res);
       captureWithConsoleFallback(sdk, req.app?.locals?.logger ?? req.app?.logger ?? req.logger ?? req.log);
 
       const startedAt = Date.now();
@@ -113,12 +115,12 @@ export function createExpressMiddleware(sdk: FrameworkSdkBridge): (
       if (originalEnd !== undefined) {
         res.end = (...args: unknown[]): unknown => {
           finalize();
-          return Reflect.apply(originalEnd, res, args);
+          try { return Reflect.apply(originalEnd, res, args); } finally { if (!lifecycle.usesEvents) lifecycle.finish(); }
         };
       }
 
       next();
-    });
+    }, req);
   };
 }
 
@@ -134,7 +136,7 @@ export function createFastifyPlugin(sdk: FrameworkSdkBridge): (
     captureWithConsoleFallback(sdk, fastify.log);
 
     const onRequest = (...args: unknown[]): void => {
-      const [request, , next] = args as [
+      const [request, reply, next] = args as [
         {
           method?: string;
           url?: string;
@@ -143,7 +145,7 @@ export function createFastifyPlugin(sdk: FrameworkSdkBridge): (
           body?: unknown;
           routeOptions?: { url?: string };
         },
-        unknown,
+        { raw?: { once?: (event: string, listener: () => void) => unknown; off?: (event: string, listener: () => void) => unknown } },
         () => void
       ];
 
@@ -162,7 +164,7 @@ export function createFastifyPlugin(sdk: FrameworkSdkBridge): (
       }
 
       const run = sdk.runWithRequestContext?.bind(sdk) ?? ((_: CaptureRequestInput, callback: () => void) => callback());
-      run(requestSnapshot, () => next());
+      run(requestSnapshot, () => { watchNodeRequestEnd(sdk, request, reply?.raw); next(); }, request);
     };
 
     fastify.addHook("onRequest", onRequest);
@@ -193,13 +195,13 @@ export function createFastifyPlugin(sdk: FrameworkSdkBridge): (
         return;
       }
 
-      sdk.captureRequest(
+      try { sdk.captureRequest(
         requestSnapshot,
         buildResponseSnapshot({
           ...(reply.statusCode === undefined ? {} : { statusCode: reply.statusCode }),
           ...(reply.elapsedTime === undefined ? {} : { durationMs: reply.elapsedTime })
         })
-      );
+      ); } finally { sdk.finishRequestContext?.(request); }
     };
 
     fastify.addHook("onResponse", onResponse);
@@ -293,6 +295,7 @@ export function createNextHandlerWrapper<Request extends {
     const run = sdk.runWithRequestContext?.bind(sdk) ?? ((_: CaptureRequestInput, callback: () => Promise<Result>) => callback());
 
     return run(requestSnapshot, async () => {
+      const lifecycle = watchNodeRequestEnd(sdk, request, response);
       captureWithConsoleFallback(sdk, request.logger ?? request.log);
 
       try {
@@ -306,7 +309,7 @@ export function createNextHandlerWrapper<Request extends {
           })
         });
         throw error;
-      }
-    });
+      } finally { if (!lifecycle.usesEvents) lifecycle.finish(); }
+    }, request);
   };
 }

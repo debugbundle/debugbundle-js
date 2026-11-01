@@ -9,11 +9,11 @@ importers:
   .:
     devDependencies:
       '@debugbundle/redaction':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 2.7.0
+        version: 2.7.0
       '@debugbundle/shared-types':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 3.0.0
+        version: 3.0.0
       '@types/bunyan':
         specifier: ^1.8.11
         version: 1.8.11
@@ -54,23 +54,23 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 2.7.0
+        version: 2.7.0
       '@debugbundle/shared-types':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 3.0.0
+        version: 3.0.0
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 2.7.0
+        version: 2.7.0
       '@debugbundle/shared-types':
-        specifier: 2.1.0
-        version: 2.1.0
+        specifier: 3.0.0
+        version: 3.0.0
       zod:
-        specifier: ^3.24.2
-        version: 3.25.76
+        specifier: ^4.6.7
+        version: 4.6.7
 
 packages:
 
@@ -106,11 +106,11 @@ packages:
   '@dabh/diagnostics@2.0.9':
     resolution: {integrity: sha512-R6siwR65Hm+3yfgP7o8DKhNvputQAwfoz9zTc3kyDudnomj2/BcLmD+uGQQPICjuFUp8ounPBU+jmKsocwVVAg==}
 
-  '@debugbundle/redaction@2.1.0':
-    resolution: {integrity: sha512-+IXVGehnYXwYE2niSRg0KVkPCmqm4FPhbHlz3XWCEIqrsPopSNcay14VMmdAPInsBy9FdVhP1J4CRWM8VCj8Cg==}
+  '@debugbundle/redaction@2.7.0':
+    resolution: {integrity: sha512-9oJ1cXZl5qBs746KYRqgZV+ggLw8O8UONkPVK2A+8Z/TtRljqhw5GuhVLuCnml2TIU3vemuuSAiHVrcUmXRorg==}
 
-  '@debugbundle/shared-types@2.1.0':
-    resolution: {integrity: sha512-dB2XWLm+3VGd5dGQ4bM1PuUYkCB96iJlFrs+Mgio1MbVBu9GEQhk1h+HC4hVCyyiXvb9+NOClF8e648XPA1Cxg==}
+  '@debugbundle/shared-types@3.0.0':
+    resolution: {integrity: sha512-71OQW9OJ1695MlwgUnK6HH+JD8JsofnSLlT+3ZxEbTCVHsCJNXcJlLZnhcbPcmNIB+D8eZwAXA8JnD59ESpkQQ==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -1200,8 +1200,8 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -1230,11 +1230,11 @@ snapshots:
       enabled: 2.0.0
       kuler: 2.0.0
 
-  '@debugbundle/redaction@2.1.0': {}
+  '@debugbundle/redaction@2.7.0': {}
 
-  '@debugbundle/shared-types@2.1.0':
+  '@debugbundle/shared-types@3.0.0':
     dependencies:
-      zod: 3.25.76
+      zod: 4.6.7
 
   '@emnapi/core@1.9.2':
     dependencies:
@@ -2259,4 +2259,4 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod@3.25.76: {}
+  zod@4.6.7: {}

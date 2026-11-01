@@ -8,6 +8,7 @@ export {
   MINIMAL_CAPTURE_POLICY,
   type ActiveConfig,
   type CaptureExceptionContext,
+  type CaptureRecoveryInput,
   type CaptureLogContext,
   type CapturePolicy,
   type CaptureRequestContext,
@@ -23,6 +24,7 @@ export {
   type ModuleResolver,
   type NextApiHandler,
   type NextWrappedHandler,
-  type ProbeOptions
+  type ProbeOptions,
+  type NodeOperationOptions
 } from "./types.js";
 export type { NodeBeforeSendHook } from "./before-send.js";

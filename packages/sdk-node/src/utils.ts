@@ -1,3 +1,4 @@
+import { readBoundedNodeJson } from "./response-json.js";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
@@ -393,9 +394,7 @@ export function createFetchTransport(fetchImpl: typeof fetch, projectToken: stri
       });
 
       const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
-      const body: unknown = typeof response.json === "function"
-        ? await response.json().catch(() => undefined)
-        : undefined;
+      const body: unknown = await readBoundedNodeJson(response, 256 * 1024, controller.signal);
 
       return {
         status: response.status,

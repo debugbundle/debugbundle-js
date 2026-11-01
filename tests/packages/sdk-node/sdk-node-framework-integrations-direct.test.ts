@@ -81,7 +81,8 @@ describe("sdk-node framework integrations direct", () => {
         body: { id: 123 },
         routeTemplate: "/orders/:id"
       },
-      expect.any(Function)
+      expect.any(Function),
+      expect.objectContaining({ url: "/orders/123" })
     );
     expect(captureRequest).toHaveBeenCalledTimes(1);
     expect(captureRequest).toHaveBeenCalledTimes(1);

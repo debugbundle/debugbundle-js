@@ -1,4 +1,5 @@
 import { sanitizeBrowserStack } from "./browser-stack.js";
+import { rememberResourceIdentity } from "./passive-resources.js";
 import {
   DEFAULT_LOG_LEVEL,
   LOG_LEVELS,
@@ -303,18 +304,20 @@ function normalizeBrowserErrorTargetAttributes(record: Record<string, unknown>):
 function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventContext["target"] {
   const record = readNativeFields(target, ["tagName", "src", "href", "currentSrc", "rel", "as", "type", "media", "crossOrigin", "async", "defer", "integrity"]);
   const tagName = getStringField(record, "tagName")?.toLowerCase() ?? null;
-  const sourceUrl = getStringField(record, "src") ?? getStringField(record, "href") ?? getStringField(record, "currentSrc");
+  const sourceUrl = getStringField(record, "currentSrc") ?? getStringField(record, "src") ?? getStringField(record, "href");
   const attributes = normalizeBrowserErrorTargetAttributes(record);
 
   if (tagName === null && sourceUrl === null) {
     return null;
   }
 
-  return {
+  const normalized = {
     tag_name: tagName,
     source_url: sanitizeBrowserEventUrl(sourceUrl),
     ...(attributes === undefined ? {} : { attributes })
   };
+  rememberResourceIdentity(normalized, sourceUrl);
+  return normalized;
 }
 
 export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEventContext {
@@ -626,6 +629,7 @@ export function parseRemoteProbeConfigPayload(payload: unknown, nowMs: number): 
 
   return {
     probesEnabled: record["probes_enabled"] === true,
+    ...(capturePolicy?.["capture_diagnostic_context"] === undefined ? {} : { captureDiagnosticContext: capturePolicy["capture_diagnostic_context"] === true }),
     remoteProbesEnabled: record["remote_probes_enabled"] === true,
     directives: Array.isArray(record["active_probes"])
       ? record["active_probes"]

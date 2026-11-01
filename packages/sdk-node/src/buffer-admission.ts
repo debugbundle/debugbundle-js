@@ -171,12 +171,15 @@ export class BoundedEventBuffer {
   }
 
   /** Fit a sender replacement against queued ownership, evicting only lower priority work. */
-  fitDetached(event: EventEnvelope, maxEvents: number, maxBytes: number): number | null {
-    if (this.admit(event, maxEvents, maxBytes, false).includes(event)) return null;
+  fitDetached(event: EventEnvelope, maxEvents: number, maxBytes: number,
+    onEvicted?: (events: EventEnvelope[]) => void): number | null {
+    const evicted = this.admit(event, maxEvents, maxBytes, false);
+    if (evicted.includes(event)) return null;
     const bytes = this.sizes.get(event)!;
     this.events.pop(); // Successful admission always appends this exact object.
     this.bytes -= bytes;
     this.priorityCounts[eventPriority(event)]!--;
+    onEvicted?.(evicted);
     return bytes;
   }
 

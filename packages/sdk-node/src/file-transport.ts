@@ -39,6 +39,11 @@ const LOCAL_EVENTS_DIRECTORY_MODE = 0o700;
 const LOCAL_EVENT_FILE_MODE = 0o600;
 const TEMP_FILE_RANDOM_BYTES = 8;
 const OPTIONAL_NOFOLLOW_FLAG = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+const fileTransports = new WeakSet<DebugBundleTransport>();
+
+export function isFileTransport(transport: DebugBundleTransport): boolean {
+  return fileTransports.has(transport);
+}
 
 function normalizeEnvironment(environment: string): string {
   return environment.trim().toLowerCase();
@@ -158,7 +163,7 @@ export function createFileTransport(options: FileTransportOptions): DebugBundleT
   let dirEnsured = false;
   const safeServiceName = sanitizeServiceName(serviceName);
 
-  return async (
+  const transport: DebugBundleTransport = async (
     request: DebugBundleTransportRequest
   ): Promise<DebugBundleTransportResponse> => {
     if (request.events.length === 0) {
@@ -204,4 +209,6 @@ export function createFileTransport(options: FileTransportOptions): DebugBundleT
       return { status: 500 };
     }
   };
+  fileTransports.add(transport);
+  return transport;
 }

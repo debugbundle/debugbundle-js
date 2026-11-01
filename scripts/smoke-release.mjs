@@ -49,6 +49,16 @@ async function main() {
     );
 
     installSmokeDependencies(tempDir);
+    writeFileSync(path.join(tempDir, "compatibility.ts"), `
+import { createDebugBundleBrowserSdk, BrowserSdk, type DebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
+declare const legacyBrowser: Omit<DebugBundleBrowserSdk, "captureRecovery">;
+const browser: DebugBundleBrowserSdk = legacyBrowser;
+void browser;
+createDebugBundleBrowserSdk().captureRecovery({ failureRef: "", attemptId: "", state: "attempt_completed" });
+new BrowserSdk().captureRecovery({ failureRef: "", attemptId: "", state: "attempt_completed" });
+`);
+    runCommand(process.execPath, [path.join(repoRoot, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict",
+      "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", "compatibility.ts"], { cwd: tempDir });
     writeFileSync(path.join(tempDir, "smoke.mjs"), buildSmokeScript({ releaseVersion, serverProjectToken }));
     runCommand(process.execPath, [path.join(tempDir, "smoke.mjs")], { cwd: tempDir });
     console.log("installed Node/Browser delivery and privacy canaries passed");
@@ -169,7 +179,7 @@ function defineGlobal(name, value) {
 }
 
 const ingestionServer = createHttpServer(async (request, response) => {
-  if (request.method !== "POST" || request.url !== "/v1/events") {
+  if (request.method !== "POST" || new URL(request.url ?? "/", "http://smoke.invalid").pathname !== "/v1/events") {
     response.statusCode = 404;
     response.end();
     return;
@@ -382,7 +392,7 @@ defineGlobal("matchMedia", () => ({ matches: false }));
 defineGlobal("fetch", async (input, init = {}) => {
   const isRelativePath = typeof input === "string" && input.startsWith("/");
   const requestUrl = isRelativePath ? new URL(input, appOrigin).toString() : input;
-  if (requestUrl === \`\${ingestionOrigin}/v1/events\` && init.keepalive) {
+  if (typeof requestUrl === "string" && new URL(requestUrl).origin === ingestionOrigin && new URL(requestUrl).pathname === "/v1/events" && init.keepalive) {
     directUnloadRequests.push({ headers: new Headers(init.headers ?? {}), body: init.body });
   }
   const headers = new Headers(init.headers ?? {});
@@ -455,7 +465,7 @@ pagehideHandler({ persisted: false });
 for (let attempt = 0; attempt < 100 && !sawBrowserDirectUnloadEvent; attempt += 1) {
   await new Promise(resolve => setTimeout(resolve, 25));
 }
-assert.equal(sawBrowserDirectUnloadEvent, true);
+assert.equal(sawBrowserDirectUnloadEvent, true, "direct_unload_event_missing");
 assert.equal(directUnloadRequests.length, 1);
 assert.equal(directUnloadRequests[0].headers.get("authorization"), \`Bearer \${serverProjectToken}\`);
 assert.ok(Buffer.byteLength(directUnloadRequests[0].body) <= 60 * 1024);
@@ -474,9 +484,9 @@ assert.equal(relayRequest.body.batch.length, 2);
 assert.equal(relayRequest.body.batch[0].project_token, undefined);
 assert.equal(relayRequest.body.batch[0].service.name, "smoke-web");
 assert.ok(ingestionRequests.length >= 2);
-assert.equal(sawNodeMessageEvent, true);
-assert.equal(sawBrowserExceptionEvent, true);
-assert.equal(sawBrowserResourceErrorEvent, true);
+assert.equal(sawNodeMessageEvent, true, "node_message_missing");
+assert.equal(sawBrowserExceptionEvent, true, "browser_exception_missing");
+assert.equal(sawBrowserResourceErrorEvent, true, "browser_resource_error_missing");
 assert.equal(sawBrowserDirectUnloadEvent, true);
 
 ingestionServer.closeAllConnections?.();

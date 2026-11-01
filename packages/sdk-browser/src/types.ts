@@ -1,5 +1,5 @@
 import packageJson from "../package.json" with { type: "json" };
-import type { EventEnvelope } from "@debugbundle/shared-types";
+import type { EventEnvelope, EvidenceCapabilities, EvidenceScope, RecoveryObservation } from "@debugbundle/shared-types";
 import type { BrowserBeforeSendHook } from "./before-send.js";
 export type { EventEnvelope };
 
@@ -273,6 +273,7 @@ export interface BrowserDeviceInfo {
 }
 
 export interface BrowserFetchResponse {
+  body?: ReadableStream<Uint8Array> | null;
   status: number;
   headers?: {
     get(name: string): string | null;
@@ -364,6 +365,7 @@ export interface BrowserRemoteProbeDirective {
 }
 
 export interface BrowserRemoteProbeState {
+  captureDiagnosticContext?: boolean;
   probesEnabled: boolean;
   remoteProbesEnabled: boolean;
   directives: BrowserRemoteProbeDirective[];
@@ -399,6 +401,10 @@ export type DebugBundleBrowserTransport = (
 ) => Promise<DebugBundleBrowserTransportResponse>;
 
 export interface DebugBundleBrowserInitConfig {
+  evidenceCapabilities?: EvidenceCapabilities;
+  captureExceptionEvidence?: boolean;
+  captureRecoveryObservations?: boolean;
+  captureResourceObservations?: boolean;
   projectToken?: string;
   environment?: string;
   service?: string;
@@ -460,12 +466,24 @@ export interface DebugBundleBrowserAnalytics {
 }
 
 export interface CaptureBrowserExceptionContext {
+  failureRef?: string;
+  evidenceScope?: EvidenceScope;
   route?: string | null;
   target?: Record<string, unknown> & {
     outerHTML?: string;
   };
   browser_event?: BrowserExceptionEventContext;
   rejection_reason?: BrowserRejectionReasonContext;
+}
+
+export interface CaptureBrowserRecoveryInput {
+  failureRef: string;
+  evidenceScope?: EvidenceScope;
+  attemptId: string;
+  state: RecoveryObservation["state"];
+  operation?: string;
+  statusCode?: number;
+  durationMs?: number;
 }
 
 export interface BrowserRejectionReasonContext {
@@ -511,6 +529,7 @@ export interface DebugBundleBrowserSdk {
   init(config: DebugBundleBrowserInitConfig): void;
   captureException(error: unknown, context?: CaptureBrowserExceptionContext): void;
   captureError(error: unknown, context?: CaptureBrowserExceptionContext): void;
+  captureRecovery?(input: CaptureBrowserRecoveryInput): void;
   captureLog(message: string, level: BrowserLogLevel, context?: Record<string, unknown>): void;
   captureRequest(request: unknown, response?: unknown, context?: Record<string, unknown>): void;
   captureMessage(message: string, level?: BrowserLogLevel, context?: Record<string, unknown>): void;
@@ -520,7 +539,16 @@ export interface DebugBundleBrowserSdk {
   dispose(): void;
 }
 
+/** Factories always provide recovery; older structural SDK implementations remain compatible. */
+export interface DebugBundleBrowserEvidenceSdk extends DebugBundleBrowserSdk {
+  captureRecovery(input: CaptureBrowserRecoveryInput): void;
+}
+
 export interface ActiveConfig {
+  captureExceptionEvidence?: boolean;
+  captureRecoveryObservations?: boolean;
+  discoverEvidence?: boolean;
+  captureResourceObservations?: boolean;
   projectToken: string | null;
   environment: string;
   service: string;

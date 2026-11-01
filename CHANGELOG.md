@@ -1,6 +1,25 @@
 # Changelog
 
+The 3.2 candidate uses upstream Zod4.6.7 and shared-types3.0 internally. Public
+capture interfaces and legacy event formats remain compatible. Clean installed
+Node/Browser consumers qualify the exact shared archives; no advisory exception
+is required for the migrated SDK dependency graph.
+
 ## [Unreleased]
+
+### Added
+
+- Bounded native cause/aggregate evidence, frame provenance and request/operation metadata, with smaller fatal evidence and hook bypass.
+- Explicit opt-in recovery observations and revocable scopes; passive Browser resource/CSP diagnostics and selected `currentSrc` attribution.
+- Complete-path capability discovery on existing requests, closed relay DTOs and a single protected-original downgrade after negotiated rejection.
+
+### Fixed
+
+- Keep recovery optional on the existing structural Browser SDK interface while factories and the concrete SDK expose the complete new method; preserve custom older implementations.
+- Split finalized Node and Browser network batches by actual JSON bytes as well as event count, preserving chunk-local acknowledgements, primary errors and existing local-file semantics.
+- Release diagnostic receipts when sender hook growth evicts pending observations; preserve canonical hook identity/type replacement and authoritative policy.
+- Bound relay forwarding across downstream chunks, require canonical native acknowledgements and mark a spool delivered only after complete acceptance.
+- Create private delivery markers exclusively without following pre-existing symlinks or overwriting other files.
 
 ## [3.1.0] - 2026-10-05
 

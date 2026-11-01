@@ -1,5 +1,8 @@
 import { sanitizeTelemetry } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { BrowserEvidenceController } from "./evidence-controller.js";
+import { createBrowserDiagnosticEvent } from "./diagnostic-capture.js";
+import { createBrowserExceptionEvent } from "./capture-exception.js";
 import { BrowserAnalyticsController } from "./analytics.js";
 import { applyBrowserBeforeSend } from "./before-send.js";
 import {
@@ -27,7 +30,6 @@ import {
   getWindowSource,
   createBrowserTraceId,
   normalizeBoolean,
-  normalizeError,
   normalizeLogLevel,
   normalizeNetworkFilter,
   normalizePositiveNumber,
@@ -60,15 +62,18 @@ import {
   type BrowserRemoteProbeState,
   type BrowserXmlHttpRequestConstructor,
   type CaptureBrowserExceptionContext,
+  type CaptureBrowserRecoveryInput,
   type DebugBundleBrowserInitConfig,
-  type DebugBundleBrowserSdk,
+  type DebugBundleBrowserEvidenceSdk,
   type DebugBundleBrowserTransportEvent
 } from "./types.js";
 
 export type {
   CaptureBrowserExceptionContext,
+  CaptureBrowserRecoveryInput,
   DebugBundleBrowserInitConfig,
   DebugBundleBrowserSdk,
+  DebugBundleBrowserEvidenceSdk,
   DebugBundleBrowserAnalytics,
   DebugBundleBrowserAnalyticsConfig,
   DebugBundleBrowserTransportEvent,
@@ -79,8 +84,9 @@ export type {
 } from "./types.js";
 export type { BrowserBeforeSendHook } from "./before-send.js";
 
-export class BrowserSdk implements DebugBundleBrowserSdk {
+export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   private config: ActiveConfig | null = null;
+  private readonly evidence = new BrowserEvidenceController();
   private breadcrumbs: BrowserBreadcrumb[] = [];
   private persistentContext: Record<string, unknown> = {};
   private deviceInfo: BrowserDeviceInfo | null = null;
@@ -103,12 +109,16 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     isDebugRejected: () => this.eventTransport.debugRejected,
     isSessionSampledIn: () => this.sessionSampledIn,
     emitProbeEvent: ({ label, data, directive }) => this.emitProbeEvent(label, data, directive),
-    applyRemoteAnalytics: (config) => this.analyticsController.applyRemoteSettings(config)
+    applyRemoteAnalytics: (config) => this.analyticsController.applyRemoteSettings(config),
+    observeEvidence: (payload, valid = true) => { this.evidence.observe(payload, true, valid); this.evidence.update(this.config, this.remoteProbeState); }
   });
   private readonly eventTransport = new BrowserEventTransport({
     beforeDebugFlush: () => this.enqueueSuppressionAggregates(),
     prepareDebugEvent: (event) => this.prepareDebugEvent(event),
-    onDebugResponse: (payload) => this.probeController.updateFromIngestionResponse(payload),
+    onDebugResponse: (payload, validAcknowledgement) => { this.probeController.updateFromIngestionResponse(payload);
+      return this.evidence.observe(payload, this.config?.discoverEvidence === true, validAcknowledgement); },
+    finalizeDebugEvent: (event) => event.event_type === "analytics_event" ? event : this.evidence.reconcile(event, event, this.config, this.remoteProbeState),
+    onDebugEventReleased: (event) => { if (event.event_type !== "analytics_event") this.evidence.release(event); },
     onUnauthorized: (lane, statusCode, endpoint, body) => {
       this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
     },
@@ -178,6 +188,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       maxProbeEntriesPerLabel: normalizePositiveNumber(config.maxProbeEntriesPerLabel, 10),
       probeFlushOnError: normalizeBoolean(config.probeFlushOnError, true),
       requestTimeoutMs: normalizePositiveNumber(config.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS),
+      captureExceptionEvidence: config.captureExceptionEvidence ?? true,
+      captureRecoveryObservations: config.captureRecoveryObservations ?? false,
+      captureResourceObservations: config.captureResourceObservations ?? true,
+      discoverEvidence: config.transport === undefined,
       requestsAnalyticsConfig: config.analytics?.enabled === true,
       captureRules: [],
       fetchImpl: getFetchSource(),
@@ -187,6 +201,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
       ...(config.beforeSend === undefined ? {} : { beforeSend: config.beforeSend })
     };
 
+    this.evidence.configure(config);
+    this.evidence.setLateCapture((source, payload) => this.config === null ? null :
+      createBrowserDiagnosticEvent(this.config, payload, source.correlation, source.service), (event) => this.enqueueEvent(event));
+    this.evidence.update(this.config, this.remoteProbeState);
     this.eventTransport.configure(this.config);
     this.sessionSampledIn = this.config.sessionSampleRate >= 1 || Math.random() < this.config.sessionSampleRate;
     this.sessionEventCount = 0;
@@ -221,68 +239,12 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
     }
 
     try {
-      const normalizedError = normalizeError(error);
-      const device = this.deviceInfo;
-      const browser = device?.browser ?? { name: "Unknown", version: "0" };
-      const breadcrumbs = this.consumeBreadcrumbs();
-      const probeData = config.probeFlushOnError
-        ? this.probeController.consumeBufferedData()
-        : { version: 1 as const, items: [] };
-      const domContext =
-        typeof context.target?.outerHTML === "string" && context.target.outerHTML.length > 0
-          ? {
-              mode: "lightweight" as const,
-              html_excerpt: context.target.outerHTML
-            }
-          : null;
-
-      const event = createEventEnvelope({
-        schema_version: SDK_SCHEMA_VERSION,
-        event_type: "frontend_exception",
-        ...this.getProjectTokenFields(config),
-        sdk_name: SDK_NAME,
-        sdk_version: SDK_VERSION,
-        service: {
-          name: config.service,
-          runtime: "browser",
-          framework: null,
-          environment: config.environment
-        },
-        occurred_at: new Date().toISOString(),
-        correlation: this.createCorrelation(),
-        payload: {
-          name: normalizedError.name,
-          message: normalizedError.message,
-          stack: normalizedError.stack,
-          route: context.route ?? this.getCurrentRoute(),
-          browser,
-          breadcrumbs,
-          probe_data: probeData,
-          device:
-            device === null
-              ? null
-              : {
-                  user_agent: device.user_agent,
-                  os: device.os,
-                  device_type: device.device_type,
-                  screen: device.screen,
-                  viewport: device.viewport,
-                  device_pixel_ratio: device.device_pixel_ratio,
-                  touch_capable: device.touch_capable,
-                  language: device.language,
-                  connection_type: device.connection_type,
-                  color_scheme_preference: device.color_scheme_preference
-                },
-          dom_context: domContext
-        }
-      });
-
-      if (context.browser_event !== undefined) {
-        (event.payload as Record<string, unknown>)["browser_event"] = context.browser_event;
-      }
-      if (context.rejection_reason !== undefined) {
-        (event.payload as Record<string, unknown>)["rejection_reason"] = context.rejection_reason;
-      }
+      const event = createBrowserExceptionEvent({ error, context, config, device: this.deviceInfo,
+        breadcrumbs: this.consumeBreadcrumbs(), probeData: config.probeFlushOnError ? this.probeController.consumeBufferedData() : { version: 1, items: [] },
+        route: this.getCurrentRoute(), correlation: this.createCorrelation(), evidence: this.evidence.proof });
+      const reference = this.evidence.proof.supports("recovery_v1") ? this.evidence.reference(context) : null;
+      if (reference !== null) event.context = { ...event.context, evidence_reference: reference };
+      this.evidence.prepareException(event, context, config, this.remoteProbeState);
 
       this.removeEmptyProjectToken(event, config);
 
@@ -294,6 +256,15 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   public captureError(error: unknown, context: CaptureBrowserExceptionContext = {}): void {
     this.captureException(error, context);
+  }
+
+  public captureRecovery(input: CaptureBrowserRecoveryInput): void {
+    const config = this.config;
+    if (config === null || !this.shouldCaptureNonExceptionEvent() || !this.eventTransport.canCaptureDebug("diagnostic_context")) return;
+    try {
+      this.evidence.captureRecovery(input, config, this.remoteProbeState,
+        (payload) => createBrowserDiagnosticEvent(config, payload, this.createCorrelation()), (event) => this.enqueueEvent(event));
+    } catch { /* Optional observations never escape into application code. */ }
   }
 
   public captureLog(message: string, level: BrowserLogLevel, context: Record<string, unknown> = {}): void {
@@ -382,6 +353,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   public dispose(): void {
     this.eventTransport.reset();
+    this.evidence.reset();
     this.breadcrumbs = [];
     this.persistentContext = {};
     this.deviceInfo = null;
@@ -837,9 +809,10 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private admitDebugEvent(event: EventEnvelope, countTowardSession: boolean, applyRules: boolean): void {
     const config = this.config;
-    if (config === null || this.eventTransport.debugRejected) return;
+    if (config === null || this.eventTransport.debugRejected) { this.evidence.release(event); return; }
     const protectedInput = protectBrowserEvent(event, config.redactFields);
-    if (protectedInput === null) return;
+    if (protectedInput === null) { this.evidence.release(event); return; }
+    this.evidence.inheritIdentity(event, protectedInput);
     this.pendingEventOptions.set(protectedInput, { applyRules, countTowardSession, capturedAt: Date.now() });
     // Without an application hook retain the established immediate policy path.
     // Hook-bearing events remain privacy-safe in the same bounded transport queue.
@@ -849,6 +822,11 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
   private prepareDebugEvent(event: DebugBundleBrowserTransportEvent): DebugBundleBrowserTransportEvent | null {
     if (event.event_type === "analytics_event") return event;
+    const result = this.prepareDebugReplacement(event);
+    return this.evidence.reconcile(event, result, this.config, this.remoteProbeState);
+  }
+
+  private prepareDebugReplacement(event: EventEnvelope): EventEnvelope | null {
     const options = this.pendingEventOptions.get(event);
     if (options === undefined) return event;
     this.pendingEventOptions.delete(event);
@@ -967,7 +945,7 @@ export class BrowserSdk implements DebugBundleBrowserSdk {
 
 }
 
-export function createDebugBundleBrowserSdk(): DebugBundleBrowserSdk {
+export function createDebugBundleBrowserSdk(): DebugBundleBrowserEvidenceSdk {
   return new BrowserSdk();
 }
 

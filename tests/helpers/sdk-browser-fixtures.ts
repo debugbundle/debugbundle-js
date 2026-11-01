@@ -253,7 +253,7 @@ export function installBrowserGlobals(): InstalledBrowserGlobals {
 
 export function createSdk(
   overrides: Parameters<DebugBundleBrowserSdk["init"]>[0] = {}
-): { sdk: DebugBundleBrowserSdk; transport: TransportMock; globals: InstalledBrowserGlobals } {
+): { sdk: ReturnType<typeof createDebugBundleBrowserSdk>; transport: TransportMock; globals: InstalledBrowserGlobals } {
   const globals = installBrowserGlobals();
   const transport = vi.fn().mockResolvedValue({ status: 202 });
   const sdk = createDebugBundleBrowserSdk();

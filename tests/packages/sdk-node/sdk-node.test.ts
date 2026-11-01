@@ -741,7 +741,7 @@ describe("sdk-node", () => {
     await sdk.flush();
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://api.debugbundle.com/v1/events",
+      "https://api.debugbundle.com/v1/events?debugbundle_evidence=1",
       expect.objectContaining({
         method: "POST"
       })

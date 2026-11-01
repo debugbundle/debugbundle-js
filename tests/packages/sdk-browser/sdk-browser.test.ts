@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import * as browserFixtures from "../../helpers/sdk-browser-fixtures.js";
 
 describe("sdk-browser", () => {
   it("should expose the core browser sdk surface", (): void => {
+    expectTypeOf<Omit<browserFixtures.DebugBundleBrowserSdk, "captureRecovery">>()
+      .toExtend<browserFixtures.DebugBundleBrowserSdk>();
     const globals = browserFixtures.installBrowserGlobals();
     void globals;
 

@@ -460,7 +460,7 @@ describe("sdk-browser transport", () => {
 
     expect(globals.sendBeacon).toHaveBeenCalledTimes(1);
     expect(globals.fetchMock).toHaveBeenCalledTimes(1);
-    expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/debugbundle/browser");
+    expect(globals.fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/debugbundle/browser?debugbundle_evidence=1");
     expect(globals.fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
       keepalive: true,
@@ -633,7 +633,7 @@ describe("sdk-browser transport", () => {
     await sdk.flush();
 
     expect(globals.fetchMock).toHaveBeenCalledTimes(2);
-    expect(globals.fetchMock.mock.calls[1]?.[0]).toBe("https://api.debugbundle.com/v1/events");
+    expect(globals.fetchMock.mock.calls[1]?.[0]).toBe("https://api.debugbundle.com/v1/events?debugbundle_evidence=1");
     expect(ingestionJson).toHaveBeenCalledTimes(1);
   });
 

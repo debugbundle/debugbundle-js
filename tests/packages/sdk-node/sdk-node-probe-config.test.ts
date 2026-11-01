@@ -95,7 +95,7 @@ describe("sdk-node remote probe config", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://api.debugbundle.com/v1/sdk/config",
+      "https://api.debugbundle.com/v1/sdk/config?debugbundle_evidence=1",
       expect.objectContaining({
         method: "GET"
       })
