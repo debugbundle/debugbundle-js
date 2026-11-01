@@ -1,11 +1,13 @@
 # Changelog
 
-The 3.2 candidate uses upstream Zod4.6.7 and shared-types3.0 internally. Public
+Version 3.2.0 uses upstream Zod4.6.7 and shared-types3.0 internally. Public
 capture interfaces and legacy event formats remain compatible. Clean installed
 Node/Browser consumers qualify the exact shared archives; no advisory exception
 is required for the migrated SDK dependency graph.
 
 ## [Unreleased]
+
+## [3.2.0] - 2026-11-01
 
 ### Added
 

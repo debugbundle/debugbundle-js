@@ -27,10 +27,10 @@ Node logger integrations capture records after native source filtering: Pino lev
 `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` ship as one versioned SDK family. Keep the package versions aligned in every public snippet and real application install.
 
 ```bash
-npm install @debugbundle/sdk-node@1.5.0 @debugbundle/sdk-browser@1.5.0
+npm install @debugbundle/sdk-node@3.2.0 @debugbundle/sdk-browser@3.2.0
 ```
 
-If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, keep them on the same version as the SDK packages. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
+If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, use shared-types 3.0.0 and redaction 2.7.0 with SDK 3.2.0. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
 
 ## Install
 
