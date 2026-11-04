@@ -7,9 +7,9 @@ Browser SDK for DebugBundle.
 
 Use this package to capture frontend exceptions, breadcrumbs, first-party request failures, browser device context, trace headers, and probe data. The recommended transport is a browser relay served by your backend.
 
-## Evidence candidate (unreleased)
+## Runtime evidence (3.2.0)
 
-The source candidate adds normalized runtime frames, safe native causes where an engine Error brand check is available, responsive media `currentSrc`, passive resource timing/CSP observations and explicit recovery. Retained outer stack text stays available when native traversal is unsupported. Aggregate arrays are not traversed where array proxies cannot be safely rejected. No cause getter/custom formatter is invoked by additional inspection. Actual browser-engine qualification remains a release gate.
+Version 3.2.0 adds normalized runtime frames, safe native causes where an engine Error brand check is available, responsive media `currentSrc`, passive resource timing/CSP observations and explicit recovery. Retained outer stack text stays available when native traversal is unsupported. Aggregate arrays are not traversed where array proxies cannot be safely rejected. No cause getter/custom formatter is invoked by additional inspection. Actual browser-engine qualification remains a release gate.
 
 `captureExceptionEvidence` and `captureResourceObservations` default to true behind complete-path capability proof; `captureRecoveryObservations` defaults to false. Minimal capture policy disables passive and standalone diagnostic capture. Existing config/ACK requests carry `debugbundle_evidence=1`; capture does not introduce a discovery request or polling. A manual `evidenceCapabilities` pin asserts every relay/receiver/reader in the path, including local processing. Later discovery can revoke it. Keep the Node relay and Browser distributions coordinated.
 
@@ -19,7 +19,7 @@ To report recovery, enable its option, supply a fresh UUID v4 `failureRef` in th
 
 Passive observation retains sanitized DTOs only: at most 20 entries/32 KiB/30 seconds, with one coalesced late context per failure. It does not scan the historical performance buffer, resize/clear that buffer, change CSP, retain DOM nodes or issue diagnostic requests. Zero/unexposed resource status is unknown; CSP document status is separate. Report-only is not a block. Repeated URLs, redirects and redaction collisions remain ambiguous. The original error is sent immediately. Typed diagnostic tracking is independently capped at 50 failures, five attempts/20 observations per failure and 64 KiB including pending offline payloads and correlation metadata. Disposal disconnects observers/listeners and clears expiry/coalescing timers.
 
-These APIs are not yet a published release. Ordinary capture, analytics lanes, probe activation, policy, privacy, sampling and hook replacement behaviour remain authoritative.
+These APIs are available in 3.2.0. Ordinary capture, analytics lanes, probe activation, policy, privacy, sampling and hook replacement behaviour remain authoritative.
 
 ## Installation
 
@@ -27,7 +27,7 @@ These APIs are not yet a published release. Ordinary capture, analytics lanes, p
 npm install @debugbundle/sdk-browser
 ```
 
-Keep `@debugbundle/sdk-browser` and `@debugbundle/sdk-node` on the same release version. If you pin the core-owned support packages directly, keep `@debugbundle/shared-types` and `@debugbundle/redaction` on the same version too.
+Keep `@debugbundle/sdk-browser` and `@debugbundle/sdk-node` on the same SDK release version. The core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` packages are independently versioned; use the compatible versions declared by the SDK rather than matching their version numbers.
 
 ## Quick Start
 

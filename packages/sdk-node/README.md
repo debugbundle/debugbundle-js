@@ -13,9 +13,9 @@ Requires Node.js 22 or newer.
 
 Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
 
-## Evidence candidate (unreleased)
+## Runtime evidence (3.2.0)
 
-The source candidate adds bounded native `Error.cause`/`AggregateError` evidence, normalized frames and owned request/command/job context. `captureExceptionEvidence` defaults to true, but additional fields are emitted only after complete-path capability proof. Existing config and ACK requests opt in with `debugbundle_evidence=1`; absent, invalid or downgraded support restores the legacy error shape. Native accessors, proxies and custom stack formatters are not executed for new inspection. Fatal capture has a smaller budget and bypasses application hooks.
+Version 3.2.0 adds bounded native `Error.cause`/`AggregateError` evidence, normalized frames and owned request/command/job context. `captureExceptionEvidence` defaults to true, but additional fields are emitted only after complete-path capability proof. Existing config and ACK requests opt in with `debugbundle_evidence=1`; absent, invalid or downgraded support restores the legacy error shape. Native accessors, proxies and custom stack formatters are not executed for new inspection. Fatal capture has a smaller budget and bypasses application hooks.
 
 Explicit recovery requires `captureRecoveryObservations: true`, verified `recovery_v1` support and capture-policy permission. Use fresh UUID v4 `failureRef` and `attemptId` values, never user IDs or URLs. Pass the reference with the original capture context, then call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })`. An active `runWithOperationContext({ kind: "job" | "command" | "request", name?, limitMs? }, callback)` supplies the operation scope. Without an active scope, provide an explicit operation/page scope. The callback's result/error is preserved; concurrent operations are isolated and elapsed time is monotonic. Existing Express/Fastify/Next request owners end on completion/close.
 
@@ -27,7 +27,7 @@ HTTP batches count actual UTF-8 JSON and their wrapper against the receiver's 25
 
 Relays count server metadata before forwarding, split downstream chunks and share one monotonic five-second forwarding deadline. Native upstream HTTP requires a canonical acknowledgement even for a legacy browser request. A durable spool receives a private, exclusively created delivery marker only after complete canonical acceptance of every chunk; missing/partial replies and pre-existing marker symlinks leave retained files intact. Server tokens are excluded from `onAccept` callbacks.
 
-These APIs are not yet a published release. Runtime-floor, installed-framework and packaged-artifact qualification belongs to the coordinated release train.
+These APIs are available in 3.2.0. Runtime-floor, installed-framework and packaged-artifact qualification is recorded in the coordinated release train.
 
 ## Installation
 
@@ -35,7 +35,7 @@ These APIs are not yet a published release. Runtime-floor, installed-framework a
 npm install @debugbundle/sdk-node
 ```
 
-Keep `@debugbundle/sdk-node`, `@debugbundle/sdk-browser`, `@debugbundle/shared-types`, and `@debugbundle/redaction` on matching versions when you pin them explicitly. Public examples must not mix JS SDK family versions.
+Keep `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` on the same SDK release version. The core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` packages are independently versioned; use the compatible versions declared by the SDK rather than matching their version numbers.
 
 ## Quick Start
 
