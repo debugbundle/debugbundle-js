@@ -318,6 +318,7 @@ export interface ProbeBufferItem {
 
 export interface LoggerCaptureApi {
   captureLog(message: string, level: LogLevel, context?: CaptureLogContext): void;
+  captureLoggedException?(error: Error, level: LogLevel, context?: CaptureLogContext): void;
 }
 
 export interface LoggerAttachmentResult {

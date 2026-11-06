@@ -303,3 +303,7 @@ Empty probe data means no matching retained observation for the selected sample
 window. It does not confirm activation delivery to every SDK or execution of a
 label. Check the deployed SDK/wrapper version, instrumentation, scope, expiry,
 policy, sampling and delivery receipts. See the [probe recipes](https://debugbundle.com/docs/probes#bounded-checkpoint-recipes).
+
+### Native logger exception records (unreleased)
+
+Pino, Bunyan, Winston and generic logger bridges preserve native Error objects in accepted error/critical records. The optional `LoggerCaptureApi.captureLoggedException(error, level, context?)` bridge uses the normal exception pipeline and retains logger fields/log_message. Native filters still run first. Identical native reports are deduplicated only within an owned operation; serialized strings cannot prove identity. No consumer upgrade or publication is included in this working change.

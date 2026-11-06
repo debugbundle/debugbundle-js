@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import type { CaptureLogContext, DebugBundleDiagnostic, LogLevel, LoggerAttachmentResult, LoggerCaptureApi, ModuleResolver } from "./types.js";
 import { sanitizeUnknown } from "./utils.js";
 import { attachNativeLogger } from "./logger-emission.js";
+import { nativeLoggedError } from "./logger-error.js";
 
 const LOGGER_LEVEL_MAP: Record<string, LogLevel> = {
   trace: "debug",
@@ -107,6 +108,12 @@ function patchMethod(
       if (!active || record["silent"] === true) return result;
       const enabled = getFunction(record, "isLevelEnabled");
       if (enabled !== null && Reflect.apply(enabled, record, [methodName]) === false) return result;
+      const error = args.slice(0, 3).map(nativeLoggedError).find(value => value !== undefined);
+      if ((level === "error" || level === "critical") && error !== undefined && captureApi.captureLoggedException !== undefined) {
+        const normalized = normalizeLoggerCall(level, args);
+        captureApi.captureLoggedException(error, level, { ...normalized.context, log_message: normalized.message });
+        return result;
+      }
       const normalized = normalizeLoggerCall(level, args);
       captureApi.captureLog(normalized.message, level, normalized.context);
     } catch {
@@ -143,6 +150,14 @@ export function attachLoggerIntegration(input: {
     try { input.captureApi.captureLog(message, level, context); }
     finally { capturing = false; }
   } };
+  if (input.captureApi.captureLoggedException !== undefined) {
+    captureApi.captureLoggedException = (error, level, context): void => {
+      if (capturing) return;
+      capturing = true;
+      try { input.captureApi.captureLoggedException?.(error, level, context); }
+      finally { capturing = false; }
+    };
+  }
   const restoreAll = (): void => {
     for (const restore of [...restorers].reverse()) {
       try { restore(); } catch { /* A changed or frozen logger must not break cleanup. */ }

@@ -5,7 +5,13 @@ capture interfaces and legacy event formats remain compatible. Clean installed
 Node/Browser consumers qualify the exact shared archives; no advisory exception
 is required for the migrated SDK dependency graph.
 
-## [Unreleased]
+## [3.2.1] - 2026-11-06
+
+- Snapshot native logger context through bounded data slots without invoking application getters, proxy traps or serializers; preserve the primary exception when metadata is unavailable.
+- Final audit: preserve repeated native log records and captures following rejected hooks, retain generic log messages, roll back partial logger attachment, and bootstrap pinned Corepack for the maintained Node 26 Docker lane.
+
+- Preserve native Error/cause evidence in accepted Pino, Bunyan, Winston and generic error logger records instead of generic log incidents. Retain log context and deduplicate native logger/framework reports within owned operations. Browser console remains breadcrumb-only.
+- Existing event schemas remain compatible; complete exception inputs may create new future fingerprints. The Browser package advances with the aligned family and retains its breadcrumb capture behaviour.
 
 ## [3.2.0] - 2026-11-01
 

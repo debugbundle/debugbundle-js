@@ -55,3 +55,49 @@ it("contains response observer and cleanup failures and completes request owners
   expect(lifecycle.usesEvents).toBe(false); expect(finishRequestContext).toHaveBeenCalledOnce();
   expect(() => lifecycle.finish()).not.toThrow(); expect(finishRequestContext).toHaveBeenCalledOnce();
 });
+
+it("deduplicates a native logger and middleware report only inside the same operation", async () => {
+  const sdk = createDebugBundleSdk();
+  const transport = vi.fn<(request: DebugBundleTransportRequest) => Promise<{ status: number }>>().mockResolvedValue({ status: 202 });
+  sdk.init({ projectToken: "synthetic", service: "test", projectMode: "local-only", transport, batchSize: 1000 });
+  const error = new Error("same occurrence");
+  try {
+    for (let i = 0; i < 2; i++) await sdk.runWithOperationContext({ kind: "request" }, () => {
+      sdk.captureLoggedException(error, "error");
+      sdk.captureException(error);
+    });
+    await sdk.flush();
+    expect(transport.mock.calls.flatMap(([request]) => request.events)).toHaveLength(2);
+  } finally { sdk.dispose(); }
+});
+
+it.each([false, true])("retains repeated native records or a capture after hook rejection (%s)", async (dropFirst) => {
+  const sdk = createDebugBundleSdk();
+  const transport = vi.fn<(request: DebugBundleTransportRequest) => Promise<{ status: number }>>().mockResolvedValue({ status: 202 });
+  let calls = 0;
+  sdk.init({ projectToken: "synthetic", service: "test", projectMode: "local-only", transport, batchSize: 1000,
+    ...(dropFirst ? { beforeSend: (event) => calls++ === 0 ? null : event } : {}) });
+  try {
+    await sdk.runWithOperationContext({ kind: "request" }, async () => {
+      const error = new Error("reused object");
+      sdk.captureLoggedException(error, "error"); await sdk.flush();
+      if (dropFirst) sdk.captureException(error); else sdk.captureLoggedException(error, "error");
+      await sdk.flush();
+    });
+    expect(transport.mock.calls.flatMap(([request]) => request.events)).toHaveLength(dropFirst ? 1 : 2);
+  } finally { sdk.dispose(); }
+});
+
+it("does not invoke getters in the optional native-logger context", async () => {
+  const sdk = createDebugBundleSdk();
+  const transport = vi.fn<(request: DebugBundleTransportRequest) => Promise<{ status: number }>>().mockResolvedValue({ status: 202 });
+  sdk.init({ projectToken: "synthetic", service: "test", projectMode: "local-only", transport, batchSize: 1000 });
+  let reads = 0;
+  const context = Object.defineProperty({}, "unsafe", { enumerable: true, get() { reads++; throw new Error("host getter"); } });
+  try {
+    sdk.captureLoggedException(new Error("native failure"), "error", context);
+    await sdk.flush();
+    expect(reads).toBe(0);
+    expect(transport.mock.calls.flatMap(([request]) => request.events)).toHaveLength(1);
+  } finally { sdk.dispose(); }
+});

@@ -1,5 +1,6 @@
 import type { CaptureLogContext, LogLevel, LoggerAttachmentResult, LoggerCaptureApi } from "./types.js";
 import { sanitizeUnknown } from "./utils.js";
+import { nativeLoggedError } from "./logger-error.js";
 
 type Logger = Record<PropertyKey, unknown>;
 type NativeMethod = (this: Logger, ...args: unknown[]) => unknown;
@@ -41,6 +42,33 @@ export function attachNativeLogger(logger: Logger, captureApi: LoggerCaptureApi)
   const descriptor = Object.getOwnPropertyDescriptor(logger, key);
   let active = true;
   let capturing = false;
+  let callError: Error | undefined;
+  const methodRestorers: Array<() => void> = [];
+
+  // Bunyan/Winston may serialise away Error identity before the accepted emit.
+  // Carry it only on the synchronous native call stack; capture still happens
+  // exclusively after the logger's own filters/formatters accepted the record.
+  try {
+  if (captureApi.captureLoggedException !== undefined) {
+    for (const method of ["trace", "debug", "info", "warn", "warning", "error", "fatal", "critical", "log"]) {
+      const native = logger[method];
+      if (typeof native !== "function") continue;
+      const owned = Object.getOwnPropertyDescriptor(logger, method);
+      const instrumented: NativeMethod = function (...args) {
+        if (!active) return Reflect.apply(native, this, args);
+        const previous = callError;
+        try {
+          callError = args.slice(0, 3).map(nativeLoggedError).find(error => error !== undefined);
+          return Reflect.apply(native, this, args);
+        } finally { callError = previous; }
+      };
+      logger[method] = instrumented;
+      methodRestorers.push(() => {
+        if (logger[method] !== instrumented) return;
+        if (owned === undefined) delete logger[method]; else Object.defineProperty(logger, method, owned);
+      });
+    }
+  }
 
   const wrapped: NativeMethod = function (...args): unknown {
     // Invoke the native emission path exactly once. Application logger errors
@@ -71,6 +99,12 @@ export function attachNativeLogger(logger: Logger, captureApi: LoggerCaptureApi)
       }
       const normalizedLevel = level(severity);
       if (normalizedLevel !== null) {
+        const error = callError ?? nativeLoggedError(args[0]);
+        if ((normalizedLevel === "error" || normalizedLevel === "critical") && error !== undefined && captureApi.captureLoggedException !== undefined) {
+          captureApi.captureLoggedException(error, normalizedLevel, { ...sanitizeUnknown(fields) as CaptureLogContext, logger: kind,
+            ...(typeof message === "string" ? { log_message: message } : {}) });
+          return result;
+        }
         captureApi.captureLog(typeof message === "string" ? message : `${normalizedLevel} log`, normalizedLevel, sanitizeUnknown(fields) as CaptureLogContext);
       }
     } catch {
@@ -83,6 +117,7 @@ export function attachNativeLogger(logger: Logger, captureApi: LoggerCaptureApi)
   logger[key] = wrapped;
   return { attached: true, restore: (): void => {
     active = false;
+    for (const restore of methodRestorers) { try { restore(); } catch { /* Inactive wrappers preserve native calls. */ } }
     try {
       if (logger[key] !== wrapped) return;
       if (descriptor === undefined) delete logger[key];
@@ -91,4 +126,10 @@ export function attachNativeLogger(logger: Logger, captureApi: LoggerCaptureApi)
       // A logger frozen after attachment retains an inactive native wrapper.
     }
   } };
+  } catch {
+    active = false;
+    for (const restore of methodRestorers.reverse()) { try { restore(); } catch { /* Inactive wrappers retain native behaviour. */ } }
+    return { attached: false };
+  }
+
 }

@@ -3,10 +3,67 @@ import bunyan from "bunyan";
 import pino from "pino";
 import winston from "winston";
 import { describe, expect, it, vi } from "vitest";
+import { nativeLoggedError, nativeLoggerContext } from "../../../packages/sdk-node/src/logger-error.js";
 import { attachLoggerIntegration } from "../../../packages/sdk-node/src/logger-integrations.js";
 import type { LoggerCaptureApi } from "../../../packages/sdk-node/src/types.js";
 
+it("restores native logger methods if attachment fails partway through", () => {
+  const logger = pino({ level: "error" }, { write: () => undefined });
+  const debug = logger.debug;
+  const error = logger.error;
+  Object.defineProperty(logger, "error", { value: error, writable: false, configurable: false });
+  const result = attachLoggerIntegration({ logger, captureApi: { captureLog: vi.fn(), captureLoggedException: vi.fn() } });
+  expect(result.attached).toBe(false);
+  expect(logger.debug).toBe(debug);
+  expect(logger.error).toBe(error);
+});
+
 describe("native logger filtering", () => {
+  it("bounds logger metadata without invoking nested getters, proxies or serializers", () => {
+    let calls = 0;
+    const hostile = new Proxy({}, { ownKeys() { calls++; throw new Error("host proxy"); } });
+    const value = { hostile, text: "x".repeat(5000), list: Array.from({ length: 70 }, () => true),
+      number: Infinity, nothing: null, fn: () => { calls++; } };
+    Object.defineProperty(value, "getter", { enumerable: true, get() { calls++; throw new Error("host getter"); } });
+    const snapshot = nativeLoggerContext(value);
+    expect(calls).toBe(0);
+    expect(snapshot).toMatchObject({ hostile: "[Unavailable]", getter: "[Unavailable]", number: null, nothing: null, fn: "[Unavailable]" });
+    expect(snapshot["text"]).toMatch(/\[Truncated\]$/);
+    expect(snapshot["list"]).toHaveLength(65);
+    expect(nativeLoggerContext(hostile)).toEqual({});
+    const cyclic: Record<string, unknown> = {}; cyclic["self"] = cyclic;
+    expect(nativeLoggerContext(cyclic)).toMatchObject({ self: "[Circular]" });
+    expect(nativeLoggerContext(Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`key${i}`, true])))).toHaveProperty("_debugbundle_truncated", true);
+  });
+  it("only promotes real native errors from safe own data slots", () => {
+    const error = new Error("native");
+    for (const key of ["err", "error", "exception"]) expect(nativeLoggedError({ [key]: error })).toBe(error);
+    let calls = 0;
+    const getter = Object.defineProperty({}, "err", { get() { calls++; throw error; } });
+    for (const value of [null, "error", {}, { err: null }, { err: "text" }, getter, Object.create({ err: error }),
+      new Proxy(error, { get() { calls++; throw error; } }), { error: new Proxy(error, {}) }]) {
+      expect(nativeLoggedError(value)).toBeUndefined();
+    }
+    expect(calls).toBe(0);
+  });
+  it("retains the original native error through Pino, Bunyan and Winston serialization", () => {
+    const loggers: Array<{ warn: (error: Error) => unknown; error: (error: Error) => unknown }> = [pino({ level: "error" }, { write: () => undefined }),
+      bunyan.createLogger({ name: "synthetic", level: "error", stream: new Writable({ write(_chunk, _encoding, done) { done(); } }) }),
+      winston.createLogger({ level: "error", transports: [new winston.transports.Stream({ stream: new Writable({ write(_chunk, _encoding, done) { done(); } }) })] })];
+    for (const logger of loggers) {
+      const captureLog = vi.fn(), captureLoggedException = vi.fn();
+      const attachment = attachLoggerIntegration({ logger, captureApi: { captureLog, captureLoggedException } });
+      const error = new Error("synthetic outer", { cause: new TypeError("synthetic cause") });
+      logger.warn(error);
+      expect(captureLoggedException).not.toHaveBeenCalled();
+      logger.error(error);
+      expect(captureLoggedException).toHaveBeenCalledExactlyOnceWith(error, "error", expect.objectContaining({ logger: expect.any(String) }));
+      expect(captureLog).not.toHaveBeenCalled();
+      attachment.restore?.();
+      logger.error(error);
+      expect(captureLoggedException).toHaveBeenCalledTimes(1);
+    }
+  });
   it("deactivates capture when the application freezes a native emitter before detach", () => {
     const logger = pino({ level: "warn" }, { write: () => undefined });
     const captureLog = vi.fn();

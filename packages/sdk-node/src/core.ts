@@ -14,6 +14,8 @@ import { BoundedEventBuffer } from "./buffer-admission.js";
 import { finalizeNodeBatch } from "./delivery-hooks.js";
 import { protectNodeEvent } from "./privacy.js";
 import { attachLoggerIntegration } from "./logger-integrations.js";
+import { nativeLoggerContext } from "./logger-error.js";
+import { ExceptionIdentity } from "./exception-identity.js";
 import { createExpressMiddleware, createFastifyPlugin, createNextHandlerWrapper } from "./framework-integrations.js";
 import { decideIngestionAcknowledgement } from "./ingestion-acknowledgement.js";
 import { shouldCaptureNodeRequestEvent } from "./request-policy.js";
@@ -115,6 +117,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     log: (message, level) => this.captureLog(message, level), flush: () => this.flush() });
   private loggerRestorers: Array<() => void> = [];
   private attachedLoggers = new WeakSet<object>();
+  private exceptionIdentity = new ExceptionIdentity();
   private readonly suppressionTracker = new EventSuppressionTracker();
 
   public get status(): "healthy" | "degraded" | "disconnected" {
@@ -236,6 +239,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
 
     this.loggerRestorers = [];
     this.attachedLoggers = new WeakSet<object>();
+    this.exceptionIdentity = new ExceptionIdentity();
     this.config = null;
     this.evidence = new EvidenceDeliveryState();
     this.diagnosticBudget.clear();
@@ -317,7 +321,13 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     this.captureExceptionInternal(error, context, false);
   }
 
-  private captureExceptionInternal(error: unknown, context: CaptureExceptionContext, fatal: boolean): void {
+  /** Logger adapters retain native exception evidence after both native and SDK filtering. */
+  public captureLoggedException(error: Error, level: LogLevel, context?: CaptureLogContext): void {
+    if (this.config === null || !shouldCaptureNodeLog(this.config, this.remoteProbeConfig.capturePolicy, level)) return;
+    this.captureExceptionInternal(error, { handled: true }, false, true, context);
+  }
+
+  private captureExceptionInternal(error: unknown, context: CaptureExceptionContext, fatal: boolean, automatic = fatal, loggerContext?: CaptureLogContext): void {
     const config = this.config;
     if (config === null || !this.boundedBuffer.canAdmit("backend_exception", undefined,
       config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes)
@@ -328,12 +338,16 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     try {
       const execution = this.requestContextStorage.snapshot();
       const defaultScope = this.requestContextStorage.scope();
+      // Deferred hooks can reject the first report; retain both candidates in that case.
+      const identityScope = config.beforeSend === undefined && defaultScope !== undefined ? JSON.stringify(defaultScope) : undefined;
+      if (!this.exceptionIdentity.admit(error, identityScope, automatic)) return;
       const event = createNodeExceptionEvent({ error, context, config, request: this.requestContextStorage.getStore()?.request,
         fields: this.contextFields, probeBuffers: this.probeBuffers, evidence: this.evidence, fatal,
         ...(defaultScope === undefined ? {} : { defaultScope }),
         ...(execution === undefined ? {} : { execution }) });
+      if (loggerContext !== undefined) event.context = { ...event.context, ...nativeLoggerContext(loggerContext) };
 
-      this.enqueueEvent(event, fatal);
+      if (this.enqueueEvent(event, fatal)) this.exceptionIdentity.remember(error, identityScope, automatic);
     } catch (caught) {
       this.emitDiagnostic("capture_exception_failed", "sdk-node failed to capture exception", {
         error: ensureObject(caught)
