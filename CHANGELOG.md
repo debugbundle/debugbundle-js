@@ -5,6 +5,8 @@ capture interfaces and legacy event formats remain compatible. Clean installed
 Node/Browser consumers qualify the exact shared archives; no advisory exception
 is required for the migrated SDK dependency graph.
 
+## [Unreleased]
+
 ## [3.2.1] - 2026-11-06
 
 - Snapshot native logger context through bounded data slots without invoking application getters, proxy traps or serializers; preserve the primary exception when metadata is unavailable.
