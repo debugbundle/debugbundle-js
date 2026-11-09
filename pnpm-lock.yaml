@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.0
-        version: 2.7.0
+        specifier: 2.7.1
+        version: 2.7.1
       '@debugbundle/shared-types':
         specifier: 3.0.0
         version: 3.0.0
@@ -54,8 +54,8 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.0
-        version: 2.7.0
+        specifier: 2.7.1
+        version: 2.7.1
       '@debugbundle/shared-types':
         specifier: 3.0.0
         version: 3.0.0
@@ -63,8 +63,8 @@ importers:
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.0
-        version: 2.7.0
+        specifier: 2.7.1
+        version: 2.7.1
       '@debugbundle/shared-types':
         specifier: 3.0.0
         version: 3.0.0
@@ -106,8 +106,8 @@ packages:
   '@dabh/diagnostics@2.0.9':
     resolution: {integrity: sha512-R6siwR65Hm+3yfgP7o8DKhNvputQAwfoz9zTc3kyDudnomj2/BcLmD+uGQQPICjuFUp8ounPBU+jmKsocwVVAg==}
 
-  '@debugbundle/redaction@2.7.0':
-    resolution: {integrity: sha512-9oJ1cXZl5qBs746KYRqgZV+ggLw8O8UONkPVK2A+8Z/TtRljqhw5GuhVLuCnml2TIU3vemuuSAiHVrcUmXRorg==}
+  '@debugbundle/redaction@2.7.1':
+    resolution: {integrity: sha512-i9c3lHQyxvgW99wp8xg3Spo+/dBLVe8ibXjfK36NniHkNCDuVzospfATFecIHokeAawmlYNnmWKSbbwy6i58lQ==}
 
   '@debugbundle/shared-types@3.0.0':
     resolution: {integrity: sha512-aXm3r0V5/huk62jW9jQdcifDwGCsawidlJkYojIf4IoT/9ZBPwR0XLyvQa/Wlt23AmLbK8xxlbJmia2l/Yx7gQ==}
@@ -1230,7 +1230,7 @@ snapshots:
       enabled: 2.0.0
       kuler: 2.0.0
 
-  '@debugbundle/redaction@2.7.0': {}
+  '@debugbundle/redaction@2.7.1': {}
 
   '@debugbundle/shared-types@3.0.0':
     dependencies:

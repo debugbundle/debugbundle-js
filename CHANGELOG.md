@@ -7,6 +7,11 @@ is required for the migrated SDK dependency graph.
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-11-09
+
+- Redact standalone organisation invitation and ownership-transfer credentials from free text before retention or transport, using the shared 27-case privacy corpus. Preserve capture APIs, event schemas and supported platform floors.
+- Existing installations adopt this protection when explicitly upgraded.
+
 ## [3.2.1] - 2026-11-06
 
 - Snapshot native logger context through bounded data slots without invoking application getters, proxy traps or serializers; preserve the primary exception when metadata is unavailable.

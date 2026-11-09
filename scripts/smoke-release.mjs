@@ -191,7 +191,7 @@ const ingestionServer = createHttpServer(async (request, response) => {
   }
 
   const rawBody = Buffer.concat(chunks).toString("utf8");
-  assert.doesNotMatch(rawBody, /PACKED_(?:SOURCE|HOOK)_SECRET/);
+  assert.doesNotMatch(rawBody, /PACKED_(?:SOURCE|HOOK)_SECRET|dbundle_(?:org_(?:invite|transfer)|invite)_0123456789abcdefghijklmnopqrstuv/);
   const parsedBody = JSON.parse(rawBody);
   assert.equal(request.headers.authorization, \`Bearer \${serverProjectToken}\`);
   assert.ok(Array.isArray(parsedBody.events));
@@ -286,7 +286,7 @@ nodeSdk.init({
   environment: "smoke-test",
   endpoint: \`\${ingestionOrigin}/v1/events\`,
   beforeSend(event) {
-    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET/);
+    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET|dbundle_(?:org_(?:invite|transfer)|invite)_0123456789abcdefghijklmnopqrstuv/);
     event.context = { marker: "safe-hook-marker", password: "PACKED_HOOK_SECRET" };
     return event;
   }
@@ -298,7 +298,7 @@ app.use(nodeSdk.express());
 
 app.get("/smoke-node", (_request, response) => {
   nodeSdk.captureMessage("node smoke message", "error", {
-    source: "smoke-route", password: "PACKED_SOURCE_SECRET"
+    source: "smoke-route", password: "PACKED_SOURCE_SECRET", note: "dbundle_invite_0123456789abcdefghijklmnopqrstuv dbundle_org_invite_0123456789abcdefghijklmnopqrstuv dbundle_org_transfer_0123456789abcdefghijklmnopqrstuv"
   });
   response.status(200).json({ ok: true });
 });
@@ -419,12 +419,13 @@ browserSdk.init({
   captureConsole: false,
   flushInterval: 60_000,
   beforeSend(event) {
-    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET/);
+    assert.doesNotMatch(JSON.stringify(event), /PACKED_SOURCE_SECRET|dbundle_(?:org_(?:invite|transfer)|invite)_0123456789abcdefghijklmnopqrstuv/);
     event.context = { marker: "safe-hook-marker", password: "PACKED_HOOK_SECRET" };
     return event;
   }
 });
 browserSdk.setContext("password", "PACKED_SOURCE_SECRET");
+browserSdk.setContext("note", "dbundle_invite_0123456789abcdefghijklmnopqrstuv dbundle_org_invite_0123456789abcdefghijklmnopqrstuv dbundle_org_transfer_0123456789abcdefghijklmnopqrstuv");
 browserSdk.captureException(new Error("browser smoke exception"));
 const browserErrorHandler = windowListeners.get("error");
 assert.equal(typeof browserErrorHandler, "function");
