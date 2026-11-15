@@ -241,7 +241,7 @@ Persistent context is sanitized as a complete snapshot, with at most 50 keys and
 
 Apache-2.0.
 
-### Hook size limits (unreleased correction)
+### Hook size limits
 
 A hook replacement whose optional exception evidence exceeds the combined 32 KiB
 UTF-8 JSON budget keeps its replacement message and other primary fields. The SDK

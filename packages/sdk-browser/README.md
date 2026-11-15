@@ -451,7 +451,7 @@ state expires within 24 hours; rollups follow project aggregate retention. Bound
 cleanup continues while progress remains. Project deletion cascades. No global visitor
 identity, account identifiers, emails, raw URLs or form content is stored by this feature.
 
-### Hook size limits (unreleased correction)
+### Hook size limits
 
 A hook replacement whose optional exception evidence exceeds the combined 32 KiB
 UTF-8 JSON budget keeps its replacement message and other primary fields. The SDK
