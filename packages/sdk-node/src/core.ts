@@ -1,3 +1,4 @@
+import { inInternalDiagnostic } from "./internal-diagnostics.js";
 import { captureNodeProbe } from "./probe-capture.js";
 import { fetchNodeRemoteConfig, evidenceDiscoveryEndpoint } from "./remote-config-client.js";
 import { allowsNodeRecovery, reconcileNodeDiagnostic, finalizeNodeEvidenceBatch, observeNodeEvidenceResponse, downgradeRejectedNodeErrors } from "./evidence-delivery.js";
@@ -77,7 +78,6 @@ import {
 import {
   boundedRetryAfterMs, requiresIngestionAcknowledgement,
   detectRuntimeContext,
-  ensureObject,
   normalizeFiniteNumber,
   normalizeSampleRate,
   redactObject,
@@ -328,6 +328,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private captureExceptionInternal(error: unknown, context: CaptureExceptionContext, fatal: boolean, automatic = fatal, loggerContext?: CaptureLogContext): void {
+    if (inInternalDiagnostic()) return;
     const config = this.config;
     if (config === null || !this.boundedBuffer.canAdmit("backend_exception", undefined,
       config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes)
@@ -350,7 +351,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       if (this.enqueueEvent(event, fatal)) this.exceptionIdentity.remember(error, identityScope, automatic);
     } catch (caught) {
       this.emitDiagnostic("capture_exception_failed", "sdk-node failed to capture exception", {
-        error: ensureObject(caught)
+        error: caught
       });
     }
   }
@@ -360,6 +361,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   public captureRecovery(observation: CaptureRecoveryInput): void {
+    if (inInternalDiagnostic()) return;
     const config = this.config;
     if (config === null || !allowsNodeRecovery(config, this.remoteProbeConfig, this.evidence) ||
       !this.boundedBuffer.canAdmit("diagnostic_context", undefined, config.maxBufferedEvents - this.inFlightCount,
@@ -378,6 +380,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   public captureLog(message: string, level: LogLevel, context: CaptureLogContext = {}): void {
+    if (inInternalDiagnostic()) return;
     const config = this.config;
     if (config === null) {
       return;
@@ -412,12 +415,13 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       this.enqueueEvent(event);
     } catch (caught) {
       this.emitDiagnostic("capture_log_failed", "sdk-node failed to capture log", {
-        error: ensureObject(caught)
+        error: caught
       });
     }
   }
 
   public captureRequest(request: CaptureRequestInput, response: CaptureResponseInput, context: CaptureRequestContext = {}): void {
+    if (inInternalDiagnostic()) return;
     const config = this.config;
     if (config === null) return;
 
@@ -439,7 +443,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       this.enqueueEvent(event);
     } catch (caught) {
       this.emitDiagnostic("capture_request_failed", "sdk-node failed to capture request", {
-        error: ensureObject(caught)
+        error: caught
       });
     }
   }
@@ -492,6 +496,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   public probe(label: string, data: unknown, options: ProbeOptions = {}): void {
+    if (inInternalDiagnostic()) return;
     const config = this.config;
     if (config === null || label.trim().length === 0) {
       return;
@@ -505,7 +510,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     } catch (caught) {
       this.emitDiagnostic("probe_failed", "sdk-node failed to capture probe", {
         label,
-        error: ensureObject(caught)
+        error: caught
       });
     }
   }
@@ -516,6 +521,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   private registerShutdownFlush(): void { this.lifecycle.registerShutdownFlush(); }
 
   public async flush(): Promise<void> {
+    if (inInternalDiagnostic()) return;
     if (this.config === null) {
       return;
     }
@@ -690,7 +696,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         restoreBatch(batch);
         this._consecutiveFailures++;
         this.emitDiagnostic("flush_failed", "sdk-node failed to flush buffered events", {
-          error: ensureObject(caught)
+          error: caught
         });
         return;
       } finally {
@@ -813,7 +819,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     } catch (caught) {
       if (this.generation !== generation) return;
       this.emitDiagnostic("remote_probe_config_failed", "sdk-node failed to refresh remote probe config", {
-        error: ensureObject(caught)
+        error: caught
       });
       this.applyMinimalPolicyFallbackIfNeeded();
       this.scheduleRemoteProbePoll(config.probesPollInterval);

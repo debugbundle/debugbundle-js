@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
+import { createEventEnvelope, EventEnvelopeSchema, type EventEnvelope } from "@debugbundle/shared-types";
+import budgetFixture from "../../fixtures/before-send-budget.json" with { type: "json" };
 
 import {
   applyBrowserBeforeSend,
@@ -38,6 +39,23 @@ function createLogEvent(): EventEnvelope {
 }
 
 describe("beforeSend direct safety", () => {
+  it.each(budgetFixture.cases.flatMap(fixture => ["node", "browser"].map(runtime => ({ runtime, ...fixture }))))("$runtime $id preserves hook policy at the byte boundary", ({ runtime, event, outcome, id }) => {
+    const replacement = structuredClone(event) as EventEnvelope;
+    const original = budgetFixture.original as EventEnvelope;
+    const result = runtime === "node"
+      ? applyNodeBeforeSend(original, () => replacement, vi.fn())
+      : applyBrowserBeforeSend(original, () => replacement);
+    expect((result?.payload as Record<string, unknown>)["message"]).toBe(outcome === "fallback" ? "owner removed" : "owner replacement");
+    expect(EventEnvelopeSchema.safeParse(result).success).toBe(true);
+    if (outcome !== "fallback") {
+      expect(Object.hasOwn(result!.payload, "exception_evidence")).toBe(outcome === "keep");
+      expect(result?.context?.["owner_field"]).toBe("preserved");
+      if (id.endsWith("-legacy")) expect(result?.context).toHaveProperty("evidence_reference");
+      if (id.endsWith("-typed") && outcome === "reduce") expect(result?.context).not.toHaveProperty("evidence_reference");
+    }
+    expect(replacement.payload).toHaveProperty("exception_evidence");
+  });
+
   it("keeps browser events for absent, undefined, invalid, and throwing hooks", () => {
     const event = createLogEvent();
     const undefinedHook = (() => undefined) as unknown as BrowserBeforeSendHook;

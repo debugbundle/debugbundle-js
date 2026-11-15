@@ -1,6 +1,7 @@
 import type { CaptureLogContext, LogLevel, LoggerAttachmentResult, LoggerCaptureApi } from "./types.js";
 import { sanitizeUnknown } from "./utils.js";
 import { nativeLoggedError } from "./logger-error.js";
+import { inInternalDiagnostic } from "./internal-diagnostics.js";
 
 type Logger = Record<PropertyKey, unknown>;
 type NativeMethod = (this: Logger, ...args: unknown[]) => unknown;
@@ -74,7 +75,7 @@ export function attachNativeLogger(logger: Logger, captureApi: LoggerCaptureApi)
     // Invoke the native emission path exactly once. Application logger errors
     // and return values belong to the application, not to SDK failure handling.
     const result: unknown = Reflect.apply(original, this, args);
-    if (!active || capturing) return result;
+    if (!active || capturing || inInternalDiagnostic()) return result;
     capturing = true;
     try {
       let message: unknown;

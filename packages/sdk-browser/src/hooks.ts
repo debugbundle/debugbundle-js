@@ -1,3 +1,4 @@
+import { inBrowserDiagnostic } from "./internal-diagnostics.js";
 import {
   captureCallerTrace,
   createBrowserTraceId,
@@ -264,9 +265,11 @@ export function installConsoleHook(
   let originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
 
   if (typeof consoleSource.error === "function") {
+    // Preserve returned Promises so the diagnostic owner can contain rejection.
     originalConsoleError = consoleSource.error.bind(consoleSource);
     consoleSource.error = (...args: unknown[]): void => {
-      originalConsoleError?.(...args);
+      const result = originalConsoleError?.(...args);
+      if (inBrowserDiagnostic()) return result;
       addBreadcrumb({
         ts: new Date().toISOString(),
         breadcrumb_type: "console_log",
@@ -275,13 +278,15 @@ export function installConsoleHook(
           message: stringifyConsoleArgs(args)
         }
       });
+      return result;
     };
   }
 
   if (typeof consoleSource.warn === "function") {
     originalConsoleWarn = consoleSource.warn.bind(consoleSource);
     consoleSource.warn = (...args: unknown[]): void => {
-      originalConsoleWarn?.(...args);
+      const result = originalConsoleWarn?.(...args);
+      if (inBrowserDiagnostic()) return result;
       addBreadcrumb({
         ts: new Date().toISOString(),
         breadcrumb_type: "console_log",
@@ -290,6 +295,7 @@ export function installConsoleHook(
           message: stringifyConsoleArgs(args)
         }
       });
+      return result;
     };
   }
 

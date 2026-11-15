@@ -295,12 +295,12 @@ export function ensureObject(value: unknown): JsonObject {
   };
 }
 
-export function sanitizeMetadataObject(metadata: Record<string, unknown> | undefined): JsonObject | undefined {
+export function sanitizeMetadataObject(metadata: Record<string, unknown> | undefined, additionalKeys: string[] = []): JsonObject | undefined {
   if (metadata === undefined) {
     return undefined;
   }
 
-  const sanitized = sanitizeTelemetry(sanitizeUnknown(metadata));
+  const sanitized = sanitizeTelemetry(sanitizeUnknown(metadata), { additionalKeys });
   if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
       typeof sanitized.value !== "object") {
     return undefined;

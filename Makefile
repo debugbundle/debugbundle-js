@@ -24,3 +24,9 @@ release-prepare-check:
 
 release-packed-check:
 	$(NODE_RUN) '$(COREPACK_SETUP) && corepack prepare pnpm@11.3.0 --activate && pnpm smoke:packed'
+
+# Retain the exact qualified archives for dependent distribution checks.
+.PHONY: release-packed-export
+release-packed-export:
+	mkdir -p .tmp/packaged-artifacts
+	docker run --rm -v "$(CURDIR):/workspace" --tmpfs /workspace/.tmp -v "$(CURDIR)/.tmp/packaged-artifacts:/artifacts" -w /workspace $(NODE_IMAGE) sh -lc '$(COREPACK_SETUP) && corepack pnpm smoke:packed && cp .tmp/npm-packages/*.tgz /artifacts/'

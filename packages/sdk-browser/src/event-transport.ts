@@ -1,3 +1,4 @@
+import { diagnosticCode, inBrowserDiagnostic } from "./internal-diagnostics.js";
 import { type BrowserTransportLaneName, type BrowserTransportLane, createLane, MAX_DEBUG_QUEUED_EVENTS, MAX_ANALYTICS_QUEUED_EVENTS, MAX_DEBUG_QUEUED_BYTES, MAX_ANALYTICS_QUEUED_BYTES, MAX_UNLOAD_BODY_BYTES, PRESSURE_REPORT_INTERVAL_MS, recordDebugPressure, recordDebugDrop, invalidateAdmission, hasEvictableEvent, capturePriority, eventBytes, retainSend, releaseSend, updateDetachedRetention, admitEvent, selectByteBoundedBatch, reconcileLeadingEvents } from "./transport-lane.js";
 export type { BrowserTransportLaneName } from "./transport-lane.js";
 import { getNavigatorSource } from "./runtime.js";
@@ -83,6 +84,7 @@ export class BrowserEventTransport {
   }
 
   public enqueueDebug(event: DebugBundleBrowserTransportEvent, needsPreparation = false): void {
+    if (inBrowserDiagnostic()) return;
     if (!needsPreparation) this.debug.prepared.add(event);
     this.enqueue("debug", event);
     if (needsPreparation) this.schedulePreparation(this.debug);
@@ -99,6 +101,7 @@ export class BrowserEventTransport {
   }
 
   public enqueueAnalytics(event: BrowserAnalyticsEventEnvelope): void {
+    if (inBrowserDiagnostic()) return;
     this.enqueue("analytics", event);
   }
 
@@ -578,7 +581,7 @@ export class BrowserEventTransport {
     }
     reconcileLeadingEvents(lane, events, retryableEvents, replacements, released);
     if (acknowledgement.terminalErrors.length > 0) {
-      const reasons = [...new Set(acknowledgement.terminalErrors.map((error) => error.reason))].join(",");
+      const reasons = [...new Set(acknowledgement.terminalErrors.slice(0, 5).map((error) => diagnosticCode(error.reason)))].join(",");
       this.callbacks.onAcknowledgementDiagnostic(laneName, "terminal_rejection", reasons);
     }
     if (acknowledgement.accepted > 0) {

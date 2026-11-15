@@ -450,3 +450,17 @@ Reports read aggregate counters, not raw events or individual journeys. Operatio
 state expires within 24 hours; rollups follow project aggregate retention. Bounded worker
 cleanup continues while progress remains. Project deletion cascades. No global visitor
 identity, account identifiers, emails, raw URLs or form content is stored by this feature.
+
+### Hook size limits (unreleased correction)
+
+A hook replacement whose optional exception evidence exceeds the combined 32 KiB
+UTF-8 JSON budget keeps its replacement message and other primary fields. The SDK
+omits the oversized optional evidence and its typed reference, recording
+`context.evidence_limits`. Ordinary custom context remains intact. A size limit
+must not restore text removed by the hook; an otherwise valid replacement that
+cannot fit later ownership or transport limits is withheld. Malformed returns and
+throwing hooks retain the established protected-original fallback.
+
+### Internal SDK diagnostics
+
+Existing authentication and acknowledgement warnings remain local console output. They are sanitised, capped at ten per 60-second window, and excluded from SDK breadcrumbs/capture during synchronous console output. Custom console return values are preserved so Promise rejection remains contained with console capture enabled. Asynchronous forwarding explicitly started by an application console implementation has no portable browser async-context guard. Response details use bounded protocol codes; at most five rejection reasons are included. Console failures and rejected native Promises cannot change ACK or retry decisions, and at most one pending console Promise is observed per client. No separate maintainer-reporting request is made.

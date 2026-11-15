@@ -240,3 +240,17 @@ Persistent context is sanitized as a complete snapshot, with at most 50 keys and
 ## License
 
 Apache-2.0.
+
+### Hook size limits (unreleased correction)
+
+A hook replacement whose optional exception evidence exceeds the combined 32 KiB
+UTF-8 JSON budget keeps its replacement message and other primary fields. The SDK
+omits the oversized optional evidence and its typed reference, recording
+`context.evidence_limits`. Ordinary custom context remains intact. A size limit
+must not restore text removed by the hook; an otherwise valid replacement that
+cannot fit later ownership or transport limits is withheld. Malformed returns and
+throwing hooks retain the established protected-original fallback.
+
+### Internal SDK diagnostics
+
+Internal diagnostics are optional and local through `onDiagnostic`; the SDK has no separate maintainer-reporting channel. Callback failures and rejected native Promises are contained, and diagnostic-context logs are excluded from SDK capture. Default and custom `redactFields` apply; metadata over 4 KiB UTF-8 JSON is omitted and output is capped at ten diagnostics per client configuration per 60-second window. Callbacks run synchronously and must return promptly; async return values are not awaited, and at most one unsettled diagnostic Promise is observed per client configuration. Normal application capture is independent of this output.

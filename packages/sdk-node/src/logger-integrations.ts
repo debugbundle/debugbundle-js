@@ -4,6 +4,7 @@ import type { CaptureLogContext, DebugBundleDiagnostic, LogLevel, LoggerAttachme
 import { sanitizeUnknown } from "./utils.js";
 import { attachNativeLogger } from "./logger-emission.js";
 import { nativeLoggedError } from "./logger-error.js";
+import { diagnosticError, inInternalDiagnostic } from "./internal-diagnostics.js";
 
 const LOGGER_LEVEL_MAP: Record<string, LogLevel> = {
   trace: "debug",
@@ -105,7 +106,7 @@ function patchMethod(
   const wrapped = (...args: unknown[]): unknown => {
     const result = Reflect.apply(original, record, args);
     try {
-      if (!active || record["silent"] === true) return result;
+      if (!active || inInternalDiagnostic() || record["silent"] === true) return result;
       const enabled = getFunction(record, "isLevelEnabled");
       if (enabled !== null && Reflect.apply(enabled, record, [methodName]) === false) return result;
       const error = args.slice(0, 3).map(nativeLoggedError).find(value => value !== undefined);
@@ -235,7 +236,7 @@ export function attachLoggerIntegration(input: {
       code: "logger_attach_failed",
       message: "sdk-node failed to attach a logger integration",
       metadata: {
-        error: sanitizeUnknown(error)
+        error: sanitizeUnknown(diagnosticError(error))
       }
     }); } catch { /* Diagnostic callbacks must not break application logging. */ }
   }

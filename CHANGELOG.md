@@ -7,6 +7,19 @@ is required for the migrated SDK dependency graph.
 
 ## [Unreleased]
 
+## [3.2.4] - 2026-11-15
+
+- Preserve custom console return values through Node/Browser capture wrappers so diagnostic Promise rejection and stalled-work bounds still apply with console capture enabled.
+
+- Contain Browser local diagnostic console failures and recapture, sanitise bounded response/endpoint detail, and bound warning deduplication and pending Promise observation while preserving existing local warnings and ACK decisions.
+
+- Contain Node diagnostic callback rejection/recapture and hostile error formatting; honour custom privacy fields and bound diagnostic metadata/emission without changing capture or hook semantics.
+
+- Extend Node/Browser hook regressions to reject malformed oversized evidence and cover mixed evidence fields.
+
+- Preserve application `beforeSend` redaction when optional exception evidence exceeds the combined 32 KiB UTF-8 JSON limit. Reduce optional evidence before invalid-return fallback, retain the replacement primary and ordinary custom context, and remove a related typed reference. Exact-boundary and malformed-return regressions cover the unchanged receiving contract.
+
+
 ## [3.2.3] - 2026-11-15
 
 - Align installation, initialization, integrations, first-event verification and configuration documentation with the shared SDK pattern. Keep credentials, delivery modes and runtime lifecycle requirements explicit.

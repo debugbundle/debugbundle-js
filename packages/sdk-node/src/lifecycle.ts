@@ -1,5 +1,6 @@
 import { formatNodeConsoleMessage } from "./event-support.js";
 import type { LogLevel } from "./types.js";
+import { inInternalDiagnostic } from "./internal-diagnostics.js";
 
 /** Own only the listeners installed by this instance; dispose is idempotent. */
 export class NodeLifecycleHooks {
@@ -23,8 +24,9 @@ export class NodeLifecycleHooks {
   captureConsole(): void {
     if (this.error !== null || this.warn !== null) return;
     this.error = console.error; this.warn = console.warn;
-    console.error = (...args: unknown[]) => { this.error?.(...args); this.api.log(formatNodeConsoleMessage(args), "error"); };
-    console.warn = (...args: unknown[]) => { this.warn?.(...args); this.api.log(formatNodeConsoleMessage(args), "warning"); };
+    // Custom console sinks can return a Promise to the diagnostic callback.
+    console.error = (...args: unknown[]) => { const result = this.error?.(...args); try { if (!inInternalDiagnostic()) this.api.log(formatNodeConsoleMessage(args), "error"); } catch { /* Preserve native console output. */ } return result; };
+    console.warn = (...args: unknown[]) => { const result = this.warn?.(...args); try { if (!inInternalDiagnostic()) this.api.log(formatNodeConsoleMessage(args), "warning"); } catch { /* Preserve native console output. */ } return result; };
   }
   registerShutdownFlush(): void {
     if (this.signal !== null) return;

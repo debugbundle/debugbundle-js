@@ -20,7 +20,7 @@ import {
   type RemoteProbeConfigSnapshot,
   type RemoteProbeDirective
 } from "./types.js";
-import { buildSdkConfigEndpoint, extractHeaderValue, redactObject, sanitizeMetadataObject, sanitizeUnknown } from "./utils.js";
+import { buildSdkConfigEndpoint, extractHeaderValue, redactObject, sanitizeUnknown } from "./utils.js";
 
 export function normalizeLogLevel(level: string | undefined): LogLevel {
   if (level === undefined) return DEFAULT_LOG_LEVEL;
@@ -317,14 +317,7 @@ export function shouldCaptureNodeLog(config: ActiveConfig, policy: RemoteProbeCo
   return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[threshold];
 }
 
-export function emitNodeDiagnostic(config: ActiveConfig | null, code: string, message: string, metadata?: Record<string, unknown>): void {
-  try {
-    const safeMetadata = sanitizeMetadataObject(metadata);
-    config?.onDiagnostic?.({ code, message, ...(safeMetadata === undefined ? {} : { metadata: safeMetadata }) });
-  } catch {
-    // Diagnostics must never destabilize the host.
-  }
-}
+export { emitNodeDiagnostic } from "./internal-diagnostics.js";
 
 export function formatNodeConsoleMessage(args: unknown[]): string {
   return args

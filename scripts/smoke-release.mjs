@@ -279,6 +279,26 @@ const ingestionAddress = ingestionServer.address();
 assert(ingestionAddress !== null && typeof ingestionAddress === "object");
 const ingestionOrigin = \`http://127.0.0.1:\${ingestionAddress.port}\`;
 
+// Qualify diagnostic containment through the installed package exports.
+const diagnosticEvents = [];
+let diagnosticCalls = 0;
+const diagnosticSdk = createDebugBundleSdk();
+const originalDiagnosticConsole = console.error;
+console.error = async () => { throw new Error("synthetic console rejection"); };
+diagnosticSdk.init({ projectToken: serverProjectToken, service: "diagnostic-smoke", environment: "production",
+  captureConsole: true,
+  transport: async request => { diagnosticEvents.push(...request.events); return { status: 202 }; },
+  beforeSend() { throw new Error("synthetic hook failure"); },
+  onDiagnostic() { diagnosticCalls++; diagnosticSdk.captureLog("internal diagnostic", "error"); return console.error("local diagnostic"); }
+});
+diagnosticSdk.captureLog("installed application error", "error");
+await diagnosticSdk.flush();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(diagnosticCalls, 1);
+assert.deepEqual(diagnosticEvents.map(event => event.payload.message), ["installed application error"]);
+diagnosticSdk.dispose();
+console.error = originalDiagnosticConsole;
+
 const nodeSdk = createDebugBundleSdk();
 nodeSdk.init({
   projectToken: serverProjectToken,
@@ -474,6 +494,24 @@ directBrowserSdk.dispose();
 
 defineGlobal("fetch", nativeFetch);
 nodeSdk.dispose();
+
+// A wrapped asynchronous console must keep its rejection visible to the owner.
+const originalDiagnosticWarn = console.warn;
+let browserDiagnosticCalls = 0;
+console.warn = async () => { browserDiagnosticCalls++; throw new Error("synthetic warning rejection"); };
+const browserDiagnosticSdk = createDebugBundleBrowserSdk();
+browserDiagnosticSdk.init({ endpoint: "/debugbundle/browser", service: "diagnostic-smoke", environment: "smoke-test",
+  captureConsole: true, captureNetwork: false, captureClicks: false, captureRouteChanges: false,
+  transport: async request => ({ status: 202, body: { accepted: 0, rejected: request.events.length,
+    errors: request.events.map((_, index) => ({ index, reason: "invalid_event" })) } })
+});
+browserDiagnosticSdk.captureMessage("installed diagnostic control", "error");
+await browserDiagnosticSdk.flush();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(browserDiagnosticCalls, 1);
+assert.equal(browserDiagnosticSdk.status, "disconnected");
+browserDiagnosticSdk.dispose();
+console.warn = originalDiagnosticWarn;
 
 assert.equal(relayRequests.length, 1);
 const relayRequest = relayRequests[0];

@@ -1,3 +1,4 @@
+import { BrowserInternalDiagnostics, inBrowserDiagnostic } from "./internal-diagnostics.js";
 import { sanitizeTelemetry } from "@debugbundle/redaction";
 import { createEventEnvelope, type EventEnvelope } from "@debugbundle/shared-types";
 import { BrowserEvidenceController } from "./evidence-controller.js";
@@ -16,7 +17,7 @@ import { collectDeviceInfo, installConsoleHook, installNetworkHook } from "./hoo
 import { captureNativeError, captureNativeRejection } from "./native-error-hooks.js";
 import { countFormFields, readNativeField, readStructuralTarget } from "./native-fields.js";
 import { createBrowserSuppressionEvent, EventSuppressionTracker } from "./suppression.js";
-import { BrowserEventTransport, type BrowserTransportLaneName } from "./event-transport.js";
+import { BrowserEventTransport } from "./event-transport.js";
 import { BrowserProbeController } from "./probes.js";
 import { protectBrowserEvent } from "./privacy.js";
 import {
@@ -101,7 +102,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   private originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
   private sessionSampledIn = true;
   private sessionEventCount = 0;
-  private reportedAcknowledgementDiagnostics = new Set<string>();
+  private readonly internalDiagnostics = new BrowserInternalDiagnostics();
   private readonly pendingEventOptions = new WeakMap<EventEnvelope, { applyRules: boolean; countTowardSession: boolean; capturedAt: number }>();
   private readonly suppressionTracker = new EventSuppressionTracker();
   private readonly probeController = new BrowserProbeController({
@@ -120,10 +121,10 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     finalizeDebugEvent: (event) => event.event_type === "analytics_event" ? event : this.evidence.reconcile(event, event, this.config, this.remoteProbeState),
     onDebugEventReleased: (event) => { if (event.event_type !== "analytics_event") this.evidence.release(event); },
     onUnauthorized: (lane, statusCode, endpoint, body) => {
-      this.reportUnauthorizedTransportFailure(lane, statusCode, endpoint, body);
+      this.internalDiagnostics.unauthorized(lane, statusCode, endpoint, body, this.config?.redactFields ?? []);
     },
     onAcknowledgementDiagnostic: (lane, code, detail) => {
-      this.reportAcknowledgementDiagnostic(lane, code, detail);
+      this.internalDiagnostics.acknowledgement(lane, code, detail, this.config?.redactFields ?? []);
     }
   });
   private readonly analyticsController = new BrowserAnalyticsController({
@@ -233,6 +234,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   public captureException(error: unknown, context: CaptureBrowserExceptionContext = {}): void {
+    if (inBrowserDiagnostic()) return;
     const config = this.config;
     if (config === null || !this.eventTransport.canCaptureDebug("frontend_exception")) {
       return;
@@ -259,6 +261,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   public captureRecovery(input: CaptureBrowserRecoveryInput): void {
+    if (inBrowserDiagnostic()) return;
     const config = this.config;
     if (config === null || !this.shouldCaptureNonExceptionEvent() || !this.eventTransport.canCaptureDebug("diagnostic_context")) return;
     try {
@@ -268,6 +271,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   public captureLog(message: string, level: BrowserLogLevel, context: Record<string, unknown> = {}): void {
+    if (inBrowserDiagnostic()) return;
     const config = this.config;
     if (config === null || !this.shouldCaptureNonExceptionEvent()) {
       return;
@@ -317,6 +321,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   public captureRequest(request: unknown, response?: unknown, context?: Record<string, unknown>): void {
+    if (inBrowserDiagnostic()) return;
     void request;
     void response;
     void context;
@@ -342,10 +347,12 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   public probe(label: string, data: unknown): void {
+    if (inBrowserDiagnostic()) return;
     this.probeController.capture(label, data);
   }
 
   public async flush(): Promise<void> {
+    if (inBrowserDiagnostic()) return;
     await this.analyticsInitialization;
     this.enqueueSuppressionAggregates();
     await this.eventTransport.flush();
@@ -362,7 +369,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     this.config = null;
     this.sessionSampledIn = true;
     this.sessionEventCount = 0;
-    this.reportedAcknowledgementDiagnostics.clear();
+    this.internalDiagnostics.reset();
     this.suppressionTracker.reset();
     this.probeController.reset();
     this.analyticsController.reset();
@@ -402,52 +409,6 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
       (globalThis as Record<string, unknown>)["XMLHttpRequest"] = this.originalXmlHttpRequest;
       this.originalXmlHttpRequest = null;
     }
-  }
-
-  private reportUnauthorizedTransportFailure(
-    lane: BrowserTransportLaneName,
-    statusCode: 401 | 403,
-    endpoint: string,
-    body: unknown
-  ): void {
-    const consoleSource = getConsoleSource();
-    if (consoleSource === null) {
-      return;
-    }
-
-    const bodyRecord = normalizeUnknownRecord(body);
-    const errorCode = typeof bodyRecord["error"] === "string" && bodyRecord["error"].length > 0 ? bodyRecord["error"] : null;
-    const detail = errorCode === null ? "" : ` (${errorCode})`;
-    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
-    const message =
-      `DebugBundle ${laneLabel} disabled after ingestion returned ${statusCode} for ${endpoint}. ` +
-      `Check the project token or relay configuration${detail}.`;
-
-    if (typeof consoleSource.error === "function") {
-      consoleSource.error(message);
-      return;
-    }
-
-    consoleSource.warn?.(message);
-  }
-
-  private reportAcknowledgementDiagnostic(
-    lane: BrowserTransportLaneName,
-    code: "invalid" | "terminal_rejection",
-    detail: string
-  ): void {
-    const key = `${lane}:${code}:${detail}`;
-    if (this.reportedAcknowledgementDiagnostics.has(key)) {
-      return;
-    }
-    this.reportedAcknowledgementDiagnostics.add(key);
-    const consoleSource = getConsoleSource();
-    const laneLabel = lane === "debug" ? "browser SDK" : "browser analytics";
-    consoleSource?.warn?.(
-      code === "invalid"
-        ? `DebugBundle ${laneLabel} retained events after an invalid ingestion acknowledgement (${detail}).`
-        : `DebugBundle ${laneLabel} removed terminally rejected events (${detail}).`
-    );
   }
 
   private installBrowserHooks(): void {
@@ -589,6 +550,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   }
 
   private addBreadcrumb(breadcrumb: BrowserBreadcrumb): void {
+    if (inBrowserDiagnostic()) return;
     const config = this.config;
     if (config === null || this.eventTransport.debugRejected || !this.shouldCaptureBreadcrumb()) {
       return;
