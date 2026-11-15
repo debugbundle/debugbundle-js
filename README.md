@@ -9,11 +9,20 @@ JavaScript SDK repository for DebugBundle.
 
 This repository publishes the DebugBundle JavaScript SDK packages used to capture backend Node.js failures and browser-side incidents, breadcrumbs, device context, request summaries, and probe data.
 
-## Automatic capture and application filtering
+## Installation
 
-Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
+<a id="install"></a>
 
-## Packages
+Choose the package for each application runtime:
+
+```bash
+npm install @debugbundle/sdk-node
+npm install @debugbundle/sdk-browser
+```
+
+The Node.js SDK requires Node.js 22 or newer. Repository development is tested on Node.js 24 LTS and Node.js 26 current with pnpm 11.3.0.
+
+### Packages
 
 | Package | npm name | Purpose |
 | --- | --- | --- |
@@ -21,6 +30,105 @@ Node logger integrations capture records after native source filtering: Pino lev
 | `packages/sdk-browser` | `@debugbundle/sdk-browser` | Browser exception capture, breadcrumbs, network summaries, device context, trace headers, probes, and relay/direct transport |
 
 `@debugbundle/shared-types` and `@debugbundle/redaction` are published npm dependencies owned from the core `debugbundle/debugbundle` repository. They remain core-owned source and are consumed here as published npm dependencies.
+
+## Initialize
+
+<a id="quick-start"></a>
+
+### Node.js
+
+Initialize once at server startup with `DEBUGBUNDLE_PROJECT_TOKEN` set in the server environment. Initialization registers the process exception and rejection hooks; request middleware belongs in the framework setup below.
+
+```typescript
+import { debugbundle } from "@debugbundle/sdk-node";
+
+debugbundle.init({
+  projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
+  environment: "production",
+  service: "api"
+});
+```
+
+### Browser
+
+Initialize once in the browser entry point. Configure the matching backend relay route first; this relative URL does not create a server endpoint. Keep the backend project token on the server.
+
+```typescript
+import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
+
+const debugbundle = createDebugBundleBrowserSdk();
+debugbundle.init({
+  transportMode: "relay",
+  endpoint: "/debugbundle/browser",
+  environment: "production",
+  service: "web"
+});
+```
+
+## Integrations
+
+See the [Node.js package guide](packages/sdk-node/README.md#integrations) for framework and logging adapters and the [Browser package guide](packages/sdk-browser/README.md#integrations) for browser capture.
+
+### Automatic capture and application filtering
+
+Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
+
+### Browser Relay
+
+The Node.js SDK includes relay exports for backend routes that receive browser events and forward them with the server-side project token.
+
+| Runtime | Import |
+| --- | --- |
+| Generic Node.js | `@debugbundle/sdk-node/relay` |
+| Express | `@debugbundle/sdk-node/relay/express` |
+| Fastify | `@debugbundle/sdk-node/relay/fastify` |
+| Next.js API route | `@debugbundle/sdk-node/relay/nextjs` |
+
+See <https://debugbundle.com/docs/sdks/browser-relay>.
+
+Relay behavior summary:
+
+- Same-origin is the default when `allowedOrigins` is omitted.
+- Split frontend/backend hosts must set explicit allowed origins.
+- Relay requests must use `Content-Type: application/json`.
+- Relay bodies are capped at `256 KB`.
+- Relay requests are rate limited per client IP.
+- Browser-supplied `project_token`, `authorization`, `cookie`, and similar trust-sensitive fields are stripped before forwarding.
+- Local-only mode writes accepted browser batches into `.debugbundle/local/events/`.
+- Connected mode can durably spool accepted browser batches before forwarding to DebugBundle.
+- Relay forwarding uses the server-side project token only.
+- If relay handling is disabled or the backend lacks a usable project token, the host app keeps running and the SDK reports a degraded or disconnected status instead of pretending capture is healthy.
+
+## First-event verification
+
+After initialization, emit one explicit test exception in each application. Confirm the expected service and environment in received events or incidents; startup and a drained queue alone do not prove delivery. See each package guide for the application snippet.
+
+Use the package-level snippets for application code, then verify the repo-level publish path with the same clean-install smoke harness that CI and release use:
+
+```bash
+pnpm build
+pnpm smoke:packed
+```
+
+After publish, the release workflow runs the same application-level verification against the npm registry:
+
+```bash
+DEBUGBUNDLE_SMOKE_VERSION=1.5.0 pnpm smoke:registry
+```
+
+## Configuration
+
+<a id="configuration-source-precedence"></a>
+
+The package READMEs contain the full option tables. The short rule for this repo is:
+
+1. Explicit `init(...)` fields win.
+2. Runtime-derived defaults fill in omitted values such as environment or service fallback.
+3. capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
+
+`beforeSend` is optional in both JS SDKs for app-owned local filtering or final redaction before delivery. Mandatory sanitization protects admitted events before buffering without a hook. Version 3 invokes hooks after capture returns; valid replacements are sanitized again. Return the event to continue shipping it, or return `null` to drop it locally. Hooks run on the JavaScript event loop and must return promptly. Project capture rules remain the preferred operational noise-control surface because they are centralized and auditable.
+
+For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure `transportMode: "relay"`, a relay endpoint, plus service and environment names. Same-origin relay paths are inferred for compatibility; absolute backend relay URLs need explicit relay mode. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
 
 ## Dependency alignment
 
@@ -31,15 +139,6 @@ npm install @debugbundle/sdk-node@3.2.0 @debugbundle/sdk-browser@3.2.0
 ```
 
 If you pin `@debugbundle/shared-types` or `@debugbundle/redaction` directly for tooling or schema work, use shared-types 3.0.0 and redaction 2.7.0 with SDK 3.2.0. The release workflow blocks partial JS SDK releases and the clean-install smoke path verifies the packed and published artifacts together.
-
-## Install
-
-```bash
-npm install @debugbundle/sdk-node
-npm install @debugbundle/sdk-browser
-```
-
-The Node.js SDK requires Node.js 22 or newer. Repository development is tested on Node.js 24 LTS and Node.js 26 current with pnpm 11.3.0.
 
 ## Runtime support labels
 
@@ -62,52 +161,6 @@ The Node.js SDK requires Node.js 22 or newer. Repository development is tested o
 | Installed-base compatibility lane | Current evergreen browsers only; legacy frozen browsers are not compatibility targets |
 | Rolling CI lanes | Repository smoke coverage runs the browser package through the published install path and the Node relay surface; cross-browser docs live on the public site |
 | Out of scope | Internet Explorer, non-DOM runtimes, and legacy browser engines without `fetch` |
-
-## Configuration source precedence
-
-The package READMEs contain the full option tables. The short rule for this repo is:
-
-1. Explicit `init(...)` fields win.
-2. Runtime-derived defaults fill in omitted values such as environment or service fallback.
-3. capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local SDK config.
-
-`beforeSend` is optional in both JS SDKs for app-owned local filtering or final redaction before delivery. Mandatory sanitization protects admitted events before buffering without a hook. Version 3 invokes hooks after capture returns; valid replacements are sanitized again. Return the event to continue shipping it, or return `null` to drop it locally. Hooks run on the JavaScript event loop and must return promptly. Project capture rules remain the preferred operational noise-control surface because they are centralized and auditable.
-
-For Node.js, connected mode usually receives `projectToken` from process environment and explicit `service` / `environment` values from application startup config. For browser relay mode, the frontend should configure `transportMode: "relay"`, a relay endpoint, plus service and environment names. Same-origin relay paths are inferred for compatibility; absolute backend relay URLs need explicit relay mode. For direct-cloud browser mode, use a dedicated public write-only token with allowed-origin restrictions.
-
-## Quick Start
-
-### Node.js
-
-```ts
-import { debugbundle } from "@debugbundle/sdk-node";
-
-debugbundle.init({
-  projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
-  service: "api",
-  environment: "production"
-});
-
-debugbundle.captureExceptions();
-debugbundle.captureRejections();
-```
-
-### Browser
-
-```ts
-import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
-
-const debugbundle = createDebugBundleBrowserSdk();
-
-debugbundle.init({
-  transportMode: "relay",
-  endpoint: "/debugbundle/browser",
-  service: "web",
-  environment: "production"
-});
-```
-
-For full-stack apps, route browser events through a backend relay so the project token stays server-side.
 
 ## Install examples for claimed modes
 
@@ -177,32 +230,6 @@ debugbundle.init({
 });
 ```
 
-## Browser Relay
-
-The Node.js SDK includes relay exports for backend routes that receive browser events and forward them with the server-side project token.
-
-| Runtime | Import |
-| --- | --- |
-| Generic Node.js | `@debugbundle/sdk-node/relay` |
-| Express | `@debugbundle/sdk-node/relay/express` |
-| Fastify | `@debugbundle/sdk-node/relay/fastify` |
-| Next.js API route | `@debugbundle/sdk-node/relay/nextjs` |
-
-See <https://debugbundle.com/docs/sdks/browser-relay>.
-
-Relay behavior summary:
-
-- Same-origin is the default when `allowedOrigins` is omitted.
-- Split frontend/backend hosts must set explicit allowed origins.
-- Relay requests must use `Content-Type: application/json`.
-- Relay bodies are capped at `256 KB`.
-- Relay requests are rate limited per client IP.
-- Browser-supplied `project_token`, `authorization`, `cookie`, and similar trust-sensitive fields are stripped before forwarding.
-- Local-only mode writes accepted browser batches into `.debugbundle/local/events/`.
-- Connected mode can durably spool accepted browser batches before forwarding to DebugBundle.
-- Relay forwarding uses the server-side project token only.
-- If relay handling is disabled or the backend lacks a usable project token, the host app keeps running and the SDK reports a degraded or disconnected status instead of pretending capture is healthy.
-
 ## Service naming guidance
 
 Use distinct service names for each deployable surface that shares one DebugBundle project:
@@ -219,21 +246,6 @@ When a browser frontend sends through a relay, keep the browser service name bro
 - Node.js local-only mode can still write local event files without a remote token.
 - Browser relay mode does not require a browser-visible token. If the relay path is invalid or unavailable, the page keeps running and the SDK stays disabled or disconnected rather than throwing into application code.
 - Browser direct-cloud mode requires a dedicated public write-only token. Missing or rejected credentials fail closed and clear buffered events only after an explicit auth rejection from the endpoint.
-
-## First-event verification
-
-Use the package-level snippets for application code, then verify the repo-level publish path with the same clean-install smoke harness that CI and release use:
-
-```bash
-pnpm build
-pnpm smoke:packed
-```
-
-After publish, the release workflow runs the same application-level verification against the npm registry:
-
-```bash
-DEBUGBUNDLE_SMOKE_VERSION=1.5.0 pnpm smoke:registry
-```
 
 ## Safety Defaults
 

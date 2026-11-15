@@ -7,20 +7,6 @@ Browser SDK for DebugBundle.
 
 Use this package to capture frontend exceptions, breadcrumbs, first-party request failures, browser device context, trace headers, and probe data. The recommended transport is a browser relay served by your backend.
 
-## Runtime evidence (3.2.0)
-
-Version 3.2.0 adds normalized runtime frames, safe native causes where an engine Error brand check is available, responsive media `currentSrc`, passive resource timing/CSP observations and explicit recovery. Retained outer stack text stays available when native traversal is unsupported. Aggregate arrays are not traversed where array proxies cannot be safely rejected. No cause getter/custom formatter is invoked by additional inspection. Actual browser-engine qualification remains a release gate.
-
-`captureExceptionEvidence` and `captureResourceObservations` default to true behind complete-path capability proof; `captureRecoveryObservations` defaults to false. Minimal capture policy disables passive and standalone diagnostic capture. Existing config/ACK requests carry `debugbundle_evidence=1`; capture does not introduce a discovery request or polling. A manual `evidenceCapabilities` pin asserts every relay/receiver/reader in the path, including local processing. Later discovery can revoke it. Keep the Node relay and Browser distributions coordinated.
-
-To report recovery, enable its option, supply a fresh UUID v4 `failureRef` in the original `captureException(error, { failureRef })`, and call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })` with a fresh UUID v4 attempt ID. Page scope is automatic; explicit operation/page scopes are accepted. States are `attempt_started`, `attempt_completed`, `attempt_failed`, `recovery_observed`, and `failure_persisted`. HTTP completion and status 200 leave recovery unknown; the application must explicitly observe semantic recovery. Optional data is limited to a technical `operation`, `statusCode`, and `durationMs`.
-
-`createDebugBundleBrowserSdk()` returns `DebugBundleBrowserEvidenceSdk` with the recovery method available. The existing structural `DebugBundleBrowserSdk` interface keeps this new method optional so older custom implementations remain assignable; consumers of that base interface can check for the method before calling it.
-
-Passive observation retains sanitized DTOs only: at most 20 entries/32 KiB/30 seconds, with one coalesced late context per failure. It does not scan the historical performance buffer, resize/clear that buffer, change CSP, retain DOM nodes or issue diagnostic requests. Zero/unexposed resource status is unknown; CSP document status is separate. Report-only is not a block. Repeated URLs, redirects and redaction collisions remain ambiguous. The original error is sent immediately. Typed diagnostic tracking is independently capped at 50 failures, five attempts/20 observations per failure and 64 KiB including pending offline payloads and correlation metadata. Disposal disconnects observers/listeners and clears expiry/coalescing timers.
-
-These APIs are available in 3.2.0. Ordinary capture, analytics lanes, probe activation, policy, privacy, sampling and hook replacement behaviour remain authoritative.
-
 ## Installation
 
 ```bash
@@ -29,43 +15,35 @@ npm install @debugbundle/sdk-browser
 
 Keep `@debugbundle/sdk-browser` and `@debugbundle/sdk-node` on the same SDK release version. The core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` packages are independently versioned; use the compatible versions declared by the SDK rather than matching their version numbers.
 
-## Quick Start
+## Initialize
 
-```ts
+<a id="quick-start"></a>
+
+Initialize once in the browser entry point. Configure the matching backend relay route first; this relative URL does not create a server endpoint. Keep the backend project token on the server.
+
+```typescript
 import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
 
 const debugbundle = createDebugBundleBrowserSdk();
-
 debugbundle.init({
   transportMode: "relay",
   endpoint: "/debugbundle/browser",
-  service: "web",
-  environment: "production"
+  environment: "production",
+  service: "web"
 });
 ```
+
+## Integrations
+
+Browser-native capture works with React, Next.js client components, Vue, Angular, Svelte and vanilla applications. Use a backend browser relay for this setup.
+
+### Capture setup details
 
 The browser SDK starts capture only after `init()` is called. Importing the package has no side effects.
 
 Lifecycle delivery is best effort. Relay mode uses a credential-free beacon when possible; direct-cloud mode uses authenticated `fetch(keepalive)` because ingestion requires a bearer header. Each SDK instance shares a 60-KiB lifecycle budget across debug and analytics requests. Keepalive capacity is released when its request settles. An accepted beacon has no completion signal, so its bytes remain reserved for that instance; ordinary delivery remains available. Other page code can consume the browser's shared quota. Events that do not fit, or whose keepalive request fails, remain queued for ordinary delivery while the page stays active. Closing the page can still lose pending events.
 
-## Transport Modes
-
-| Mode | Configuration | Use when |
-| --- | --- | --- |
-| Relay | `transportMode: "relay"`, plus `/debugbundle/browser` or an absolute backend relay URL | Recommended for full-stack apps. Browser events go to your backend first. |
-| Direct cloud | `projectToken` plus the hosted endpoint | Frontend-only apps without a backend. Use a dedicated write-only token with allowed-origin restrictions. |
-
-For relay setup, see <https://debugbundle.com/docs/sdks/browser-relay>.
-
-### Configuration source precedence
-
-1. Explicit `init(...)` fields win.
-2. Omitted values fall back to package defaults such as `service: "browser-app"` and `environment: "development"`.
-3. Capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local browser config.
-
-Relay mode should configure only `transportMode`, the relay endpoint, and service/environment names. The same-origin relay path case, such as `/debugbundle/browser`, is inferred as relay for compatibility. Absolute backend relay URLs require `transportMode: "relay"` so the browser SDK stays credential-free and sends the relay batch shape. Direct-cloud mode requires a dedicated public write-only token and a real ingestion endpoint URL.
-
-## What It Captures
+### What It Captures
 
 - Frontend exceptions and unhandled promise rejections
 - Recent breadcrumbs from clicks, route changes, console warnings/errors, and first-party network requests
@@ -83,6 +61,38 @@ Global `unhandledrejection` captures include a bounded `rejection_reason` summar
 The Browser SDK exposes a synchronous-return `beforeSend` hook for app-owned final redaction or local suppression. Version 3 defers invocation until capture returns and privacy-safe bounded admission; application callbacks must return promptly on the JavaScript event loop. Use project capture rules first for known operational noise because they are centralized and auditable, and use `networkFilter` for network breadcrumb/request capture choices.
 
 Network wrapping is designed to preserve normal browser behavior. The SDK supports `fetch()` calls with `string`, `URL`, and `Request` inputs, and preserves caller headers provided as `Headers`, header tuple arrays, or records. When trace propagation is enabled for a request, the SDK adds `X-DebugBundle-Trace-Id` to the effective header set without dropping existing headers such as `Authorization`.
+
+## First-event verification
+
+Use an explicit setup event in a development or staging application, then confirm the matching service and environment in a received event or incident. Initialization, a healthy status and an empty queue are not delivery receipts. Keep the application running long enough for delivery; use bounded flushing only in tests or controlled teardown, never in a request handler.
+
+Minimal application check:
+
+```ts
+import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
+
+const debugbundle = createDebugBundleBrowserSdk();
+
+debugbundle.init({
+  transportMode: "relay",
+  endpoint: "/debugbundle/browser",
+  service: "checkout-web",
+  environment: "development"
+});
+
+debugbundle.captureException(new Error("debugbundle browser smoke"));
+await debugbundle.flush();
+console.log(debugbundle.status());
+```
+
+Repository-level verification runs the same clean-install smoke used by CI and release:
+
+```bash
+pnpm build
+pnpm smoke:packed
+```
+
+For connected delivery, confirm the event in DebugBundle and inspect its incident with the CLI. For a relay using backend local files, run `debugbundle process` and `debugbundle inspect <incident-id>` in the backend repository. A local file or mock endpoint receipt proves only that destination; it does not prove cloud acceptance.
 
 ## Configuration
 
@@ -176,6 +186,37 @@ debugbundle.init({
 
 If the hook throws or returns an invalid event, the SDK keeps the original event. Browser SDK failures are swallowed so host pages keep running.
 
+## Runtime evidence (3.2.0)
+
+Version 3.2.0 adds normalized runtime frames, safe native causes where an engine Error brand check is available, responsive media `currentSrc`, passive resource timing/CSP observations and explicit recovery. Retained outer stack text stays available when native traversal is unsupported. Aggregate arrays are not traversed where array proxies cannot be safely rejected. No cause getter/custom formatter is invoked by additional inspection. Actual browser-engine qualification remains a release gate.
+
+`captureExceptionEvidence` and `captureResourceObservations` default to true behind complete-path capability proof; `captureRecoveryObservations` defaults to false. Minimal capture policy disables passive and standalone diagnostic capture. Existing config/ACK requests carry `debugbundle_evidence=1`; capture does not introduce a discovery request or polling. A manual `evidenceCapabilities` pin asserts every relay/receiver/reader in the path, including local processing. Later discovery can revoke it. Keep the Node relay and Browser distributions coordinated.
+
+To report recovery, enable its option, supply a fresh UUID v4 `failureRef` in the original `captureException(error, { failureRef })`, and call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })` with a fresh UUID v4 attempt ID. Page scope is automatic; explicit operation/page scopes are accepted. States are `attempt_started`, `attempt_completed`, `attempt_failed`, `recovery_observed`, and `failure_persisted`. HTTP completion and status 200 leave recovery unknown; the application must explicitly observe semantic recovery. Optional data is limited to a technical `operation`, `statusCode`, and `durationMs`.
+
+`createDebugBundleBrowserSdk()` returns `DebugBundleBrowserEvidenceSdk` with the recovery method available. The existing structural `DebugBundleBrowserSdk` interface keeps this new method optional so older custom implementations remain assignable; consumers of that base interface can check for the method before calling it.
+
+Passive observation retains sanitized DTOs only: at most 20 entries/32 KiB/30 seconds, with one coalesced late context per failure. It does not scan the historical performance buffer, resize/clear that buffer, change CSP, retain DOM nodes or issue diagnostic requests. Zero/unexposed resource status is unknown; CSP document status is separate. Report-only is not a block. Repeated URLs, redirects and redaction collisions remain ambiguous. The original error is sent immediately. Typed diagnostic tracking is independently capped at 50 failures, five attempts/20 observations per failure and 64 KiB including pending offline payloads and correlation metadata. Disposal disconnects observers/listeners and clears expiry/coalescing timers.
+
+These APIs are available in 3.2.0. Ordinary capture, analytics lanes, probe activation, policy, privacy, sampling and hook replacement behaviour remain authoritative.
+
+## Transport Modes
+
+| Mode | Configuration | Use when |
+| --- | --- | --- |
+| Relay | `transportMode: "relay"`, plus `/debugbundle/browser` or an absolute backend relay URL | Recommended for full-stack apps. Browser events go to your backend first. |
+| Direct cloud | `projectToken` plus the hosted endpoint | Frontend-only apps without a backend. Use a dedicated write-only token with allowed-origin restrictions. |
+
+For relay setup, see <https://debugbundle.com/docs/sdks/browser-relay>.
+
+### Configuration source precedence
+
+1. Explicit `init(...)` fields win.
+2. Omitted values fall back to package defaults such as `service: "browser-app"` and `environment: "development"`.
+3. Capture-policy fields are server-owned and arrive from `GET /v1/sdk/config`; they are not accepted from local browser config.
+
+Relay mode should configure only `transportMode`, the relay endpoint, and service/environment names. The same-origin relay path case, such as `/debugbundle/browser`, is inferred as relay for compatibility. Absolute backend relay URLs require `transportMode: "relay"` so the browser SDK stays credential-free and sends the relay batch shape. Direct-cloud mode requires a dedicated public write-only token and a real ingestion endpoint URL.
+
 ## Service naming guidance
 
 Keep the browser service name distinct from backend deployables inside the same DebugBundle project. A common pattern is `checkout-web` for the browser frontend and `checkout-api` for the backend relay host.
@@ -209,34 +250,6 @@ Persistent context is sanitized as a complete snapshot, with at most 256 keys an
 - Invalid relay paths or missing direct-cloud credentials fail closed without crashing the host page.
 - `status()` exposes whether the SDK is healthy, degraded, or disconnected.
 - Auth-rejected direct-cloud responses stop pretending capture is healthy and clear buffered events only after the endpoint explicitly rejects the token.
-
-## First-event verification
-
-Minimal application check:
-
-```ts
-import { createDebugBundleBrowserSdk } from "@debugbundle/sdk-browser";
-
-const debugbundle = createDebugBundleBrowserSdk();
-
-debugbundle.init({
-  transportMode: "relay",
-  endpoint: "/debugbundle/browser",
-  service: "checkout-web",
-  environment: "development"
-});
-
-debugbundle.captureException(new Error("debugbundle browser smoke"));
-await debugbundle.flush();
-console.log(debugbundle.status());
-```
-
-Repository-level verification runs the same clean-install smoke used by CI and release:
-
-```bash
-pnpm build
-pnpm smoke:packed
-```
 
 ## Documentation
 

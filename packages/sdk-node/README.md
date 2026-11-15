@@ -9,26 +9,6 @@ Use this package to capture backend exceptions, request metadata, structured log
 
 Requires Node.js 22 or newer.
 
-## Logger filtering
-
-Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
-
-## Runtime evidence (3.2.0)
-
-Version 3.2.0 adds bounded native `Error.cause`/`AggregateError` evidence, normalized frames and owned request/command/job context. `captureExceptionEvidence` defaults to true, but additional fields are emitted only after complete-path capability proof. Existing config and ACK requests opt in with `debugbundle_evidence=1`; absent, invalid or downgraded support restores the legacy error shape. Native accessors, proxies and custom stack formatters are not executed for new inspection. Fatal capture has a smaller budget and bypasses application hooks.
-
-Explicit recovery requires `captureRecoveryObservations: true`, verified `recovery_v1` support and capture-policy permission. Use fresh UUID v4 `failureRef` and `attemptId` values, never user IDs or URLs. Pass the reference with the original capture context, then call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })`. An active `runWithOperationContext({ kind: "job" | "command" | "request", name?, limitMs? }, callback)` supplies the operation scope. Without an active scope, provide an explicit operation/page scope. The callback's result/error is preserved; concurrent operations are isolated and elapsed time is monotonic. Existing Express/Fastify/Next request owners end on completion/close.
-
-States are `attempt_started`, `attempt_completed`, `attempt_failed`, `recovery_observed`, and `failure_persisted`. Only the application's explicit `recovery_observed` establishes recovery; HTTP 200 and attempt completion do not. Optional fields are a technical `operation` label, `statusCode`, and `durationMs`. No arbitrary diagnostic data is accepted. Normal privacy, rules, sampling, ACK/retry and queue policy still apply. Diagnostic tracking accounts at most 50 failure scopes, five attempts and 20 observations per failure and 64 KiB including pending offline payloads/metadata. Canonical `beforeSend` identity/type replacements remain supported and transfer that ownership.
-
-`evidenceCapabilities: { version: 1, features: [...] }` is an explicit assertion that every receiver/relay/local reader supports the listed features, not a version guess or policy override. Subsequent discovery can revoke it. Browser relay handlers have the same optional pin, preserve strict evidence fields and intersect with verified downstream support. Opted-in relay replies retain legacy string `errors` and add indexed `evidence_errors`. Only a negotiated `invalid_event` rejection can retry a stripped original error; policy/security rejections and standalone contexts never use that fallback. Local-only/file transport needs an explicitly verified reader pin.
-
-HTTP batches count actual UTF-8 JSON and their wrapper against the receiver's 256 KiB limit. Finalized tails return to the existing bounded queue with their hook cache; acknowledgements refer only to the submitted chunk. Optional metadata shrinks first. A valid hook replacement that still cannot fit is withheld, preserving application redaction; only invalid or throwing hooks use the established original fallback. Built-in local file transport retains its existing larger-event semantics. Evicted recovery observations release their pending diagnostic ownership.
-
-Relays count server metadata before forwarding, split downstream chunks and share one monotonic five-second forwarding deadline. Native upstream HTTP requires a canonical acknowledgement even for a legacy browser request. A durable spool receives a private, exclusively created delivery marker only after complete canonical acceptance of every chunk; missing/partial replies and pre-existing marker symlinks leave retained files intact. Server tokens are excluded from `onAccept` callbacks.
-
-These APIs are available in 3.2.0. Runtime-floor, installed-framework and packaged-artifact qualification is recorded in the coordinated release train.
-
 ## Installation
 
 ```bash
@@ -37,20 +17,27 @@ npm install @debugbundle/sdk-node
 
 Keep `@debugbundle/sdk-node` and `@debugbundle/sdk-browser` on the same SDK release version. The core-owned `@debugbundle/shared-types` and `@debugbundle/redaction` packages are independently versioned; use the compatible versions declared by the SDK rather than matching their version numbers.
 
-## Quick Start
+## Initialize
 
-```ts
+<a id="quick-start"></a>
+
+Initialize once at server startup with `DEBUGBUNDLE_PROJECT_TOKEN` set in the server environment. Initialization registers the process exception and rejection hooks; request middleware belongs in the framework setup below.
+
+```typescript
 import { debugbundle } from "@debugbundle/sdk-node";
 
 debugbundle.init({
   projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
-  service: "checkout-api",
-  environment: "production"
+  environment: "production",
+  service: "api"
 });
-
-debugbundle.captureExceptions();
-debugbundle.captureRejections();
 ```
+
+## Integrations
+
+Express, Fastify, Next.js, pino, winston, bunyan and browser relay handlers are supported.
+
+### Capture setup details
 
 Handled errors, logs, messages, and probes can be captured explicitly:
 
@@ -62,6 +49,69 @@ debugbundle.probe("checkout.cart", { itemCount: cart.items.length });
 
 await debugbundle.flush();
 ```
+
+### Frameworks and Logging
+
+The SDK supports vanilla Node.js plus Express, Fastify, and Next.js integration helpers. It can capture uncaught exceptions, unhandled rejections, request context, response status and duration, and supported logger output.
+
+Logger capture is intentionally in-process. DebugBundle attaches to logger transports or handlers; it does not read application log files.
+
+### Browser Relay
+
+Use a same-origin relay when pairing this package with `@debugbundle/sdk-browser` so browser JavaScript never receives the server-side project token.
+
+| Runtime | Import |
+| --- | --- |
+| Generic Node.js | `@debugbundle/sdk-node/relay` |
+| Express | `@debugbundle/sdk-node/relay/express` |
+| Fastify | `@debugbundle/sdk-node/relay/fastify` |
+| Next.js API route | `@debugbundle/sdk-node/relay/nextjs` |
+
+See <https://debugbundle.com/docs/sdks/browser-relay>.
+
+Relay behavior summary:
+
+- same-origin is the default when `allowedOrigins` is omitted
+- split frontend/backend hosts should set explicit allowed origins
+- relay adapters answer allowed CORS `OPTIONS` preflight and add matching CORS headers to allowed POST responses
+- requests must use `Content-Type: application/json`
+- request bodies are capped at `256 KB`
+- per-IP rate limiting is enabled
+- browser-supplied credentials and trust-sensitive fields are stripped
+- local-only mode writes accepted batches to `.debugbundle/local/events/`
+- connected mode can durably spool accepted batches before forwarding
+- forwarding always uses the server-side project token
+- disabling the relay or omitting a usable token leaves the host app running and the SDK status degraded or disconnected
+
+## First-event verification
+
+Use an explicit setup event in a development or staging application, then confirm the matching service and environment in a received event or incident. Initialization, a healthy status and an empty queue are not delivery receipts. Keep the application running long enough for delivery; use bounded flushing only in tests or controlled teardown, never in a request handler.
+
+Minimal application check:
+
+```ts
+import { debugbundle } from "@debugbundle/sdk-node";
+
+debugbundle.init({
+  projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
+  service: "checkout-api",
+  environment: "development",
+  endpoint: "http://127.0.0.1:3004/v1/events"
+});
+
+debugbundle.captureMessage("debugbundle node smoke", "warning");
+await debugbundle.flush();
+console.log(debugbundle.status());
+```
+
+Repository-level verification uses the same clean-install smoke path as CI and release:
+
+```bash
+pnpm build
+pnpm smoke:packed
+```
+
+For connected delivery, confirm the event in DebugBundle and inspect its incident with the CLI. For local-file delivery, run `debugbundle process` followed by `debugbundle inspect <incident-id>`. A local file or mock endpoint receipt proves only that destination; it does not prove cloud acceptance.
 
 ## Configuration
 
@@ -123,6 +173,26 @@ debugbundle.init({
 
 If the hook throws or returns an invalid event, the SDK keeps the original event and emits an internal diagnostic. Use project capture rules first for operational noise because they are centralized and enforced by ingestion and worker backstops.
 
+## Logger filtering
+
+Node logger integrations capture records after native source filtering: Pino levels/silent mode/log-method hooks, Bunyan levels, and Winston levels/silent mode/format filters. Bunyan enabled queries do not create events. Native output, results and exceptions are preserved, and SDK callback failures cannot interrupt logging. Destination-specific transport filters are separate from DebugBundle's own minimum capture level. Use `captureLog()` for explicit reporting independent of automatic logger capture.
+
+## Runtime evidence (3.2.0)
+
+Version 3.2.0 adds bounded native `Error.cause`/`AggregateError` evidence, normalized frames and owned request/command/job context. `captureExceptionEvidence` defaults to true, but additional fields are emitted only after complete-path capability proof. Existing config and ACK requests opt in with `debugbundle_evidence=1`; absent, invalid or downgraded support restores the legacy error shape. Native accessors, proxies and custom stack formatters are not executed for new inspection. Fatal capture has a smaller budget and bypasses application hooks.
+
+Explicit recovery requires `captureRecoveryObservations: true`, verified `recovery_v1` support and capture-policy permission. Use fresh UUID v4 `failureRef` and `attemptId` values, never user IDs or URLs. Pass the reference with the original capture context, then call `captureRecovery({ failureRef, attemptId, state, evidenceScope? })`. An active `runWithOperationContext({ kind: "job" | "command" | "request", name?, limitMs? }, callback)` supplies the operation scope. Without an active scope, provide an explicit operation/page scope. The callback's result/error is preserved; concurrent operations are isolated and elapsed time is monotonic. Existing Express/Fastify/Next request owners end on completion/close.
+
+States are `attempt_started`, `attempt_completed`, `attempt_failed`, `recovery_observed`, and `failure_persisted`. Only the application's explicit `recovery_observed` establishes recovery; HTTP 200 and attempt completion do not. Optional fields are a technical `operation` label, `statusCode`, and `durationMs`. No arbitrary diagnostic data is accepted. Normal privacy, rules, sampling, ACK/retry and queue policy still apply. Diagnostic tracking accounts at most 50 failure scopes, five attempts and 20 observations per failure and 64 KiB including pending offline payloads/metadata. Canonical `beforeSend` identity/type replacements remain supported and transfer that ownership.
+
+`evidenceCapabilities: { version: 1, features: [...] }` is an explicit assertion that every receiver/relay/local reader supports the listed features, not a version guess or policy override. Subsequent discovery can revoke it. Browser relay handlers have the same optional pin, preserve strict evidence fields and intersect with verified downstream support. Opted-in relay replies retain legacy string `errors` and add indexed `evidence_errors`. Only a negotiated `invalid_event` rejection can retry a stripped original error; policy/security rejections and standalone contexts never use that fallback. Local-only/file transport needs an explicitly verified reader pin.
+
+HTTP batches count actual UTF-8 JSON and their wrapper against the receiver's 256 KiB limit. Finalized tails return to the existing bounded queue with their hook cache; acknowledgements refer only to the submitted chunk. Optional metadata shrinks first. A valid hook replacement that still cannot fit is withheld, preserving application redaction; only invalid or throwing hooks use the established original fallback. Built-in local file transport retains its existing larger-event semantics. Evicted recovery observations release their pending diagnostic ownership.
+
+Relays count server metadata before forwarding, split downstream chunks and share one monotonic five-second forwarding deadline. Native upstream HTTP requires a canonical acknowledgement even for a legacy browser request. A durable spool receives a private, exclusively created delivery marker only after complete canonical acceptance of every chunk; missing/partial replies and pre-existing marker symlinks leave retained files intact. Server tokens are excluded from `onAccept` callbacks.
+
+These APIs are available in 3.2.0. Runtime-floor, installed-framework and packaged-artifact qualification is recorded in the coordinated release train.
+
 ## Remote capture rules
 
 Active project capture rules arrive through `GET /v1/sdk/config` and are applied locally when the Node runtime can do so without changing application behavior:
@@ -132,39 +202,6 @@ Active project capture rules arrive through `GET /v1/sdk/config` and are applied
 - `demote` still ships today and relies on ingestion/worker backstop enforcement, because the Node SDK does not have a browser-style breadcrumb/context downgrade channel yet
 
 This keeps the project-wide rule contract consistent with the browser SDK while leaving room for richer backend-local demotion later.
-
-## Frameworks and Logging
-
-The SDK supports vanilla Node.js plus Express, Fastify, and Next.js integration helpers. It can capture uncaught exceptions, unhandled rejections, request context, response status and duration, and supported logger output.
-
-Logger capture is intentionally in-process. DebugBundle attaches to logger transports or handlers; it does not read application log files.
-
-## Browser Relay
-
-Use a same-origin relay when pairing this package with `@debugbundle/sdk-browser` so browser JavaScript never receives the server-side project token.
-
-| Runtime | Import |
-| --- | --- |
-| Generic Node.js | `@debugbundle/sdk-node/relay` |
-| Express | `@debugbundle/sdk-node/relay/express` |
-| Fastify | `@debugbundle/sdk-node/relay/fastify` |
-| Next.js API route | `@debugbundle/sdk-node/relay/nextjs` |
-
-See <https://debugbundle.com/docs/sdks/browser-relay>.
-
-Relay behavior summary:
-
-- same-origin is the default when `allowedOrigins` is omitted
-- split frontend/backend hosts should set explicit allowed origins
-- relay adapters answer allowed CORS `OPTIONS` preflight and add matching CORS headers to allowed POST responses
-- requests must use `Content-Type: application/json`
-- request bodies are capped at `256 KB`
-- per-IP rate limiting is enabled
-- browser-supplied credentials and trust-sensitive fields are stripped
-- local-only mode writes accepted batches to `.debugbundle/local/events/`
-- connected mode can durably spool accepted batches before forwarding
-- forwarding always uses the server-side project token
-- disabling the relay or omitting a usable token leaves the host app running and the SDK status degraded or disconnected
 
 ## Service naming guidance
 
@@ -182,32 +219,6 @@ When the browser sends through this relay, keep the browser service name browser
 - `status()` reports `disconnected` or `degraded` when capture cannot ship successfully.
 - Local-only mode stays valid without a remote token and writes event files instead.
 - Failed or rejected transport responses never bubble uncaught exceptions into application code.
-
-## First-event verification
-
-Minimal application check:
-
-```ts
-import { debugbundle } from "@debugbundle/sdk-node";
-
-debugbundle.init({
-  projectToken: process.env.DEBUGBUNDLE_PROJECT_TOKEN,
-  service: "checkout-api",
-  environment: "development",
-  endpoint: "http://127.0.0.1:3004/v1/events"
-});
-
-debugbundle.captureMessage("debugbundle node smoke", "warning");
-await debugbundle.flush();
-console.log(debugbundle.status());
-```
-
-Repository-level verification uses the same clean-install smoke path as CI and release:
-
-```bash
-pnpm build
-pnpm smoke:packed
-```
 
 ## Safety Guarantees
 
