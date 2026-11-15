@@ -118,7 +118,7 @@ DEBUGBUNDLE_SMOKE_VERSION=1.5.0 pnpm smoke:registry
 
 ## Configuration
 
-<a id="configuration-source-precedence"></a>
+### Configuration source precedence
 
 The package READMEs contain the full option tables. The short rule for this repo is:
 
