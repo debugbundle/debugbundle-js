@@ -240,6 +240,7 @@ export interface DebugBundleNodeInitConfig {
   localEventsDir?: string;
   enabled?: boolean;
   redactFields?: string[];
+  redactExactFields?: string[];
   sampleRate?: number;
   batchSize?: number;
   flushInterval?: number;
@@ -270,6 +271,7 @@ export interface ActiveConfig {
   service: string;
   framework: string | null;
   redactFields: string[];
+  redactExactFields: string[];
   sampleRate: number;
   batchSize: number;
   flushInterval: number;

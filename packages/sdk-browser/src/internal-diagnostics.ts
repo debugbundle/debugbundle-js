@@ -15,24 +15,24 @@ export class BrowserInternalDiagnostics {
   private pending = false;
   reset(): void { this.seen.clear(); this.at = 0; this.count = 0; }
 
-  unauthorized(lane: BrowserTransportLaneName, status: number, endpoint: string, body: unknown, fields: string[]): void {
+  unauthorized(lane: BrowserTransportLaneName, status: number, endpoint: string, body: unknown, fields: string[], exactFields: string[] = []): void {
     try {
       const descriptor = body !== null && typeof body === "object" ? Object.getOwnPropertyDescriptor(body, "error") : undefined;
       const error: unknown = descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
       const detail = typeof error === "string" && error.length > 0 ? ` (${diagnosticCode(error)})` : "";
-      this.emit("error", `DebugBundle ${lane === "debug" ? "browser SDK" : "browser analytics"} disabled after ingestion returned ${status} for ${endpoint.length <= 2048 ? endpoint : "configured endpoint"}. Check the project token or relay configuration${detail}.`, fields);
+      this.emit("error", `DebugBundle ${lane === "debug" ? "browser SDK" : "browser analytics"} disabled after ingestion returned ${status} for ${endpoint.length <= 2048 ? endpoint : "configured endpoint"}. Check the project token or relay configuration${detail}.`, fields, exactFields);
     } catch { /* Hostile transport responses cannot affect lane rejection. */ }
   }
 
-  acknowledgement(lane: BrowserTransportLaneName, code: "invalid" | "terminal_rejection", detail: string, fields: string[]): void {
+  acknowledgement(lane: BrowserTransportLaneName, code: "invalid" | "terminal_rejection", detail: string, fields: string[], exactFields: string[] = []): void {
     const safe = detail.split(",", 5).map(diagnosticCode).join(",");
     const key = `${lane}:${code}:${safe}`;
     this.emit("warn", code === "invalid"
       ? `DebugBundle ${lane === "debug" ? "browser SDK" : "browser analytics"} retained events after an invalid ingestion acknowledgement (${safe}).`
-      : `DebugBundle ${lane === "debug" ? "browser SDK" : "browser analytics"} removed terminally rejected events (${safe}).`, fields, key);
+      : `DebugBundle ${lane === "debug" ? "browser SDK" : "browser analytics"} removed terminally rejected events (${safe}).`, fields, exactFields, key);
   }
 
-  private emit(level: "error" | "warn", message: string, fields: string[], key?: string): void {
+  private emit(level: "error" | "warn", message: string, fields: string[], exactFields: string[], key?: string): void {
     if (inBrowserDiagnostic() || this.pending) return;
     depth++;
     try {
@@ -41,7 +41,7 @@ export class BrowserInternalDiagnostics {
       if (this.count >= 10 || (key !== undefined && this.seen.has(key))) return;
       this.count++;
       if (key !== undefined) this.seen.add(key);
-      const safe = sanitizeTelemetry(message, { additionalKeys: fields });
+      const safe = sanitizeTelemetry(message, { additionalKeys: fields, exactKeys: exactFields });
       if (!safe.ok || typeof safe.value !== "string") return;
       const consoleSource = getConsoleSource();
       const sink = consoleSource?.[level] ?? consoleSource?.warn;

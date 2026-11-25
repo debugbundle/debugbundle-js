@@ -83,7 +83,10 @@ export class BrowserProbeController {
     }
 
     try {
-      const protectedData = sanitizeTelemetry(normalizeProbeInput(data), { additionalKeys: config.redactFields });
+      const protectedData = sanitizeTelemetry(normalizeProbeInput(data), {
+        additionalKeys: config.redactFields,
+        exactKeys: config.redactExactFields
+      });
       if (!protectedData.ok) return;
       const probeData = normalizeUnknownRecord(protectedData.value);
       this.buffer(normalizedLabel, probeData);

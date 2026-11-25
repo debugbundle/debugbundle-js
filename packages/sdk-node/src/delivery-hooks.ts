@@ -14,7 +14,7 @@ function prepareReplacement(event: EventEnvelope, config: ActiveConfig,
   remote: RemoteProbeConfigSnapshot, diagnostic: Diagnostic): EventEnvelope | null {
   const replacement = applyNodeBeforeSendEvent(event, config.beforeSend, diagnostic);
   if (replacement === null) return null;
-  let safe = protectNodeEvent(replacement, config.redactFields);
+  let safe = protectNodeEvent(replacement, config.redactFields, config.redactExactFields);
   if (safe === null) return null;
   if (!isFileTransport(config.transport)) safe = fitNodeWireEvent(safe);
   if (safe === null) return null;

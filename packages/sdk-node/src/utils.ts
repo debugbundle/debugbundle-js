@@ -295,12 +295,16 @@ export function ensureObject(value: unknown): JsonObject {
   };
 }
 
-export function sanitizeMetadataObject(metadata: Record<string, unknown> | undefined, additionalKeys: string[] = []): JsonObject | undefined {
+export function sanitizeMetadataObject(
+  metadata: Record<string, unknown> | undefined,
+  additionalKeys: string[] = [],
+  exactKeys: string[] = []
+): JsonObject | undefined {
   if (metadata === undefined) {
     return undefined;
   }
 
-  const sanitized = sanitizeTelemetry(sanitizeUnknown(metadata), { additionalKeys });
+  const sanitized = sanitizeTelemetry(sanitizeUnknown(metadata), { additionalKeys, exactKeys });
   if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
       typeof sanitized.value !== "object") {
     return undefined;
@@ -309,8 +313,8 @@ export function sanitizeMetadataObject(metadata: Record<string, unknown> | undef
   return sanitized.value;
 }
 
-export function redactObject(value: unknown, sensitiveKeys: string[]): JsonObject {
-  const sanitized = sanitizeTelemetry(ensureObject(value), { additionalKeys: sensitiveKeys });
+export function redactObject(value: unknown, sensitiveKeys: string[], exactKeys: string[] = []): JsonObject {
+  const sanitized = sanitizeTelemetry(ensureObject(value), { additionalKeys: sensitiveKeys, exactKeys });
   if (!sanitized.ok || sanitized.value === null || Array.isArray(sanitized.value) ||
       typeof sanitized.value !== "object") {
     throw new Error("privacy_sanitization_failed");

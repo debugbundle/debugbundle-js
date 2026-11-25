@@ -14,7 +14,8 @@ export function createNodeExceptionEvent(input: { error: unknown; context: Captu
   const otherBytes = Buffer.byteLength(JSON.stringify({ execution, evidence_reference: reference ?? undefined }), "utf8");
   const snapshot = snapshotNodeException(input.error, config.captureExceptionEvidence !== false && input.evidence.supports("exception_evidence_v1"),
     { fatal: input.fatal, budgetBytes: (input.fatal ? 4096 : 32 * 1024) - otherBytes - 64 });
-  const request = buildNodeRequestSnapshot(context.request, config.redactFields), response = buildNodeResponseSnapshot(context.response, config.redactFields);
+  const request = buildNodeRequestSnapshot(context.request, config.redactFields, config.redactExactFields),
+    response = buildNodeResponseSnapshot(context.response, config.redactFields, config.redactExactFields);
   const probeData = config.probeFlushOnError ? consumeNodeProbeData(input.probeBuffers) : null, runtime = detectProcessRuntimeFacts();
   const event = createEventEnvelope({ schema_version: SDK_SCHEMA_VERSION, event_type: "backend_exception", project_token: config.projectToken,
     sdk_name: SDK_NAME, sdk_version: SDK_VERSION, service: buildNodeServiceDescriptor(config), occurred_at: new Date().toISOString(),

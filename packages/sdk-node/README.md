@@ -123,7 +123,8 @@ For connected delivery, confirm the event in DebugBundle and inspect its inciden
 | `projectMode` | `connected` | Use `local-only` to write events to `.debugbundle/local/events/`. |
 | `endpoint` | `https://api.debugbundle.com/v1/events` | Ingestion endpoint for connected mode or self-hosting. |
 | `enabled` | `true` | Disable all capture without removing instrumentation. |
-| `redactFields` | common sensitive fields | Additional field names to redact. |
+| `redactFields` | common sensitive fields | Additional field names to redact (broad segment-aware matching; additive to mandatory credential rules). |
+| `redactExactFields` | `[]` | Additional exact field/query-parameter names to redact (ASCII case-insensitive whole-key matching, punctuation significant; e.g. `tag` masks `tag` without masking `tag_name`). Additive to mandatory credential rules and shares the 128-key / 64-char custom limit with `redactFields`. |
 | `logLevel` | `warning` | Minimum captured log severity. |
 | `sampleRate` | `1.0` | Fraction of events to keep before transport. |
 | `batchSize` | `50` | Events per batch before flushing. |

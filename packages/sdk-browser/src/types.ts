@@ -410,6 +410,7 @@ export interface DebugBundleBrowserInitConfig {
   service?: string;
   enabled?: boolean;
   redactFields?: string[];
+  redactExactFields?: string[];
   tracePropagationTargets?: BrowserPattern[];
   sampleRate?: number;
   batchSize?: number;
@@ -554,6 +555,7 @@ export interface ActiveConfig {
   service: string;
   enabled: boolean;
   redactFields: string[];
+  redactExactFields: string[];
   tracePropagationTargets: BrowserPattern[];
   sampleRate: number;
   batchSize: number;

@@ -39,7 +39,7 @@ export function emitNodeDiagnostic(config: ActiveConfig | null, code: string, me
       try {
         const detail = metadata === undefined ? undefined : { ...metadata,
           ...(Object.hasOwn(metadata, "error") ? { error: diagnosticError(metadata["error"]) } : {}) };
-        safeMetadata = sanitizeMetadataObject(detail, config.redactFields);
+        safeMetadata = sanitizeMetadataObject(detail, config.redactFields, config.redactExactFields);
         if (safeMetadata !== undefined && Buffer.byteLength(JSON.stringify(safeMetadata), "utf8") > 4096) safeMetadata = undefined;
       } catch { /* Unsafe detail is optional; still report the static failure code. */ }
       const result: unknown = config.onDiagnostic?.({ code, message,

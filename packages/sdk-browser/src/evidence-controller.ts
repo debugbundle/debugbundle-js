@@ -33,7 +33,7 @@ export class BrowserEvidenceController {
     const config = this.config, policy = this.policy;
     if (config === null || policy === null || !this.allowedResources(config, policy)) return;
     try {
-      const raw = this.late?.(source, payload), event = raw ? protectBrowserEvent(raw, config.redactFields) : null;
+      const raw = this.late?.(source, payload), event = raw ? protectBrowserEvent(raw, config.redactFields, config.redactExactFields) : null;
       if (event?.event_type === "diagnostic_context" && this.budget.reserve(event.event_id, event.payload, this.bytes(event), Date.now())) this.enqueue?.(event);
     } catch { /* Optional passive context cannot escape a platform callback. */ }
   });
@@ -101,7 +101,7 @@ export class BrowserEvidenceController {
     const parsed = DiagnosticContextPayloadSchema.safeParse({ ...reference, kind: "recovery", attempt_id: own(input, "attemptId"), state: own(input, "state"),
       ...optional("operation", "operation"), ...optional("statusCode", "status_code"), ...optional("durationMs", "duration_ms") });
     if (!parsed.success) return;
-    const event = protectBrowserEvent(create(parsed.data), config.redactFields);
+    const event = protectBrowserEvent(create(parsed.data), config.redactFields, config.redactExactFields);
     if (event?.event_type !== "diagnostic_context" || !this.budget.reserve(event.event_id, event.payload, this.bytes(event), Date.now())) return;
     enqueue(event);
   }

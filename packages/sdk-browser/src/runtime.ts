@@ -266,7 +266,9 @@ function normalizeVisibilityState(value: unknown): NonNullable<BrowserExceptionE
   return value === "visible" || value === "hidden" || value === "prerender" || value === "unloaded" ? value : null;
 }
 
-function normalizeBrowserErrorPage(): NonNullable<BrowserExceptionEventContext["page"]> {
+function normalizeBrowserErrorPage(options?: {
+  pageUnloading?: boolean;
+}): NonNullable<BrowserExceptionEventContext["page"]> {
   const locationSource = getLocationSource();
   const documentSource = getDocumentSource();
 
@@ -274,7 +276,10 @@ function normalizeBrowserErrorPage(): NonNullable<BrowserExceptionEventContext["
     url: sanitizeBrowserEventUrl(typeof locationSource?.href === "string" ? locationSource.href : null),
     referrer: sanitizeBrowserEventUrl(typeof documentSource?.referrer === "string" ? documentSource.referrer : null),
     ready_state: normalizeReadyState(documentSource?.readyState),
-    visibility_state: normalizeVisibilityState(documentSource?.visibilityState)
+    visibility_state:
+      options?.pageUnloading === true
+        ? "unloaded"
+        : normalizeVisibilityState(documentSource?.visibilityState)
   };
 }
 
@@ -320,7 +325,10 @@ function normalizeBrowserErrorTarget(target: unknown): BrowserExceptionEventCont
   return normalized;
 }
 
-export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEventContext {
+export function normalizeBrowserErrorEvent(
+  event: unknown,
+  options?: { pageUnloading?: boolean }
+): BrowserExceptionEventContext {
   const record = readNativeFields(event, ["message", "filename", "lineno", "colno"]);
   const target = normalizeBrowserErrorTarget(readNativeField(event, "target"));
   const hasErrorObject = hasErrorDetails(readNativeField(event, "error"));
@@ -333,7 +341,7 @@ export function normalizeBrowserErrorEvent(event: unknown): BrowserExceptionEven
     line_number: getNonnegativeIntegerField(record, "lineno"),
     column_number: getNonnegativeIntegerField(record, "colno"),
     target,
-    page: normalizeBrowserErrorPage(),
+    page: normalizeBrowserErrorPage(options),
     opaque: !hasErrorObject
   };
 }

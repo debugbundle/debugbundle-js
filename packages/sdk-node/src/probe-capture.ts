@@ -14,7 +14,7 @@ export function captureNodeProbe(input: { config: ActiveConfig; label: string; d
 
       const resolved = typeof data === "function" ? (data as () => unknown)() : data;
       if (!input.current()) return;
-      const redacted = redactObject(resolved, config.redactFields);
+      const redacted = redactObject(resolved, config.redactFields, config.redactExactFields);
 
       if (options.heavy !== true) {
         if (!input.buffers.has(label) && input.buffers.size >= config.maxProbeLabels) {

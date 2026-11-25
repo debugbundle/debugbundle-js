@@ -1,5 +1,5 @@
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as fixtures from "../../helpers/sdk-browser-fixtures.js";
 
 // Web IDL properties live on native prototypes, unlike enumerable POJO fixtures.
@@ -124,5 +124,34 @@ describe("native browser error capture", () => {
     const captured = fixtures.getFrontendExceptionEvent(fixtures.createTransportEvents(transport, 0)[0]);
     expect(captured.payload).toMatchObject({ message: "Script error.", browser_event: { opaque: true, file_name: null } });
     expect(captured.payload.stack).not.toContain("onError");
+  });
+
+  it("marks resource errors after pagehide as unloaded, resets on pageshow, and never registers beforeunload", async () => {
+    const addSpy = vi.spyOn(fixtures.FakeEventTarget.prototype, "addEventListener");
+    const { sdk, transport, globals } = fixtures.createSdk();
+    const addedEvents = addSpy.mock.calls.map(([type]) => type);
+    addSpy.mockRestore();
+    expect(addedEvents).toContain("pagehide");
+    expect(addedEvents).toContain("pageshow");
+    expect(addedEvents).not.toContain("beforeunload");
+
+    globals.windowTarget.dispatch("pagehide", nativeFields({ persisted: true }));
+    globals.windowTarget.dispatch(
+      "error",
+      nativeFields({ target: nativeFields({ tagName: "LINK", href: "https://app.example.com/assets/app.css", rel: "stylesheet" }) })
+    );
+    await sdk.flush();
+    const unloadedEvent = fixtures.getFrontendExceptionEvent(fixtures.createTransportEvents(transport, 0)[0]);
+    expect(unloadedEvent.payload.browser_event?.page?.visibility_state).toBe("unloaded");
+
+    globals.windowTarget.dispatch("pageshow", nativeFields({ persisted: true }));
+    globals.windowTarget.dispatch(
+      "error",
+      nativeFields({ target: nativeFields({ tagName: "SCRIPT", src: "https://app.example.com/assets/other.js" }) })
+    );
+    await sdk.flush();
+    const restoredEvents = fixtures.createTransportEvents(transport, 1);
+    const visibleEvent = fixtures.getFrontendExceptionEvent(restoredEvents[0]);
+    expect(visibleEvent.payload.browser_event?.page?.visibility_state).toBe("visible");
   });
 });

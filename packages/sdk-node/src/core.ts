@@ -179,6 +179,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       service,
       framework: config.framework ?? detection.framework,
       redactFields: config.redactFields ?? ["password", "secret", "token", "authorization", "cookie", "ssn", "credit_card"],
+      redactExactFields: config.redactExactFields ?? [],
       sampleRate: normalizeSampleRate(config.sampleRate),
       batchSize: normalizeFiniteNumber(config.batchSize, DEFAULT_BATCH_SIZE, 1),
       flushInterval: normalizeFiniteNumber(config.flushInterval, DEFAULT_FLUSH_INTERVAL_MS, 1),
@@ -370,7 +371,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       const defaultScope = this.requestContextStorage.scope();
       const event = createNodeRecoveryEvent({ observation, config, request: this.requestContextStorage.getStore()?.request,
         fields: this.contextFields, ...(defaultScope === undefined ? {} : { defaultScope }) });
-      const safe = event === null ? null : protectNodeEvent(event, config.redactFields);
+      const safe = event === null ? null : protectNodeEvent(event, config.redactFields, config.redactExactFields);
       if (safe?.event_type !== "diagnostic_context" || !this.diagnosticBudget.reserve(safe.event_id, safe.payload,
         this.boundedBuffer.eventBytes(safe), Date.now())) return;
       if (!this.enqueueEvent(safe)) this.diagnosticBudget.release([safe.event_id]);
@@ -408,7 +409,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         payload: {
           level,
           message,
-          attributes: buildNodeLogAttributes(context, this.contextFields, config.redactFields)
+          attributes: buildNodeLogAttributes(context, this.contextFields, config.redactFields, config.redactExactFields)
         }
       });
 
@@ -432,8 +433,8 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
         config.maxBufferedEvents - this.inFlightCount, config.maxBufferedBytes - this.inFlightBytes, responseStatus)
         || (config.beforeSend === undefined && !shouldCaptureNodeSample(config.sampleRate))) return;
 
-      const requestSnapshot = buildNodeRequestSnapshot(request, config.redactFields);
-      const responseSnapshot = buildNodeResponseSnapshot(response, config.redactFields);
+      const requestSnapshot = buildNodeRequestSnapshot(request, config.redactFields, config.redactExactFields);
+      const responseSnapshot = buildNodeResponseSnapshot(response, config.redactFields, config.redactExactFields);
       const event = buildNodeRequestEvent({
         config, requestSnapshot, responseSnapshot,
         correlation: buildNodeCorrelation(context.correlation, request, this.contextFields),
@@ -465,9 +466,12 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
     try {
       if (!Object.hasOwn(this.contextFields, key) && Object.keys(this.contextFields).length >= 50) return;
       const result = sanitizeTelemetry({ ...this.contextFields, [key]: value }, {
-        additionalKeys: config.redactFields
+        additionalKeys: config.redactFields,
+        exactKeys: config.redactExactFields
       });
-      if (result.ok && result.value !== null && !Array.isArray(result.value) && typeof result.value === "object") this.contextFields = redactObject(result.value, config.redactFields);
+      if (result.ok && result.value !== null && !Array.isArray(result.value) && typeof result.value === "object") {
+        this.contextFields = redactObject(result.value, config.redactFields, config.redactExactFields);
+      }
     } catch {
       // A failed mandatory scrub must not retain a raw context value.
     }
@@ -709,7 +713,11 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
   }
 
   private enqueueEvent(event: EventEnvelope, bypassHook = false): boolean {
-    const protectedInput = protectNodeEvent(event, this.config?.redactFields ?? []);
+    const protectedInput = protectNodeEvent(
+      event,
+      this.config?.redactFields ?? [],
+      this.config?.redactExactFields ?? []
+    );
     if (protectedInput === null) return false;
     if (!bypassHook && this.config?.beforeSend !== undefined) {
       return this.enqueueInternalEvent(protectedInput);
@@ -719,7 +727,11 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return false;
     }
 
-    const finalEvent = protectNodeEvent(resolvedEvent, this.config?.redactFields ?? []);
+    const finalEvent = protectNodeEvent(
+      resolvedEvent,
+      this.config?.redactFields ?? [],
+      this.config?.redactExactFields ?? []
+    );
     if (finalEvent === null) return false;
     event = finalEvent;
     const suppressionKey = buildNodeSuppressionKey(event);
@@ -737,7 +749,7 @@ export class DebugBundleNodeSdk implements FrameworkSdkBridge {
       return false;
     }
 
-    const protectedInput = protectNodeEvent(event, config.redactFields);
+    const protectedInput = protectNodeEvent(event, config.redactFields, config.redactExactFields);
     if (protectedInput === null) return false;
     event = protectedInput;
     if (!applyBeforeSend || config.beforeSend === undefined) this.finalizedEvents.add(event);

@@ -5,9 +5,13 @@ import type { CaptureBrowserExceptionContext } from "./types.js";
 
 type Capture = (error: unknown, context: CaptureBrowserExceptionContext) => void;
 
-export function captureNativeError(event: unknown, capture: Capture): void {
+export function captureNativeError(
+  event: unknown,
+  capture: Capture,
+  options?: { pageUnloading?: boolean }
+): void {
   try {
-    const browserEvent = normalizeBrowserErrorEvent(event);
+    const browserEvent = normalizeBrowserErrorEvent(event, options);
     const fallback = browserEvent.kind === "resource_error" ? "Browser resource load error" : "Window error";
     // A fallback message has no application stack; do not fabricate a listener stack.
     const error = readNativeField(event, "error");

@@ -90,6 +90,7 @@ function createConfig(overrides: Partial<ActiveConfig> = {}): ActiveConfig {
     service: "checkout-web",
     enabled: true,
     redactFields: ["token"],
+    redactExactFields: [],
     tracePropagationTargets: [],
     sampleRate: 1,
     batchSize: 50,

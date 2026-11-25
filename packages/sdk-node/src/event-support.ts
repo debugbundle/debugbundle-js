@@ -78,7 +78,8 @@ export function buildNodeCorrelation(
 
 export function buildNodeRequestSnapshot(
   request: CaptureRequestInput | undefined,
-  sensitiveKeys: string[]
+  sensitiveKeys: string[],
+  exactKeys: string[] = []
 ): {
   method: string;
   path: string;
@@ -90,16 +91,17 @@ export function buildNodeRequestSnapshot(
   return {
     method: request?.method ?? "UNKNOWN",
     path: request?.path ?? request?.url ?? "/",
-    headers: redactObject(request?.headers ?? {}, sensitiveKeys),
-    query: redactObject(request?.query ?? {}, sensitiveKeys),
-    body: request?.body === undefined ? null : redactObject(request.body, sensitiveKeys),
+    headers: redactObject(request?.headers ?? {}, sensitiveKeys, exactKeys),
+    query: redactObject(request?.query ?? {}, sensitiveKeys, exactKeys),
+    body: request?.body === undefined ? null : redactObject(request.body, sensitiveKeys, exactKeys),
     route_template: request?.routeTemplate ?? null
   };
 }
 
 export function buildNodeResponseSnapshot(
   response: CaptureResponseInput | undefined,
-  sensitiveKeys: string[]
+  sensitiveKeys: string[],
+  exactKeys: string[] = []
 ): {
   status_code: number;
   headers?: Record<string, unknown>;
@@ -111,11 +113,11 @@ export function buildNodeResponseSnapshot(
   };
 
   if (response?.headers !== undefined && Object.keys(response.headers).length > 0) {
-    snapshot.headers = redactObject(response.headers, sensitiveKeys);
+    snapshot.headers = redactObject(response.headers, sensitiveKeys, exactKeys);
   }
 
   if (response?.body !== undefined && statusCode >= 400) {
-    snapshot.body = redactObject(response.body, sensitiveKeys);
+    snapshot.body = redactObject(response.body, sensitiveKeys, exactKeys);
   }
 
   return snapshot;
@@ -124,7 +126,8 @@ export function buildNodeResponseSnapshot(
 export function buildNodeLogAttributes(
   context: CaptureLogContext,
   contextFields: Readonly<Record<string, unknown>>,
-  sensitiveKeys: string[]
+  sensitiveKeys: string[],
+  exactKeys: string[] = []
 ): Record<string, unknown> {
   const attributes: Record<string, unknown> = {};
   if (Object.keys(contextFields).length > 0) {
@@ -133,7 +136,7 @@ export function buildNodeLogAttributes(
 
   const rest: Record<string, unknown> = { ...context };
   delete rest["correlation"];
-  const redacted = redactObject(rest, sensitiveKeys);
+  const redacted = redactObject(rest, sensitiveKeys, exactKeys);
   for (const [key, value] of Object.entries(redacted)) {
     attributes[key] = value;
   }

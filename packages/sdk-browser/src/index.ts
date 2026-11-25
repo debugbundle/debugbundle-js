@@ -102,6 +102,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   private originalConsoleWarn: ((...args: unknown[]) => void) | null = null;
   private sessionSampledIn = true;
   private sessionEventCount = 0;
+  private pageUnloading = false;
   private readonly internalDiagnostics = new BrowserInternalDiagnostics();
   private readonly pendingEventOptions = new WeakMap<EventEnvelope, { applyRules: boolean; countTowardSession: boolean; capturedAt: number }>();
   private readonly suppressionTracker = new EventSuppressionTracker();
@@ -121,10 +122,23 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     finalizeDebugEvent: (event) => event.event_type === "analytics_event" ? event : this.evidence.reconcile(event, event, this.config, this.remoteProbeState),
     onDebugEventReleased: (event) => { if (event.event_type !== "analytics_event") this.evidence.release(event); },
     onUnauthorized: (lane, statusCode, endpoint, body) => {
-      this.internalDiagnostics.unauthorized(lane, statusCode, endpoint, body, this.config?.redactFields ?? []);
+      this.internalDiagnostics.unauthorized(
+        lane,
+        statusCode,
+        endpoint,
+        body,
+        this.config?.redactFields ?? [],
+        this.config?.redactExactFields ?? []
+      );
     },
     onAcknowledgementDiagnostic: (lane, code, detail) => {
-      this.internalDiagnostics.acknowledgement(lane, code, detail, this.config?.redactFields ?? []);
+      this.internalDiagnostics.acknowledgement(
+        lane,
+        code,
+        detail,
+        this.config?.redactFields ?? [],
+        this.config?.redactExactFields ?? []
+      );
     }
   });
   private readonly analyticsController = new BrowserAnalyticsController({
@@ -170,6 +184,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
       service: config.service?.trim() || "browser-app",
       enabled,
       redactFields: config.redactFields ?? ["password", "secret", "token", "authorization", "cookie", "ssn", "credit_card"],
+      redactExactFields: config.redactExactFields ?? [],
       tracePropagationTargets: normalizeTracePropagationTargets(config.tracePropagationTargets),
       sampleRate: normalizeSampleRate(config.sampleRate, DEFAULT_SAMPLE_RATE),
       batchSize: normalizePositiveNumber(config.batchSize, DEFAULT_BATCH_SIZE),
@@ -209,6 +224,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     this.eventTransport.configure(this.config);
     this.sessionSampledIn = this.config.sessionSampleRate >= 1 || Math.random() < this.config.sessionSampleRate;
     this.sessionEventCount = 0;
+    this.pageUnloading = false;
     this.browserSessionId = createBrowserTraceId();
     this.deviceInfo = collectDeviceInfo();
     const deferAnalyticsCapture =
@@ -286,7 +302,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
       const protectedAttributes = sanitizeTelemetry({
         ...this.persistentContext,
         ...normalizeUnknownRecord(context)
-      }, { additionalKeys: config.redactFields });
+      }, { additionalKeys: config.redactFields, exactKeys: config.redactExactFields });
       if (!protectedAttributes.ok || protectedAttributes.value === null ||
           Array.isArray(protectedAttributes.value) || typeof protectedAttributes.value !== "object") return;
       const attributes = protectedAttributes.value;
@@ -338,7 +354,10 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     }
 
     try {
-      const result = sanitizeTelemetry({ ...this.persistentContext, [key]: value }, { additionalKeys: config.redactFields });
+      const result = sanitizeTelemetry(
+        { ...this.persistentContext, [key]: value },
+        { additionalKeys: config.redactFields, exactKeys: config.redactExactFields }
+      );
       if (!result.ok || result.value === null || Array.isArray(result.value) || typeof result.value !== "object") return;
       this.persistentContext = result.value;
     } catch {
@@ -369,6 +388,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     this.config = null;
     this.sessionSampledIn = true;
     this.sessionEventCount = 0;
+    this.pageUnloading = false;
     this.internalDiagnostics.reset();
     this.suppressionTracker.reset();
     this.probeController.reset();
@@ -415,14 +435,20 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     const windowSource = getWindowSource();
     if (windowSource !== null) {
       const onPageHide = (event: unknown): void => {
+        this.pageUnloading = true;
         if (readNativeField(event, "persisted") !== true) {
           this.analyticsController.captureSessionSummary();
         }
         this.flushViaBeacon();
       };
+      const onPageShow = (): void => {
+        this.pageUnloading = false;
+      };
       const onError = (event: unknown): void => {
         if (!this.eventTransport.canCaptureDebug("frontend_exception")) return;
-        captureNativeError(event, (error, context) => this.captureException(error, context));
+        captureNativeError(event, (error, context) => this.captureException(error, context), {
+          pageUnloading: this.pageUnloading
+        });
       };
       const onUnhandledRejection = (event: unknown): void => {
         if (!this.eventTransport.canCaptureDebug("frontend_exception")) return;
@@ -430,10 +456,12 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
       };
 
       windowSource.addEventListener("pagehide", onPageHide);
+      windowSource.addEventListener("pageshow", onPageShow);
       windowSource.addEventListener("error", onError, true);
       windowSource.addEventListener("unhandledrejection", onUnhandledRejection);
 
       this.registeredListeners.push(() => windowSource.removeEventListener("pagehide", onPageHide));
+      this.registeredListeners.push(() => windowSource.removeEventListener("pageshow", onPageShow));
       this.registeredListeners.push(() => windowSource.removeEventListener("error", onError, true));
       this.registeredListeners.push(() => windowSource.removeEventListener("unhandledrejection", onUnhandledRejection));
     }
@@ -557,7 +585,10 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     }
 
     if (config.breadcrumbsOnErrorOnly !== true && !this.eventTransport.canCaptureDebug("frontend_breadcrumb")) return;
-    const protectedBreadcrumb = sanitizeTelemetry(breadcrumb, { additionalKeys: config.redactFields });
+    const protectedBreadcrumb = sanitizeTelemetry(breadcrumb, {
+      additionalKeys: config.redactFields,
+      exactKeys: config.redactExactFields
+    });
     if (!protectedBreadcrumb.ok || protectedBreadcrumb.value === null ||
         Array.isArray(protectedBreadcrumb.value) || typeof protectedBreadcrumb.value !== "object") return;
     breadcrumb = protectedBreadcrumb.value as unknown as BrowserBreadcrumb;
@@ -772,7 +803,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
   private admitDebugEvent(event: EventEnvelope, countTowardSession: boolean, applyRules: boolean): void {
     const config = this.config;
     if (config === null || this.eventTransport.debugRejected) { this.evidence.release(event); return; }
-    const protectedInput = protectBrowserEvent(event, config.redactFields);
+    const protectedInput = protectBrowserEvent(event, config.redactFields, config.redactExactFields);
     if (protectedInput === null) { this.evidence.release(event); return; }
     this.evidence.inheritIdentity(event, protectedInput);
     this.pendingEventOptions.set(protectedInput, { applyRules, countTowardSession, capturedAt: Date.now() });
@@ -796,7 +827,7 @@ export class BrowserSdk implements DebugBundleBrowserEvidenceSdk {
     if (config === null) return null;
     const replacement = applyBrowserBeforeSend(event, config.beforeSend);
     if (replacement === null || this.config !== config) return null;
-    const protectedResult = protectBrowserEvent(replacement, config.redactFields);
+    const protectedResult = protectBrowserEvent(replacement, config.redactFields, config.redactExactFields);
     if (protectedResult === null) return null;
     // A valid replacement cannot bypass authoritative level or session policy.
     if (protectedResult.event_type === "log_event" &&
