@@ -1,6 +1,6 @@
 {
   "name": "@debugbundle/sdk-node",
-  "version": "3.2.4",
+  "version": "3.3.0",
   "private": false,
   "type": "module",
   "license": "Apache-2.0",
@@ -31,8 +31,8 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@debugbundle/shared-types": "3.0.0",
-    "@debugbundle/redaction": "2.7.1",
+    "@debugbundle/shared-types": "3.9.0",
+    "@debugbundle/redaction": "2.8.0",
     "zod": "^4.6.7"
   }
 }

@@ -293,6 +293,117 @@ describe.each([
     expect(preservedHookRedaction?.event_type === "frontend_exception" && preservedHookRedaction.payload.browser_event?.target?.tag_name).toBe("[REDACTED]");
   });
 
+  it("preserves validated passive resource observations in a diagnostic context event", () => {
+    const correlation = {
+      request_id: null,
+      trace_id: null,
+      session_id: "browser-session",
+      user_id_hash: null
+    };
+    const diagnostic = {
+      ...event,
+      schema_version: "2026-03-01",
+      event_type: "diagnostic_context",
+      correlation,
+      payload: {
+        version: 1,
+        kind: "resource_observation",
+        failure_ref: "22222222-2222-4222-8222-222222222222",
+        scope: { kind: "page", page_id: "33333333-3333-4333-8333-333333333333" },
+        source_event_id: event.event_id,
+        observations: {
+          version: 1,
+          items: [
+            {
+              kind: "timing",
+              observed_at: event.occurred_at,
+              source_url: "https://cdn.example.com/widget.js",
+              availability: "observed",
+              response_status: 404,
+              duration_ms: 20,
+              transfer_size_bytes: null
+            },
+            {
+              kind: "csp",
+              observed_at: event.occurred_at,
+              source_url: null,
+              effective_directive: "script-src",
+              disposition: "report",
+              document_status_code: 200
+            }
+          ]
+        }
+      }
+    } satisfies EventEnvelope;
+    expect(protect(diagnostic, [], ["kind", "source_url", "disposition"])?.payload).toEqual(
+      diagnostic.payload
+    );
+    const malformed = {
+      ...diagnostic,
+      payload: {
+        ...diagnostic.payload,
+        observations: { version: 1, items: [] }
+      }
+    } satisfies EventEnvelope;
+    expect(protect(malformed, [])).toBeNull();
+    expect(
+      protect({ ...diagnostic, correlation: { ...correlation, session_id: null } }, [])
+    ).toBeNull();
+  });
+
+  it.each([
+    ["token=synthetic-private-value", "token=[REDACTED]"],
+    [null, null]
+  ])("protects the name and preserves validated execution timing for %s", (name, expectedName) => {
+    const exception: EventEnvelope = {
+      ...event,
+      schema_version: "2026-03-01",
+      event_type: "backend_exception",
+      payload: {
+        name: "TimeoutError",
+        message: "Timed out",
+        stack: "TimeoutError: Timed out",
+        handled: true,
+        request: { method: "GET", path: "/", headers: {}, query: {} },
+        response: { status_code: 500 },
+        runtime: { version: "24" },
+        execution: { version: 1, kind: "job", name, elapsed_ms: 42, limit_ms: null }
+      }
+    };
+    expect(protect(exception, [], ["kind", "elapsed_ms"])?.payload).toMatchObject({
+      execution: { version: 1, kind: "job", name: expectedName, elapsed_ms: 42, limit_ms: null }
+    });
+  });
+
+  it.each([
+    { version: 2, execution: "unsupported" },
+    { version: 1, execution: "untrusted-reason" },
+    { version: 1, execution: 42 },
+    { version: 1, new_field: "unsupported" }
+  ])("redacts untrusted evidence limits as application data", (evidenceLimits) => {
+    expect(
+      protect({ ...event, context: { evidence_limits: evidenceLimits } }, [], ["evidence_limits"])
+    ).toMatchObject({ context: { evidence_limits: "[REDACTED]" } });
+  });
+
+  it.each(["payload", "context"] as const)(
+    "rejects non-object %s and never reads accessor properties",
+    (field) => {
+      let reads = 0;
+      const unsafe = Object.defineProperty({}, "status", {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return "synthetic";
+        }
+      });
+      for (const value of [[], unsafe]) {
+        expect(protect({ ...event, [field]: value }, [])).toBeNull();
+      }
+      expect(reads).toBe(0);
+    }
+  );
+
   it("fails closed on hostile getters inside protocol blocks without invoking them", () => {
     let called = 0;
     const hostileTarget = Object.defineProperty({}, "tag_name", {

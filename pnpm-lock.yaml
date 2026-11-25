@@ -9,11 +9,11 @@ importers:
   .:
     devDependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.1
-        version: 2.7.1
+        specifier: 2.8.0
+        version: 2.8.0
       '@debugbundle/shared-types':
-        specifier: 3.0.0
-        version: 3.0.0
+        specifier: 3.9.0
+        version: 3.9.0
       '@types/bunyan':
         specifier: ^1.8.11
         version: 1.8.11
@@ -54,20 +54,20 @@ importers:
   packages/sdk-browser:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.1
-        version: 2.7.1
+        specifier: 2.8.0
+        version: 2.8.0
       '@debugbundle/shared-types':
-        specifier: 3.0.0
-        version: 3.0.0
+        specifier: 3.9.0
+        version: 3.9.0
 
   packages/sdk-node:
     dependencies:
       '@debugbundle/redaction':
-        specifier: 2.7.1
-        version: 2.7.1
+        specifier: 2.8.0
+        version: 2.8.0
       '@debugbundle/shared-types':
-        specifier: 3.0.0
-        version: 3.0.0
+        specifier: 3.9.0
+        version: 3.9.0
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -106,11 +106,11 @@ packages:
   '@dabh/diagnostics@2.0.9':
     resolution: {integrity: sha512-R6siwR65Hm+3yfgP7o8DKhNvputQAwfoz9zTc3kyDudnomj2/BcLmD+uGQQPICjuFUp8ounPBU+jmKsocwVVAg==}
 
-  '@debugbundle/redaction@2.7.1':
-    resolution: {integrity: sha512-i9c3lHQyxvgW99wp8xg3Spo+/dBLVe8ibXjfK36NniHkNCDuVzospfATFecIHokeAawmlYNnmWKSbbwy6i58lQ==}
+  '@debugbundle/redaction@2.8.0':
+    resolution: {integrity: sha512-eDB9e2zYQ0gpkBdroZrZs0Heq9TEwP1GyHNZxRcxQGu1H9IAc4Fbc3UvZxuVlFJtw/lNBKrKONw4RG1HEHhQHA==}
 
-  '@debugbundle/shared-types@3.0.0':
-    resolution: {integrity: sha512-aXm3r0V5/huk62jW9jQdcifDwGCsawidlJkYojIf4IoT/9ZBPwR0XLyvQa/Wlt23AmLbK8xxlbJmia2l/Yx7gQ==}
+  '@debugbundle/shared-types@3.9.0':
+    resolution: {integrity: sha512-F6dKwPU7uSYsWPcAaU89jMdobiUCcqM2ogNgZWCC8dZ4D4/Cl81gspY7Yk+bbujaaK3/AkTCO73y2D/6JUaykg==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -1230,9 +1230,9 @@ snapshots:
       enabled: 2.0.0
       kuler: 2.0.0
 
-  '@debugbundle/redaction@2.7.1': {}
+  '@debugbundle/redaction@2.8.0': {}
 
-  '@debugbundle/shared-types@3.0.0':
+  '@debugbundle/shared-types@3.9.0':
     dependencies:
       zod: 4.6.7
 

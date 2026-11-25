@@ -7,6 +7,12 @@ is required for the migrated SDK dependency graph.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-25
+
+- Add exact-key privacy rules to Browser and Node capture and preserve validated protocol fields.
+- Capture Browser page teardown via pagehide and reset visibility after pageshow, including back-forward cache restores.
+- Use published shared-types 3.9.0 and redaction 2.8.0.
+
 ## [3.2.4] - 2026-11-15
 
 - Preserve custom console return values through Node/Browser capture wrappers so diagnostic Promise rejection and stalled-work bounds still apply with console capture enabled.
